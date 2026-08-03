@@ -299,7 +299,7 @@ func parseArgsToMap(args []string) map[string]string
 | `--admin` | `ROCKSYS_ADMIN` | 管理接口地址 | `127.0.0.1:19527` |
 | `--log-level` | `ROCKSYS_LOG_LEVEL` | 日志级别 | `info` |
 
-> 命令行列为短名，由 `conf.Load` 内部映射为注册名（见 §2.3）；`rockctl config set` 与 `PUT /admin/config` 则使用注册名全名（见第 8 章）。
+> **命名约定**：底座的 6 个配置项以 `ROCKSYS_` 为前缀（环境变量名 = 注册名），挂件配置项**不带前缀**（如 `SHIELD_RATE_LIMIT_RPS`、`DISPATCH_RULES`）。命名空间的划分是约定性的——easyconf 无 prefix 自动补全机制，全凭 Register 时传入的 name 决定。`/admin/config` 写入时使用注册名（即环境变量名），不可混用短命令行名。
 
 ### 2.6 边界
 
@@ -973,7 +973,7 @@ func main() {
     // ... 随 P1/P2 逐步注册（auth → Head；registry/mq/object → 独立组件）
 
     // 5a. 启动 admin API（独立 listener，回环地址，见第 8 章）
-    // adminSrv := adminapi.New(mgr, cfgMgr)
+    // adminSrv := adminapi.New(cfgMgr.Current().AdminAddr, cfgMgr, mgr)
     // go adminSrv.ListenAndServe()
 
     // 6. 启动配置热更监听（★ 始终启动：默认监听 .env；--config 指定时额外监听该文件，见 §2.4）
@@ -1062,13 +1062,14 @@ package adminapi
 
 // AdminServer 管理接口服务器
 type AdminServer struct {
-    srv     *easyserver.Server   // 独立 easyserver 实例（回环地址）
-    confMgr *conf.Manager        // ★ 用于内建 PUT /admin/config（调用 conf.Manager.Set）
+    srv        *easyserver.Server   // 独立 easyserver 实例（回环地址）
+    confMgr    *conf.Manager        // ★ 用于内建 PUT /admin/config（调用 conf.Manager.Set）
+    hotswapMgr *hotswap.Manager     // ★ 用于内建 /admin/switch/on|off|list
 }
 
 // New 创建 Admin 服务器，自动注册内建端点（/admin/switch/on|off|list、/admin/config GET|PUT）。
 // ★ plugin 端点（/admin/metrics、/admin/script/*）不在 New 中注册——由 cmd/rocksys 装配时通过 RegisterPlugin 注入。
-func New(addr string, confMgr *conf.Manager) *AdminServer
+func New(addr string, confMgr *conf.Manager, hotswapMgr *hotswap.Manager) *AdminServer
 
 // ListenAndServe 启动独立 HTTP listener（阻塞，通常 go 调用）
 func (s *AdminServer) ListenAndServe() error
@@ -1580,7 +1581,7 @@ curl http://localhost:8080/block
 
 - **职责**：服务注册与发现。实现 `hotswap.Component` 接口。
 - **依赖**：`internal/hotswap`、`internal/conf`、`internal/chain`（联动 dispatch 时）。
-- **与 dispatch 的联动机制**：registry 自身不直接改 dispatch。实例变更经 **配置热更通道** 传递——registry 把最新实例列表写入 `conf.Manager` 的某个配置项（如 `ROCKSYS_DISPATCH_RULES` 的注册名全名），dispatch 通过 `conf.Manager.Watch` 订阅到变更后走 §6.3 流程 C：`Start(newCfg)` 重建 RouteTable 并原子替换内部快照（无需 chain.Replace，实例保持挂载）。这样 registry→dispatch 解耦，且天然复用已有热更/审计链路。
+- **与 dispatch 的联动机制**：registry 自身不直接改 dispatch。实例变更经 **配置热更通道** 传递——registry 把最新实例列表写入 `conf.Manager` 的某个配置项（如 `DISPATCH_RULES` 的注册名），dispatch 通过 `conf.Manager.Watch` 订阅到变更后走 §6.3 流程 C：`Start(newCfg)` 重建 RouteTable 并原子替换内部快照（无需 chain.Replace，实例保持挂载）。这样 registry→dispatch 解耦，且天然复用已有热更/审计链路。
 - **关键类型**：
   - `StaticTable`（默认）：YAML/JSON 静态实例列表。`func NewStaticTable(path string) *StaticTable`。
   - `Server`：内置轻量注册服务（HTTP API：`POST /register` + `PUT /heartbeat`）。`func NewServer(addr string) *Server`。
