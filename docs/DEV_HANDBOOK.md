@@ -188,6 +188,11 @@ func (m *Manager) Shutdown(ctx context.Context) error
 // ★ 挂件如何读取自身配置：挂件在 Register 时传入的 pval 是挂件结构体内部字段的指针
 //   （如 &s.RateLimitRPS），easyconf 写入 .env 或环境变量值时自动更新该指针指向的值。
 //   挂件直接读自己的字段即可——无需通过 conf.Manager.Current() 读取（Config 不含挂件配置项）。
+// ★ defval 类型分发：defval 统一为 string 入参（因 easyconf 无泛型 addItem），内部按 pval 实际类型分发：
+//   *string → ec.StringVar(pval, name, defval, ...)
+//   *int    → ec.IntVar(pval, name, strconv.Atoi(defval), ...)
+//   *bool   → ec.BoolVar(pval, name, strconv.ParseBool(defval), ...)
+//   其他类型 → 返回 error。实现参考：switch pval.(type) + strconv。
 func (m *Manager) Register(pval any, name, defval, title string, usage ...string) error
 
 // Set 运行期按注册名全名设值并广播：写 easyconf → 重建 Config → atomic.Value.Store → 广播 watchers。
@@ -513,8 +518,9 @@ func (c *Chain) Execute(ctx *Context) (shouldForward bool)
 // Adapter 据此决定是否缓冲上游响应体（§4.4 步骤 7a）。
 func (c *Chain) HasResponseHook(slot Slot) bool
 
-// ResponseHooks 返回指定槽位中实现了 ResponseHook 的中间件（持读锁遍历）。
-// Adapter 在 Forward 完成后逆序调用其 OnResponse。
+// ResponseHooks 返回指定槽位中实现了 ResponseHook 的中间件。
+// ★ 返回顺序 = 注册顺序的**逆序**（后注册的在切片前面），因此调用方用正向 for range 遍历即为逆序执行。
+// Adapter 在 Forward 完成后逆序调用其 OnResponse（result 先处理、obs 后记录）。
 func (c *Chain) ResponseHooks(slot Slot) []ResponseHook
 
 // WriteFinal 由 Tail 中间件调用：写入最终响应并置 done=true。
@@ -591,7 +597,9 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
         }
     }
 
-    // 8. ★ 响应处理阶段：执行 Tail 槽位中间件（逆序，result 先处理、obs 后记录）
+    // 8. ★ 响应处理阶段：执行 Tail 槽位中间件。
+    //    ResponseHooks 返回逆序切片（后注册在前），正向 for range 即为逆序执行。
+    //    装配时先注册 obs、后注册 result → result 先执行（改写响应）、obs 后执行（记录最终状态）。
     for _, h := range a.chain.ResponseHooks(chain.Tail) {
         if err := h.OnResponse(ctx); err != nil {
             log.Warn("response hook error", "name", hookName(h), "err", err)
@@ -800,6 +808,11 @@ type MiddlewareLifecycle interface {
     Slot() chain.Slot
 }
 
+// ★ 注意：MiddlewareLifecycle 不包含 State() 方法——中间件的 Enabled/Disabled 状态由
+// Manager 内部通过 `map[name]State` 统一追踪（与 Component.State() 不同，
+// Component 自行持有状态、Manager 直接读取）。Manager 的 Enable/Disable 操作同步此簿记map。
+// 中间件不需要也不应该自行暴露 State()。
+
 // Manager 统一管理所有可切换实体
 type Manager struct {
     chain       *chain.Chain       // 用于中间件的热替换
@@ -852,16 +865,17 @@ type Status struct {
 所有操作统一约定：
 - **原子快照**：链中间件运行态必须存于实例内部的不可变快照（`atomic.Value` / 不可变结构体），`Handle` 每次读取当前快照。`Start(newCfg)` 只整体重建并替换快照，**绝不原地修改共享状态**——保证与在途请求的 `Handle` 并发安全。
 - **排空判定**：Adapter 维护活跃请求计数（`Adapter.ActiveCount()`，请求进入 Handler `+1`、返回前 `-1`，见 §4.4）。hotswap 排空时轮询 `Adapter.ActiveCount() == 0`（上限 10s，超时强制推进并记录告警）。
+- **Start(cfg) 的 cfg 来源**：各实体在构造时已持有 `*conf.Manager` 引用。`Start(cfg)` 中的 `cfg any` 按约定传 `nil`——实体内部自行从 `conf.Manager.Current()` 或自身注册的配置指针读取最新配置后重建快照。Manager 不负责为每个实体"构造特定类型的配置结构体"。
 
 **A. Enable（开启/挂载）**
 1. 收到开启指令（rockctl / admin API / 配置热更事件）。
 2. 实例 `Start(cfg)` 初始化（构造运行态快照）。
-3. Start 成功 → 链中间件：`chain.Replace(slot, [实例])` 挂载；组件：置 `Enabled`。
+3. Start 成功 → 链中间件：`chain.Add(slot, 实例)` 追加到槽位（不影响同槽位其他中间件）；组件：置 `Enabled`。
 4. Start 失败 → 保持 `Disabled`，记录故障 + 告警（不中断服务）。
 
 **B. Disable（关闭/摘除）——统一语义：从链上摘除，绝不"保持挂载但放行"**
 1. 收到关闭指令。
-2. 链中间件：`chain.Replace(slot, nil)` 摘除（在途请求持旧快照继续）；组件：置 `Draining` 等待自身业务排空。
+2. 链中间件：`chain.Remove(name)` 仅移除目标中间件（在途请求持旧快照继续；同槽位其他中间件不受影响）；组件：置 `Draining` 等待自身业务排空。
 3. 排空完成（活跃请求计数归零，上限 10s）→ 调用 `Stop()` 清理资源 → 置 `Disabled`。
 4. 写审计日志（动作/实体/结果/时间）。
 
@@ -1139,7 +1153,7 @@ type RateLimiter struct {
 路径/UA 规则匹配 deny → 403
 路径规则匹配 allow → 跳过限流
 限流检查 → 超限 → 429 Too Many Requests + Retry-After 头
-全部通过 → ctx.Next()
+全部通过 → return true（继续转发链）
 ```
 
 ### 9.3 边界
@@ -1723,6 +1737,10 @@ type MiddleHandle interface {
 // 注册中间件
 srv.AddMiddleHead(middle MiddleHandle)  // 前置
 srv.AddMiddleTail(middle MiddleHandle)  // 后置
+
+// 注册普通 HTTP Handler（不经过中间件链，直接路由到指定函数）
+// ★ 用于 admin API 等独立端点（§8.1）
+srv.AddHandler(pattern string, h func(http.ResponseWriter, *http.Request))
 
 // 内置中间件（注意：均返回 error）
 srv.AddStatic(urlPathBegin, wwwroot string) error  // 静态文件
