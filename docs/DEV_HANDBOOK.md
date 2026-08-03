@@ -42,6 +42,7 @@
 - **配置优先级**：命令行 > 环境变量 > 配置文件(.env) > 内置默认值。
 - **测试**：每章附最小单测（`go test -count=1 ./...`），使用 `httptest.NewServer` 模拟上游。
 - **文件命名**：每包按职责拆文件——`interface.go`（公开接口定义）、`impl.go`（默认实现）、`config.go`（配置结构体与默认值）、`xxx_test.go`（测试）。单文件不超过 500 行。
+- ★ **包名冲突处理**：`easyserver/hotswap`（框架层脚本管理工具，附录 A.6）与 `internal/hotswap`（我们的热运维引擎，第 6 章）包名相同。在 `cmd/rocksys` 等同时 import 两者的包中，必须用 import alias 区分，约定：`"github.com/iotames/easyserver/hotswap"` 别名为 `eshs`（easyserver hotswap），`"rocksys/internal/hotswap"` 用原名 `hotswap`。其他包通常只 import 其一，无需别名。
 
 ### 0.3 包间导入规则（强制）
 
@@ -49,6 +50,7 @@
 |------|------|
 | `plugins/*` 仅允许 import `internal/chain`、`internal/dataflow`、`internal/hotswap`、`internal/conf`（接口与工具层） | internal 是框架私有层；挂件禁止 import 装配层（`internal/engine`、`internal/adminapi`） |
 | `plugins/*` 实现 `internal/*` 中定义的 Go 接口 | 挂件通过接口注入框架，框架不 import 挂件 |
+| ★ 链中间件挂件必须 import `internal/hotswap` | 所有实现 `hotswap.MiddlewareLifecycle` 的挂件（shield/dispatch/result/trace/auth/script/obs）均须依赖 hotswap |
 | `internal/*` 可 import `easyserver`、`easyconf` | 地基库是公共依赖 |
 | `cmd/rocksys` 是唯一装配点 | 唯一可以同时 import internal 和 plugins 的包 |
 | `plugins/*` 之间禁止相互依赖 | 每个挂件独立，通过 dataflow 共享请求上下文 |
@@ -510,6 +512,9 @@ func (c *Chain) ResponseHooks(slot Slot) []ResponseHook
 // WriteFinal 由 Tail 中间件调用：写入最终响应并置 done=true。
 // 若已有中间件写过（done=true）则返回 error；响应头须在调用前设置完。
 func (c *Context) WriteFinal(code int, header http.Header, body []byte) error
+
+// ActiveCount 返回当前活跃请求数（供 hotswap 排空轮询，见 §6.3）
+func (a *Adapter) ActiveCount() int64
 ```
 
 ### 4.4 Adapter（适配 easyserver）—— ★ 转发链唯一入口
@@ -522,6 +527,7 @@ type Adapter struct {
     chain           *Chain
     defaultUpstream string
     forward         func(w http.ResponseWriter, r *http.Request, target string, df *dataflow.DataFlow) error
+    activeCount     atomic.Int64  // ★ 活跃请求计数：Handler 入口 +1、出口 -1，hotswap 排空依赖此计数（§6.3）
 }
 
 // NewAdapter 创建适配器
@@ -530,6 +536,10 @@ func NewAdapter(ch *Chain, defaultUpstream string, forward func(http.ResponseWri
 // Handler 实现 httpsvr.MiddleHandle 接口
 // easyserver 每次请求调用此方法 — 这是 rocksys 处理请求的唯一入口
 func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *httpsvr.DataFlow) (next bool) {
+    // 0. ★ 活跃请求计数 +1（hotswap 排空依赖，见 §6.3）
+    a.activeCount.Add(1)
+    defer a.activeCount.Add(-1)
+
     // 1. 包装 easyserver DataFlow → rocksys DataFlow（BeginAt 已由 easyserver 自动记录）
     df := dataflow.New(innerDF, r)
 
@@ -813,7 +823,7 @@ type Status struct {
 
 所有操作统一约定：
 - **原子快照**：链中间件运行态必须存于实例内部的不可变快照（`atomic.Value` / 不可变结构体），`Handle` 每次读取当前快照。`Start(newCfg)` 只整体重建并替换快照，**绝不原地修改共享状态**——保证与在途请求的 `Handle` 并发安全。
-- **排空判定**：chain/Adapter 维护活跃请求计数（请求进入 Adapter.Handler `+1`、返回前 `-1`），hotswap 排空时轮询该计数归零（上限 10s，超时强制推进并记录告警）。
+- **排空判定**：Adapter 维护活跃请求计数（`Adapter.ActiveCount()`，请求进入 Handler `+1`、返回前 `-1`，见 §4.4）。hotswap 排空时轮询 `Adapter.ActiveCount() == 0`（上限 10s，超时强制推进并记录告警）。
 
 **A. Enable（开启/挂载）**
 1. 收到开启指令（rockctl / admin API / 配置热更事件）。
@@ -840,6 +850,7 @@ type Status struct {
 - Manager 在初始化时订阅 `confMgr.Watch(func(newCfg *Config))`。
 - 收到变更后：逐实体检查其订阅的配置项是否变化 → 命中则走 §6.3 流程 **C（热更）**：构造新配置 → `Start(newCfg)` 替换内部快照。失败回退旧快照。
 - 挂件通过 `conf.Manager.Watch` 自己订阅受影响的配置项（如 dispatch 订阅 `DISPATCH_RULES`），Manager 只负责转发广播。
+- ★ **状态过滤**：hotswap 仅对当前 `State == StateEnabled` 的实体走流程 C（热更）。`StateDisabled` 的实体——即使其配置项已在 conf 中注册——不响应配置热更事件（其配置变更将在下次 `Enable` 时通过 `Start(cfg)` 首次生效）。此过滤避免"未启用的挂件因热更被误唤醒"以及"注册即触发误操作"（§2.2 Register 的重载广播对 Disabled 实体无副作用）。
 
 ### 6.5 验收
 
@@ -1167,6 +1178,11 @@ type RouteTable struct {
 func (d *Dispatch) Slot() chain.Slot { return chain.Middle }
 ```
 
+> ★ **DISPATCH_RULES 配置格式**：配置字符串为逗号分隔的规则列表，每条规则格式为 `<Prefix>=<Upstream>`。
+> - 分隔符 `,` 与 `=` **不可转义**：Prefix 以 `/` 开头，Upstream 以 `http://` 或 `https://` 开头，因此逗号/等号不会出现在 Prefix 或 Upstream 的合法位置。无需转义机制。
+> - 示例：`/api/order/=http://order-svc:9001,/api/user/=http://user-svc:9002`
+> - 空字符串或格式错误 → 路由表为空，所有请求走默认 upstream。
+
 ### 10.2 前缀匹配算法
 
 ```go
@@ -1210,7 +1226,7 @@ curl http://localhost:8080/api/ordering/list
 ## 第 11 章 plugins/result（L3 结果处理）
 
 - **职责**：统一响应格式 `{code, msg, data}`、错误码映射、基础脱敏。
-- **依赖**：`internal/chain`、`internal/dataflow`。
+- **依赖**：`internal/chain`、`internal/dataflow`、`internal/hotswap`。
 
 ### 11.1 关键类型
 
@@ -1301,6 +1317,7 @@ curl -v http://localhost:8080/api/test
 
 - **职责**：KV 配置服务。本地文件默认实现（基于 easyconf），SPI 预留外部后端。
 - **依赖**：`easyconf`、`internal/hotswap`、`internal/conf`。
+- **热切换实体类型**：**独立组件**——实现 `hotswap.Component` 接口（§6.2），由 `mgr.RegisterComponent(config.New(cfgMgr))` 注册（§7.1）。不挂 chain。
 
 ### 关键类型
 
@@ -1498,6 +1515,7 @@ curl http://localhost:8080/block
 
 - **职责**：异步消息可靠投递（无需独立 MQ 即可工作）。
 - **依赖**：`internal/hotswap`、数据库 driver（通过 `*sql.DB` 注入）。
+- **热切换实体类型**：**独立组件**——实现 `hotswap.Component` 接口（§6.2）。
 - **关键类型**：
   - `OutboxStore`：业务库内 outbox 表（`id/topic/payload/status/created_at`）。`func NewOutboxStore(db *sql.DB, tableName string) *OutboxStore`。
   - `PollingDeliverer`：定时轮询 + 直接 HTTP 调用消费方。`func NewPollingDeliverer(store *OutboxStore, interval time.Duration) *PollingDeliverer`。
@@ -1510,6 +1528,7 @@ curl http://localhost:8080/block
 
 - **职责**：本地对象存储。
 - **依赖**：`internal/hotswap`。
+- **热切换实体类型**：**独立组件**——实现 `hotswap.Component` 接口（§6.2）。
 - **关键类型**：`LocalStore`（`baseDir string` + 路径安全校验）。`func NewLocalStore(baseDir string) *LocalStore`。
 - **方法**：`Put(path string, data []byte) error`、`Get(path string) ([]byte, error)`、`Delete(path string) error`。
 - **边界**：路径穿越防护（`filepath.Clean` + 检查不超出 `baseDir`）；大文件不走代理转发（客户端直传）。
@@ -1731,6 +1750,8 @@ log.SetLogWriterByFile("/path/to/log.jsonl")  // 实际签名返回 (f *os.File,
 ```
 
 ### A.6 hotswap（easyserver 层的脚本管理，非我们的 hotswap）
+
+> ★ **包名冲突提示**：本包与 `internal/hotswap`（第 6 章）包名相同。同时 import 时用 `eshs` 别名引入本包（约定见 §0.2）。
 
 ```go
 sd := hotswap.NewScriptDir(embedFs, "dir1", "dir2")
