@@ -1,0 +1,6 @@
+github.com/iotames/miniutils v1.0.11 h1:L/hz+D2RKgZMev2a9pYe0OtQRdXckqxzsG7XdQRIG8Y=
+github.com/iotames/miniutils v1.0.11/go.mod h1:zyMNpw8DuCgwCAo3cdZkKY/W4KK8MpqxuM2JSactp1k=
+golang.org/x/net v0.5.0 h1:GyT4nK/YDHSqa1c4753ouYCDajOYKTja9Xb/OHtgvSw=
+golang.org/x/net v0.5.0/go.mod h1:DivGGAXEgPSlEBzxGzZI+ZLohi+xUj054jfeKui00ws=
+golang.org/x/text v0.6.0 h1:3XmdazWV+ubf7QgHSTWeykHOci5oeekaGJBLkrkaw4k=
+golang.org/x/text v0.6.0/go.mod h1:mrYo+phRRbMaCq/xk9113O4dZlRixOauAjOtrjsXDZ8=
