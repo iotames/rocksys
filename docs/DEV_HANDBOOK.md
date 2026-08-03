@@ -60,7 +60,7 @@
        │
        └→ head 中间件（MiddleHandle）
             │
-            └→ ★ chain 适配器（本章第 4 章）← 这是我们定义的
+            └→ ★ chain 适配器（见第 4 章）← 这是我们定义的
                  │
                  ├→ L1 防护 (plugins/shield)  ─┤
                  ├→ L2 路由 (plugins/dispatch)  ├─ 全部实现 chain.Middleware
@@ -145,6 +145,8 @@ type Manager struct {
     cfg       atomic.Value  // 持有 *Config，并发安全读取
     ec        *easyconf.Conf
     watchers  []func(*Config)  // 热更订阅者
+    args      []string      // ★ 保存 Load 时改写后的命令行参数（映射为 --ROCKSYS_* 注册名），
+                            //   热更重放优先级（§2.4）与 Set 回放（§8.1）依赖它
     // ... 未导出字段
 }
 ```
@@ -162,17 +164,25 @@ func (m *Manager) Current() *Config
 // Watch 订阅配置变更；回调在独立 goroutine 执行
 func (m *Manager) Watch(fn func(*Config))
 
-// StartWatcher 启动配置文件 mtime 轮询（仅 ConfigFile 非空时生效）
-// 轮询间隔默认 3s；检测到 mtime 变更后重新 Parse → 广播
+// StartWatcher 启动配置文件 mtime 轮询。
+// ★ 默认始终监听 ".env"（§2.4）；当 ConfigFile 非空时，额外监听该文件。
+// 轮询间隔默认 3s；检测到 mtime 变更后重新加载 → 广播
 func (m *Manager) StartWatcher() error
 
 // Shutdown 停止热更轮询，阻塞直到后台 goroutine 退出
 func (m *Manager) Shutdown(ctx context.Context) error
 
-// Register 挂件配置项注册（委托 easyconf；name 即环境变量名）
-// 挂件在构造时调用，注册自身配置项（如 SHIELD_RATE_LIMIT_RPS），
-// 注册后自动纳入 .env 读写与热更广播
+// Register 挂件配置项注册（委托 easyconf.addItem；name 即环境变量名）
+// 挂件在构造时调用，注册自身配置项（如 SHIELD_RATE_LIMIT_RPS）。
+// ★ 注册后必须触发一次"重载 + 广播"：easyconf 的 Parse 只执行一次，
+//    main 中挂件注册晚于 conf.Load，若不重载，SHIELD_* 等项永远不会从
+//    环境变量/.env 读入。内部实现：注册项 → SetValuesByEnv + SetValuesByEnvFile(".env")
+//    + 命令行重放（复用 §2.3 重放逻辑）→ 重建 Config → atomic.Value.Store → 广播 watchers。
 func (m *Manager) Register(pval any, name, defval, title string, usage ...string) error
+
+// Set 运行期按注册名全名设值并广播：写 easyconf → 重建 Config → atomic.Value.Store → 广播 watchers。
+// 供 PUT /admin/config（§8.1）与 registry→dispatch 联动（§17）使用。
+func (m *Manager) Set(name, value string) error
 ```
 
 ### 2.3 配置项注册（内部调用 easyconf）
@@ -190,8 +200,13 @@ var shortFlagMap = map[string]string{
 }
 
 func Load(args []string) (*Manager, error) {
-    // 0. 短参数名映射（支持 "--listen=:9090" 与 "--listen :9090" 两种形态）
+    // 0. ★ 短参数名映射（支持 "--listen=:9090" 与 "--listen :9090" 两种形态）。
+    //    easyconf.Parse(true) 内部调用全局 flag.Parse()，解析的是 os.Args[1:]，
+    //    而不是本函数的局部 args——因此必须把映射结果写回 os.Args（进程内唯一入口，安全）。
+    //    ★ 不改写 os.Args 时，`--upstream` 等短名是"未注册 flag"，
+    //      flag 包会打印 "flag provided but not defined" 并 os.Exit(2) 崩溃。
     args = mapShortFlags(args)
+    os.Args = append([]string{os.Args[0]}, args...)
 
     ec := easyconf.NewConf(".env", "default.env")
     cfg := &Config{}
@@ -232,7 +247,11 @@ func Load(args []string) (*Manager, error) {
     }
     // ... 填充 cfg（此处执行单位换算）：
     //     cfg.UpstreamTimeout = time.Duration(timeoutSec) * time.Second
-    //     其余字段直接赋值；最后 atomic.Value.Store(cfg)
+    //     其余字段直接赋值
+    // 保存改写后的 args 到 Manager（热更重放依赖，见 §2.4）：
+    // mgr := &Manager{ec: ec, args: args}
+    // mgr.cfg.Store(cfg)
+    // return mgr, nil
 }
 
 // mapShortFlags 将 --listen 等短名改写为 --ROCKSYS_* 注册名
@@ -244,9 +263,10 @@ func parseArgsToMap(args []string) map[string]string
 
 ### 2.4 热更轮询实现要点
 
-- easyconf 无 Watch 机制，所以用 `os.Stat` 轮询 `.env` 文件的 `ModTime`。
-- 检测到变更后调用 `ec.SetValuesByEnvFile(cfg.ConfigFile)` 重新加载 → 构造新 `Config` → `atomic.Value.Store` → 逐个回调 `watchers`。
-- ★ 与 §2.3 同理：重载后须重放环境变量与命令行值（`SetValuesByEnv()` + 用 Manager 保存的初始 args 重放 `SetItemValue`），保证"命令行 > 环境变量 > 配置文件"优先级在热更路径下不失效。
+- easyconf 无 Watch 机制，所以用 `os.Stat` 轮询配置文件的 `ModTime`。
+- **监听文件**：默认监听 `.env`（`.env` 不存在时 easyconf 会自动创建，故始终存在）；`--config` 指定 ConfigFile 时**额外**监听该文件——两者都触发热更。
+- 检测到变更后调用 `ec.SetValuesByEnvFile(变更文件)` 重新加载 → 构造新 `Config` → `atomic.Value.Store` → 逐个回调 `watchers`。
+- ★ 与 §2.3 同理：重载后须重放环境变量与命令行值（`SetValuesByEnv()` + 用 `m.args`（§2.1，Load 时保存的改写后参数）重放 `SetItemValue`），保证"命令行 > 环境变量 > 配置文件"优先级在热更路径下不失效。
 - 轮询间隔 3s，用 `time.Ticker` + `context.CancelFunc` 控制生命周期。
 
 ### 2.5 配置项速查表
@@ -480,7 +500,7 @@ func (c *Chain) Replace(slot Slot, newList []Middleware)
 func (c *Chain) Execute(ctx *Context) (shouldForward bool)
 
 // HasResponseHook 判断指定槽位是否存在实现了 ResponseHook 的中间件。
-// Adapter 据此决定是否缓冲上游响应体（§4.4 步骤 6）。
+// Adapter 据此决定是否缓冲上游响应体（§4.4 步骤 7a）。
 func (c *Chain) HasResponseHook(slot Slot) bool
 
 // ResponseHooks 返回指定槽位中实现了 ResponseHook 的中间件（持读锁遍历）。
@@ -505,7 +525,7 @@ type Adapter struct {
 }
 
 // NewAdapter 创建适配器
-func NewAdapter(ch *Chain, defaultUpstream string, forward func(w, r, target string, df) error) *Adapter
+func NewAdapter(ch *Chain, defaultUpstream string, forward func(http.ResponseWriter, *http.Request, string, *dataflow.DataFlow) error) *Adapter
 
 // Handler 实现 httpsvr.MiddleHandle 接口
 // easyserver 每次请求调用此方法 — 这是 rocksys 处理请求的唯一入口
@@ -573,6 +593,10 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 ```
 
 > 上文中 `respBufferWriter` / `newRespBufferWriter` / `copyHeader` / `hookName` 为**示意性 helper**，命名与实现可自由调整，但必须满足：`respBufferWriter` 实现 `http.ResponseWriter` 且能记录 status/header/body 三者；`ctx.done` 在任意 Tail 中间件调用 `ctx.WriteFinal` 后被置位（§4.3）。
+>
+> ★ **Tail 执行顺序与缓冲上限**：
+> - 执行顺序 = 注册顺序的**逆序**（后注册的先执行）。装配时务必**先注册 obs、后注册 result**（result 后注册 → 先执行 → 改写响应；obs 先注册 → 后执行 → 记录最终状态）。若顺序颠倒，obs 会记录到未脱敏的原始响应。
+> - `respBufferWriter` 应设**缓冲上限**（建议 4MB）：超出上限时停止缓冲并直写客户端，`ctx.RespBody` 标记截断，防止大响应体撑爆内存（小响应场景不影响）。
 
 ### 4.5 Target 决策规则
 
@@ -585,6 +609,7 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 ### 4.6 边界
 
 - `Replace` 原子替换：构造新切片 → 持写锁整体替换 `segments[slot]`（§4.2 的 `mu`）→ 在途请求（Execute 持读锁遍历旧切片）继续使用旧快照。
+  ⚠ Tail 阶段 `ResponseHooks` 在 Forward 完成后才获取，极端并发下可能与转发前的 Head/Middle 属不同代快照；对 result/obs 无实际危害（Tail 只读响应与 DataFlow），不必为此加同步。
 - 中间件禁止跨请求共享可变状态（状态放 DataFlow）。
 - ★ **中间件执行超时**：chain 不做 goroutine 超时（goroutine 无法被强制终止，会泄漏且继续执行副作用）。需要超时保护的中间件自行实现——如 script 执行 Lua 时用 `lua.ContextDeadline` / `context.WithTimeout` 内部控制（默认 100ms，见 §15）。
 - **响应缓冲**：仅当 Tail 槽位存在 `ResponseHook` 中间件时，Adapter 才缓冲上游响应体（§4.4 步骤 7a）。无 `ResponseHook` 时直接流式写回，零缓冲开销。
@@ -666,6 +691,8 @@ func (df *DataFlow) BizMs() int64      // DoneBizAt - BeginBizAt
 func (df *DataFlow) TotalMs() int64    // DoneBizAt - BeginAt
 ```
 
+> ★ **"仅写一次、重复调用忽略"的实现规则**：`inner.SetData` 对可重写 key 是**覆盖**语义（见 easyserver dataflow.go），因此 `SetBeginBizAt/SetDoneBizAt` 必须先 `inner.GetData(key)` 判断该 key 是否已存在，存在则直接返回、不存在才 `SetData`——否则多次调用会覆盖取点，破坏 §5.4 的精度验收。其余写方法（SetTraceID/SetTenantID/SetTarget/Set）同理，遵循"可覆盖，但不允许破坏写一次语义"即可。
+
 ### 5.3 时间戳取点位置（严格遵守）
 
 ```
@@ -699,10 +726,13 @@ go test -count=1 ./internal/dataflow/...
 
 ### 6.1 两类热切换实体（核心区分）
 
-| 实体类型 | 管理方式 | 切换路径 |
-|---------|---------|---------|
-| **独立组件**（obs/config/script/auth/registry/mq/object） | hotswap.Manager 注册 | Manager.Enable/Disable → Component.Start/Stop |
-| **链中间件**（shield/dispatch/result/trace） | chain.Replace 替换 | Manager 调用 chain.Replace + MiddlewareLifecycle |
+| 实体类型 | 实体 | 管理方式 | 切换路径 |
+|---------|------|---------|---------|
+| **链中间件**（挂在 chain 槽位，实现 MiddlewareLifecycle） | shield / dispatch / result / trace / auth / script / obs | `RegisterMiddleware` | Enable：`Start(cfg)` + `chain.Replace(slot, [实例])` 挂载；Disable：`chain.Replace(slot, nil)` 摘除 + `Stop()`；热更：`Start(newCfg)` 重载实例内部原子快照 |
+| **独立组件**（自管理生命周期，实现 Component） | config / registry / mq / object | `RegisterComponent` | Enable/Disable → `Component.Start/Stop`，不挂 chain |
+
+> ★ 判定依据：凡需要**在每个请求/响应上做事的实体**（防护/路由/结果/日志/鉴权/脚本）必须是**链中间件**；
+> 只有**不参与单请求处理**的后台服务（KV 配置、注册中心、消息、对象存储）才是**独立组件**。
 
 ### 6.2 关键类型
 
@@ -716,7 +746,7 @@ const (
     StateDraining  // 排空中：不再接受新请求，等待存量完成
 )
 
-// Component 独立组件接口（obs/config/script 等实现此接口）
+// Component 独立组件接口（config/registry/mq/object 实现此接口）
 type Component interface {
     Name() string
     Start(cfg any) error
@@ -724,12 +754,13 @@ type Component interface {
     State() State
 }
 
-// MiddlewareLifecycle 链中间件接口（shield/dispatch/result/trace 实现此接口）
+// MiddlewareLifecycle 链中间件接口（shield/dispatch/result/trace/auth/script/obs 实现此接口）
 // 中间件实现 chain.Middleware + 此接口即可被 hotswap 管理生命周期
 type MiddlewareLifecycle interface {
     chain.Middleware
     // Start 用新配置重新初始化【本实例】（挂件实例可复用，不存在"新/旧实例"两套）。
-    // hotswap 在启用/热更时调用；成功后由 Manager 用同一实例 chain.Replace 挂载（§6.3）。
+    // 内部必须用不可变快照承载运行状态（如 dispatch 的 RouteTable 整体重建后 atomic 替换），
+    // 保证 Start 与在途请求的 Handle 并发安全（§6.3）。
     Start(cfg any) error
     // Stop 清理资源（如关闭文件、清空连接池）
     Stop() error
@@ -752,7 +783,8 @@ func NewManager(ch *chain.Chain, cfgMgr *conf.Manager) *Manager
 // RegisterComponent 注册独立组件
 func (m *Manager) RegisterComponent(c Component)
 
-// RegisterMiddleware 注册链中间件（同时注册到 chain）
+// RegisterMiddleware 注册链中间件（注册进 hotswap 管理，默认 Disabled，不自动挂载；
+// 由 Enable 触发 Start + chain.Replace 挂载，见 §6.3 流程 A）
 func (m *Manager) RegisterMiddleware(ml MiddlewareLifecycle)
 
 // Enable / Disable 切换（适用两种实体）
@@ -777,19 +809,37 @@ type Status struct {
 }
 ```
 
-### 6.3 热切换流程（两种实体统一）
+### 6.3 热切换流程（三种操作语义）
 
-1. 收到指令（rockctl API 调用或配置热更事件）。
-2. 目标实体置 `Draining`：停止接受新请求（中间件：先 `chain.Replace(slot, nil)` 从链上摘除，在途请求仍持旧快照运行；组件：置状态禁止新业务），等待存量完成（上限 10s，超时强制推进并记录告警）。
-3. 用新配置调用**同一实例**的 `Start(cfg)`（挂件可复用，重新初始化内部状态，如重新加载路由表/黑白名单）。
-4. Start 成功 → 原子替换：中间件 `chain.Replace(slot, []Middleware{实例})` 重新挂载；组件直接进入 `Enabled`。无需 Stop 旧实例（同一实例）。
-5. Start 失败 → 实例保持 `Disabled`（或恢复到停用前配置），**服务不中断**。记录故障 + 告警。
-6. 写审计日志（动作/实体/结果/时间）。
+所有操作统一约定：
+- **原子快照**：链中间件运行态必须存于实例内部的不可变快照（`atomic.Value` / 不可变结构体），`Handle` 每次读取当前快照。`Start(newCfg)` 只整体重建并替换快照，**绝不原地修改共享状态**——保证与在途请求的 `Handle` 并发安全。
+- **排空判定**：chain/Adapter 维护活跃请求计数（请求进入 Adapter.Handler `+1`、返回前 `-1`），hotswap 排空时轮询该计数归零（上限 10s，超时强制推进并记录告警）。
+
+**A. Enable（开启/挂载）**
+1. 收到开启指令（rockctl / admin API / 配置热更事件）。
+2. 实例 `Start(cfg)` 初始化（构造运行态快照）。
+3. Start 成功 → 链中间件：`chain.Replace(slot, [实例])` 挂载；组件：置 `Enabled`。
+4. Start 失败 → 保持 `Disabled`，记录故障 + 告警（不中断服务）。
+
+**B. Disable（关闭/摘除）——统一语义：从链上摘除，绝不"保持挂载但放行"**
+1. 收到关闭指令。
+2. 链中间件：`chain.Replace(slot, nil)` 摘除（在途请求持旧快照继续）；组件：置 `Draining` 等待自身业务排空。
+3. 排空完成（活跃请求计数归零，上限 10s）→ 调用 `Stop()` 清理资源 → 置 `Disabled`。
+4. 写审计日志（动作/实体/结果/时间）。
+
+**C. 热更（配置变更，实例不摘除）**
+1. 收到配置热更事件（Manager 订阅 `confMgr.Watch`）。
+2. 判定本实体受影响的配置项是否变化 → 是则继续。
+3. 构造新配置 → 调用实例 `Start(newCfg)`（内部整体重建快照并原子替换）。
+4. Start 成功 → 完成（实例仍在链上，新快照对后续请求生效，无需 chain.Replace）。
+5. Start 失败 → 保留旧快照（实例继续以旧配置服务），记录故障 + 告警。
+6. 写审计日志。
 
 ### 6.4 配置热更
 
 - Manager 在初始化时订阅 `confMgr.Watch(func(newCfg *Config))`。
-- 收到变更后：逐实体检查是否被热更涉及的配置项影响 → 触发对应实体的 Disable/Enable 或中间件替换。
+- 收到变更后：逐实体检查其订阅的配置项是否变化 → 命中则走 §6.3 流程 **C（热更）**：构造新配置 → `Start(newCfg)` 替换内部快照。失败回退旧快照。
+- 挂件通过 `conf.Manager.Watch` 自己订阅受影响的配置项（如 dispatch 订阅 `DISPATCH_RULES`），Manager 只负责转发广播。
 
 ### 6.5 验收
 
@@ -820,9 +870,12 @@ package main
 
 import (
     "context"
+    "log/slog"
     "os"
     "os/signal"
+    "strings"
     "syscall"
+    "time"
 
     "rocksys/internal/conf"
     "rocksys/internal/chain"
@@ -850,20 +903,23 @@ func main() {
     // 4. 创建 hotswap 管理器（订阅配置热更）
     mgr := hotswap.NewManager(ch, cfgMgr)
 
-    // 5. 注册挂件（按配置开关，默认调用 Disable）
-    // mgr.RegisterMiddleware(shield.New(cfgMgr))
-    // mgr.RegisterMiddleware(dispatch.New(cfgMgr))
-    // mgr.RegisterMiddleware(result.New(cfgMgr))
-    // mgr.RegisterComponent(obs.New(cfgMgr))
-    // ... 随 P1/P2 逐步注册
+    // 5. 注册挂件（链中间件用 RegisterMiddleware，独立组件用 RegisterComponent；见 §6.1）
+    // mgr.RegisterMiddleware(shield.New(cfgMgr))   // L1 防护 → chain.Head
+    // mgr.RegisterMiddleware(dispatch.New(cfgMgr)) // L2 路由 → chain.Middle
+    // mgr.RegisterMiddleware(result.New(cfgMgr))   // L3 结果 → chain.Tail(+ResponseHook)
+    // mgr.RegisterMiddleware(trace.New(cfgMgr))    // trace 透传 → chain.Head
+    // mgr.RegisterMiddleware(script.New(cfgMgr))   // Lua 策略 → chain.Middle
+    // mgr.RegisterMiddleware(obs.New(cfgMgr))      // 访问日志/指标 → chain.Tail(+ResponseHook)
+    // mgr.RegisterComponent(config.New(cfgMgr))    // KV 配置服务 → 独立组件
+    // ... 随 P1/P2 逐步注册（auth → Head；registry/mq/object → 独立组件）
 
     // 5a. 启动 admin API（独立 listener，回环地址，见第 8 章）
     // adminSrv := adminapi.New(mgr, cfgMgr)
     // go adminSrv.ListenAndServe()
 
-    // 6. 启动配置热更监听
-    if cfgMgr.Current().ConfigFile != "" {
-        cfgMgr.StartWatcher()
+    // 6. 启动配置热更监听（★ 始终启动：默认监听 .env；--config 指定时额外监听该文件，见 §2.4）
+    if err := cfgMgr.StartWatcher(); err != nil {
+        log.Error("start config watcher", "err", err)
     }
 
     // 7. 启动 HTTP 监听
@@ -939,6 +995,22 @@ curl http://localhost:8080/  # → 200，来自 9000 的响应
 > 用 `AddHandler` 注册 admin 端点后 `ListenAndServe`；该实例**不得注册 chain 适配器**（不是主代理）。
 > 优雅停机复用 §1.0 新增的 `Shutdown`/`Close`，在 main 的停机流程中调用（§7.1 步骤 8a）。
 > admin 端点仅监听 `127.0.0.1`，不与主代理端口复用。
+
+> **插件端点注册机制**（保持 §0.3 约束——adminapi 不得 import plugins）：
+> `adminapi` 提供通用注册入口，由 `cmd/rocksys`（唯一装配点）在启动时把挂件的 handler 注入：
+> ```go
+> // adminapi 包内：
+> func (s *AdminServer) RegisterPlugin(path string, h func(http.ResponseWriter, *http.Request))
+>
+> // cmd/rocksys 装配时：
+> // obsAdmin := obs.NewAdminHandler(cfgMgr)
+> // adminSrv.RegisterPlugin("/admin/metrics", obsAdmin.Metrics)
+> // adminSrv.RegisterPlugin("/admin/logs", obsAdmin.Logs)
+> // scriptAdmin := script.NewAdminHandler(cfgMgr)
+> // adminSrv.RegisterPlugin("/admin/script/publish", scriptAdmin.Publish)
+> // adminSrv.RegisterPlugin("/admin/script/rollback", scriptAdmin.Rollback)
+> ```
+> 各挂件包的 `NewAdminHandler(cfgMgr)` 返回自身 admin handler 集合；`PUT /admin/config` 由 adminapi 内建，调用 `conf.Manager.Set`（§2.2）实现。
 
 | 方法 | 路径 | 请求体 | 响应 | 说明 |
 |------|------|--------|------|------|
@@ -1033,9 +1105,9 @@ type RateLimiter struct {
 
 ### 9.3 边界
 
-- 关闭（disabled）：Handle 直接返回 true，请求直通。
+- 关闭（disabled）：**从链上摘除**（hotswap 流程 B，§6.3），不再被调用——不是"Handle 返回 true 保持挂载"。摘除后请求直通。
 - 限流键数量上限 10000，LRU 淘汰防内存膨胀。
-- 规则热更：通过 hotswap 重新注册（Stop → Start with new config）。
+- 规则热更：hotswap 流程 C（§6.3）——重建规则快照，`Start(newCfg)` 内部原子替换。
 
 ### 9.4 配置项
 
@@ -1110,7 +1182,7 @@ func (rt *RouteTable) Match(path string) (upstream string, ok bool) {
 
 ### 10.3 边界
 
-- 路由表热更：hotswap 触发 chain.Replace（用新 RouteTable 替换旧 Dispatch 实例）。
+- 路由表热更：hotswap 流程 C（§6.3）——`Start(newCfg)` 重建 RouteTable 并**原子替换实例内部快照**，无需 chain.Replace（实例保持挂载在 Middle 槽）。
 - **Target 写入约定**：dispatch 是唯一写入者，通过 `ctx.DF.SetTarget(target)` 写入 DataFlow。Adapter 从 `df.Target()` 读取。其余组件只读。
 
 ### 10.4 验收
@@ -1274,6 +1346,7 @@ curl http://127.0.0.1:19527/admin/config
 - **Slot 挂载位置**：`chain.Tail`，且实现 `chain.ResponseHook`——**这是 obs 获得"请求完成事件"的唯一通道**：
   `OnResponse(ctx)` 在 Forward 完成后被调用，此时 `ctx.RespCode/RespHeader/RespBody` 与 `ctx.DF` 三时间戳均已就绪，obs 据此构造 `AccessLog` 异步落盘。
   其 `chain.Middleware.Handle` 返回 false 占位（不参与转发前逻辑）。
+  注册方式：`mgr.RegisterMiddleware(obs.New(cfgMgr))`（§7.1 步骤 5），装配顺序**先于** result（§4.4 执行顺序说明）。
 
 ### 关键类型
 
@@ -1322,6 +1395,8 @@ func (o *Obs) Shutdown(ctx context.Context) error
 
 ### Admin API
 
+> 以下端点经 `adminapi.RegisterPlugin` 注册（§8.1 插件端点注册机制），由 obs 包提供 handler。
+
 - `GET /admin/metrics` → `{"qps":123.4,"p95_ms":45,"error_rate":0.01}`
 - `GET /admin/logs?from=2024-01-01&to=2024-01-02` → 返回 JSONL
 
@@ -1340,7 +1415,8 @@ ls logs/
 ## 第 15 章 plugins/script（RockScript）
 
 - **职责**：Lua 策略引擎（安全规则/路由改写/分流/临时重定向）。**禁止承载业务逻辑。**
-- **依赖**：`gopher-lua`、`internal/chain`、`internal/dataflow`。
+- **依赖**：`gopher-lua`、`internal/chain`、`internal/dataflow`、`internal/hotswap`、`internal/conf`。
+- **挂载方式**：**链中间件**——实现 `chain.Middleware` + `hotswap.MiddlewareLifecycle`，`Slot() = chain.Middle`（路由分发后、转发前执行，可改写 Target 或直接响应）。每请求 `Handle` 执行匹配的 Lua 脚本（默认超时 100ms，用 `lua.ContextDeadline` / `context.WithTimeout` 控制，见 §4.6）；`Start(newCfg)` 重建脚本快照并原子替换。
 
 ### 关键类型
 
@@ -1409,7 +1485,7 @@ curl http://localhost:8080/block
 
 - **职责**：服务注册与发现。实现 `hotswap.Component` 接口。
 - **依赖**：`internal/hotswap`、`internal/conf`、`internal/chain`（联动 dispatch 时）。
-- **与 dispatch 的联动机制**：registry 自身不直接改 dispatch。实例变更经 **配置热更通道** 传递——registry 把最新实例列表写入 `conf.Manager` 的某个配置项（如 `ROCKSYS_DISPATCH_RULES` 的注册名全名），dispatch 通过 `conf.Manager.Watch` 订阅到变更后重建 `RouteTable` 并触发自身热更（§6.3 步骤 3-4：`Start(newCfg)` + `chain.Replace`）。这样 registry→dispatch 解耦，且天然复用已有热更/审计链路。
+- **与 dispatch 的联动机制**：registry 自身不直接改 dispatch。实例变更经 **配置热更通道** 传递——registry 把最新实例列表写入 `conf.Manager` 的某个配置项（如 `ROCKSYS_DISPATCH_RULES` 的注册名全名），dispatch 通过 `conf.Manager.Watch` 订阅到变更后走 §6.3 流程 C：`Start(newCfg)` 重建 RouteTable 并原子替换内部快照（无需 chain.Replace，实例保持挂载）。这样 registry→dispatch 解耦，且天然复用已有热更/审计链路。
 - **关键类型**：
   - `StaticTable`（默认）：YAML/JSON 静态实例列表。`func NewStaticTable(path string) *StaticTable`。
   - `Server`：内置轻量注册服务（HTTP API：`POST /register` + `PUT /heartbeat`）。`func NewServer(addr string) *Server`。
@@ -1516,6 +1592,9 @@ curl http://localhost:8080/api/test  # → 200，裸转发
 ### 23.2 全链路压测
 
 ```bash
+# 前置：先启动上游（任意本地 echo 服务即可，如 examples/stbiz_hello 的 localhost:9000），
+#       再启动 rocksys --upstream http://127.0.0.1:9000，最后开始压测。
+
 # 工具：hey（github.com/rakyll/hey）
 hey -n 10000 -c 100 http://localhost:8080/api/test
 
