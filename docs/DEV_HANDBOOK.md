@@ -180,6 +180,14 @@ func (m *Manager) Shutdown(ctx context.Context) error
 //    main 中挂件注册晚于 conf.Load，若不重载，SHIELD_* 等项永远不会从
 //    环境变量/.env 读入。内部实现：注册项 → SetValuesByEnv + SetValuesByEnvFile(".env")
 //    + 命令行重放（复用 §2.3 重放逻辑）→ 重建 Config → atomic.Value.Store → 广播 watchers。
+// ★ 重建 Config 要点：easyconf 绑定变量（包括固定字段和挂件注册项）在重载时已被自动写入，
+//    因此重建 Config 就是重新从这些变量取值并组装：底座字段直接赋值，
+//    UpstreamTimeout 重复秒→Duration 换算（与 §2.3 Load 相同逻辑）。
+//    挂件注册项不回填 Config 结构体——它们由挂件自行持有指针引用读取（见下方"挂件读取"）。
+//
+// ★ 挂件如何读取自身配置：挂件在 Register 时传入的 pval 是挂件结构体内部字段的指针
+//   （如 &s.RateLimitRPS），easyconf 写入 .env 或环境变量值时自动更新该指针指向的值。
+//   挂件直接读自己的字段即可——无需通过 conf.Manager.Current() 读取（Config 不含挂件配置项）。
 func (m *Manager) Register(pval any, name, defval, title string, usage ...string) error
 
 // Set 运行期按注册名全名设值并广播：写 easyconf → 重建 Config → atomic.Value.Store → 广播 watchers。
@@ -602,7 +610,21 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 }
 ```
 
-> 上文中 `respBufferWriter` / `newRespBufferWriter` / `copyHeader` / `hookName` 为**示意性 helper**，命名与实现可自由调整，但必须满足：`respBufferWriter` 实现 `http.ResponseWriter` 且能记录 status/header/body 三者；`ctx.done` 在任意 Tail 中间件调用 `ctx.WriteFinal` 后被置位（§4.3）。
+> 上文中 `respBufferWriter` / `newRespBufferWriter` / `copyHeader` / `hookName` 为**示意性 helper**，命名与实现可自由调整，但必须满足以下规格：
+>
+> **respBufferWriter 实现规格**（实现 `http.ResponseWriter`）：
+> - **Header()**：返回可修改的 `http.Header` 对象，`WriteHeader` 调用后仍可读取（与 `httptest.ResponseRecorder` 行为一致）。
+> - **WriteHeader(code int)**：记录状态码。**重复调用忽略**（不 panic，不覆盖首次记录的 code），与 `http.ResponseWriter` 的"superfluous"行为不同，此处为防御性设计——Forward 内部可能多次尝试写响应头。
+> - **Write(data []byte)**：2 阶段——
+>   1. 缓冲区未满（≤ 4MB）：追加到内部 buffer。
+>   2. 缓冲区满：**停止缓冲**，后续数据直写底层 `http.ResponseWriter`（不再追加到 buffer），同时设置截断标记（`ctx.RespBody` 将被标记为截断状态）。
+> - **可选接口**：不实现 `http.Hijacker`、`http.Flusher`（代理场景下无长连接/流式需求，Forward 已排除 WebSocket）。
+> - **Status() / Header() / Body()**：供 Adapter 在 Forward 完成后读取缓冲结果。
+>
+> **Forward 失败时的缓冲状态契约**：
+> - Forward 在判定 502/504/其他不可恢复错误后，**先通过 `w.WriteHeader` + `w.Write` 写入完整错误响应**，再返回 error。
+> - 因此当 §4.4 步骤 7a 中 Forward 返回 error 时，`bufW` 已包含完整 HTTP 响应（状态码 + 头 + 体），`ctx.RespCode/RespHeader/RespBody` 可直接读取，Tail 中间件可正常处理（包括改写）。
+> - 这与 §3.4 Forward 注释中的语义一致："Forward 内部在收到上游响应（或判定 502/504 失败）后、写回客户端之前取点"——失败路径同样走完整写入流程。
 >
 > ★ **Tail 执行顺序与缓冲上限**：
 > - 执行顺序 = 注册顺序的**逆序**（后注册的先执行）。装配时务必**先注册 obs、后注册 result**（result 后注册 → 先执行 → 改写响应；obs 先注册 → 后执行 → 记录最终状态）。若顺序颠倒，obs 会记录到未脱敏的原始响应。
@@ -800,6 +822,12 @@ func (m *Manager) RegisterMiddleware(ml MiddlewareLifecycle)
 // Enable / Disable 切换（适用两种实体）
 func (m *Manager) Enable(name string) error
 func (m *Manager) Disable(name string) error
+
+// GetMiddleware / GetComponent 按名称获取已注册实例。
+// ★ 供 admin handler 操作特定实例使用（如 script publish 需拿到 *script.Engine 执行编译），
+//   避免在装配代码中手动传递引用链条。返回 nil 表示未注册。
+func (m *Manager) GetMiddleware(name string) MiddlewareLifecycle
+func (m *Manager) GetComponent(name string) Component
 
 // List 列出所有实体状态
 func (m *Manager) List() []Status
@@ -1017,11 +1045,11 @@ curl http://localhost:8080/  # → 200，来自 9000 的响应
 > // obsAdmin := obs.NewAdminHandler(cfgMgr)
 > // adminSrv.RegisterPlugin("/admin/metrics", obsAdmin.Metrics)
 > // adminSrv.RegisterPlugin("/admin/logs", obsAdmin.Logs)
-> // scriptAdmin := script.NewAdminHandler(cfgMgr)
+> // scriptAdmin := script.NewAdminHandler(mgr)          // ★ 传入 hotswap.Manager 以获取 script Engine 实例
 > // adminSrv.RegisterPlugin("/admin/script/publish", scriptAdmin.Publish)
 > // adminSrv.RegisterPlugin("/admin/script/rollback", scriptAdmin.Rollback)
 > ```
-> 各挂件包的 `NewAdminHandler(cfgMgr)` 返回自身 admin handler 集合；`PUT /admin/config` 由 adminapi 内建，调用 `conf.Manager.Set`（§2.2）实现。
+> 各挂件包的 `NewAdminHandler` 函数签名——对链中间件挂件：应传入 `*hotswap.Manager`（内部通过 `mgr.GetMiddleware("script")` 获取实例）；对独立组件挂件：同样传入 `*hotswap.Manager`（通过 `mgr.GetComponent("config")` 获取实例）。`/admin/metrics` 与 `/admin/logs` 需要读取 obs 实例的指标数据，按同模式传入 Manager。`PUT /admin/config` 由 adminapi 内建，调用 `conf.Manager.Set`（§2.2）实现。
 
 | 方法 | 路径 | 请求体 | 响应 | 说明 |
 |------|------|--------|------|------|
