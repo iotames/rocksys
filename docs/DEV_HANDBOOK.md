@@ -18,6 +18,7 @@
 
 - P0（第 1-8 章）完成后即交付"最小可用"：`rocksys --upstream 127.0.0.1:8080` 裸代理 + 热开关能力。
 - P1（第 9-15 章）为标准形态；P2（第 16-19 章）按需开启，可后置或砍掉。
+- ★ **编译依赖说明**：第 3 章 `engine.New(cfgMgr, ch *chain.Chain)` 和 `Forward(df *dataflow.DataFlow)` 引用了第 4/5 章才定义的类型。第 3 章实现时需**同时创建** `chain.Chain` 和 `dataflow.DataFlow` 的最小骨架类型（仅结构体+字段声明，不带方法），使 Go 编译器通过。完整方法在第 4/5 章定义后补全。这是一种常见的"预声明编译桩"模式——骨架定义 30 行即可，不影响独立可交付性。
 
 ### 0.2 全局约定
 
@@ -193,6 +194,9 @@ func (m *Manager) Shutdown(ctx context.Context) error
 //   *int    → ec.IntVar(pval, name, strconv.Atoi(defval), ...)
 //   *bool   → ec.BoolVar(pval, name, strconv.ParseBool(defval), ...)
 //   其他类型 → 返回 error。实现参考：switch pval.(type) + strconv。
+// ★ 实现提示：Register 内部重载逻辑与 §2.3 Load 的"加载→重放"流程高度相似。
+//   建议 extract 公共方法 `reloadFromEnvFile(m *Manager)` 在 Load 和 Register 两处复用，
+//   避免"重建 Config + Duration 换算"代码在两处散落。
 func (m *Manager) Register(pval any, name, defval, title string, usage ...string) error
 
 // Set 运行期按注册名全名设值并广播：写 easyconf → 重建 Config → atomic.Value.Store → 广播 watchers。
@@ -603,6 +607,8 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
     for _, h := range a.chain.ResponseHooks(chain.Tail) {
         if err := h.OnResponse(ctx); err != nil {
             log.Warn("response hook error", "name", hookName(h), "err", err)
+            // ★ hookName(h) 实现：h 实际实现 chain.Middleware（Name()），
+            //   通过类型断言 h.(chain.Middleware).Name() 获取；断言失败回退 "unknown"
         }
     }
 
@@ -1049,6 +1055,32 @@ curl http://localhost:8080/  # → 200，来自 9000 的响应
 > 优雅停机复用 §1.0 新增的 `Shutdown`/`Close`，在 main 的停机流程中调用（§7.1 步骤 8a）。
 > admin 端点仅监听 `127.0.0.1`，不与主代理端口复用。
 
+#### 8.1.0 关键类型
+
+```go
+package adminapi
+
+// AdminServer 管理接口服务器
+type AdminServer struct {
+    srv     *easyserver.Server   // 独立 easyserver 实例（回环地址）
+    confMgr *conf.Manager        // ★ 用于内建 PUT /admin/config（调用 conf.Manager.Set）
+}
+
+// New 创建 Admin 服务器，自动注册内建端点（/admin/switch/on|off|list、/admin/config GET|PUT）。
+// ★ plugin 端点（/admin/metrics、/admin/script/*）不在 New 中注册——由 cmd/rocksys 装配时通过 RegisterPlugin 注入。
+func New(addr string, confMgr *conf.Manager) *AdminServer
+
+// ListenAndServe 启动独立 HTTP listener（阻塞，通常 go 调用）
+func (s *AdminServer) ListenAndServe() error
+
+// Shutdown 优雅停机
+func (s *AdminServer) Shutdown(ctx context.Context) error
+
+// RegisterPlugin 注册挂件提供的 admin 端点（由 cmd/rocksys 装配时调用）。
+// ★ 返回值 error：仅用于告知注册失败（如路径冲突）；与其他 easyserver 方法一致（AddHandler 返回 error）。
+func (s *AdminServer) RegisterPlugin(path string, h func(http.ResponseWriter, *http.Request)) error
+```
+
 > **插件端点注册机制**（保持 §0.3 约束——adminapi 不得 import plugins）：
 > `adminapi` 提供通用注册入口，由 `cmd/rocksys`（唯一装配点）在启动时把挂件的 handler 注入：
 > ```go
@@ -1231,8 +1263,10 @@ func (d *Dispatch) Slot() chain.Slot { return chain.Middle }
 func (rt *RouteTable) Match(path string) (upstream string, ok bool) {
     // 1. path 末尾补 "/"（统一处理）
     //    例："/api/order" → "/api/order/"
+    //    ★ 例外：根路径 "/" 不补 "/"——"/" 匹配 Prefix "/" 的路由
     // 2. Prefix 也要求以 "/" 结尾才算完整段
     //    例：Prefix "/api/order/" 匹配 "/api/order/123"，不匹配 "/api/ordering/123"
+    //    例外：Prefix "/" 匹配所有未命中其他路由的路径（兜底路由）
     // 3. 从 rules 中找到匹配的最长前缀
     // 4. 返回对应 Upstream
 }
@@ -1445,6 +1479,8 @@ type Metrics struct {
 func (o *Obs) Shutdown(ctx context.Context) error
 ```
 进程退出前必须调用 `Shutdown`，防止丢失还在内存缓冲区的日志。
+
+> ★ **与 MiddlewareLifecycle.Stop() 桥接**：`hotswap.MiddlewareLifecycle.Stop() error` 不接收 context，而 `Shutdown` 需要超时控制（flush 缓冲）。obs 应额外暴露 `Stop() error` 方法，内部调用 `Shutdown(context.Background())`。hotswap Disable 流程通过 `MiddlewareLifecycle.Stop()` 优雅 flush（阻塞至 flush 完成）；若需超时，在 obs 内部 `Shutdown` 中自行设置 deadline。
 
 ### 文件管理
 
