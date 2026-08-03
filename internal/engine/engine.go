@@ -19,10 +19,11 @@ import (
 // Engine 反向代理引擎，封装 *easyserver.Server（即 *httpsvr.EasyServer）。
 // 无任何业务逻辑，负责 HTTP 转发与生命周期管理。
 type Engine struct {
-	server *easyserver.Server // 底层 HTTP 服务器
-	chain  *chain.Chain       // 转发链
-	conf  conf.Manager        // 配置管理器
-	pool   *UpstreamPool      // 上游连接池
+	server  *easyserver.Server // 底层 HTTP 服务器
+	chain   *chain.Chain       // 转发链
+	conf    conf.Manager       // 配置管理器
+	pool    *UpstreamPool      // 上游连接池
+	adapter *chain.Adapter     // 转发链适配器（活跃请求计数，供 hotswap 排空轮询）
 }
 
 // New 创建引擎：装配 easyserver + 注册 chain 适配器为 head 中间件。
@@ -30,9 +31,14 @@ func New(cfgMgr conf.Manager, c *chain.Chain) *Engine {
 	cfg := cfgMgr.Current()
 	srv := easyserver.NewServer(cfg.ListenAddr)
 	e := &Engine{server: srv, chain: c, conf: cfgMgr, pool: newUpstreamPool()}
-	adapter := chain.NewAdapter(c, cfg.DefaultUpstream, e.Forward)
-	srv.AddMiddleHead(adapter)
+	e.adapter = chain.NewAdapter(c, cfg.DefaultUpstream, e.Forward)
+	srv.AddMiddleHead(e.adapter)
 	return e
+}
+
+// ActiveCount 返回当前活跃请求数（供 hotswap 排空轮询）。
+func (e *Engine) ActiveCount() int64 {
+	return e.adapter.ActiveCount()
 }
 
 // ListenAndServe 启动 HTTP 监听（委托给内部 *easyserver.Server）。
