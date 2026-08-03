@@ -1,3 +1,7 @@
 .reasonix/
 .crush/
 .vscode/
+
+# 配置测试副作用
+.env
+default.env
