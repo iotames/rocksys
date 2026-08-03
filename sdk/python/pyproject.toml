@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rockbiz"
+version = "0.1.0"
+description = "RockBiz 业务微服务 SDK（配置/日志/HTTP客户端/链路追踪等）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "PyYAML>=6.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.optional-dependencies]
+http = ["requests>=2.28"]
+test = ["pytest>=7.0"]
+
+[tool.setuptools]
+packages = ["rockbiz"]

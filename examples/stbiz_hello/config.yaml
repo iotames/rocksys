@@ -1,0 +1,8 @@
+# stbiz_hello 服务配置
+server:
+  host: "127.0.0.1"
+  port: 9000
+
+service:
+  name: "stbiz_hello"
+  version: "1.0.0"

@@ -1,0 +1,136 @@
+openapi: 3.0.3
+info:
+  title: stbiz_hello
+  description: stbiz_hello 业务微服务契约（最小业务模板）
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:9000
+    description: 本地开发
+
+paths:
+  /health:
+    get:
+      summary: 健康检查
+      operationId: healthCheck
+      tags:
+        - system
+      responses:
+        '200':
+          description: 服务正常
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/X-Trace-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResp'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/hello:
+    post:
+      summary: 业务示例接口
+      description: 返回问候消息，trace_id 全链路透传
+      operationId: apiHello
+      tags:
+        - business
+      parameters:
+        - name: X-Trace-Id
+          in: header
+          required: false
+          description: 全链路追踪 ID，未携带时由服务生成
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HelloReq'
+      responses:
+        '200':
+          description: 成功
+          headers:
+            X-Trace-Id:
+              $ref: '#/components/headers/X-Trace-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HelloResp'
+        default:
+          $ref: '#/components/responses/Error'
+
+components:
+  headers:
+    X-Trace-Id:
+      description: 全链路追踪 ID
+      required: false
+      schema:
+        type: string
+
+  schemas:
+    HealthResp:
+      type: object
+      description: 健康检查响应
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          example: ok
+
+    HelloReq:
+      type: object
+      description: 业务请求体
+      properties:
+        name:
+          type: string
+          description: 问候对象名称
+          example: world
+
+    HelloResp:
+      type: object
+      description: 业务响应体
+      required:
+        - msg
+        - trace_id
+      properties:
+        msg:
+          type: string
+          example: hello
+        trace_id:
+          type: string
+          description: 本次请求的全链路追踪 ID
+          example: 4f7a1c2e9b0d4a5b8c6d7e8f9a0b1c2d
+
+    Error:
+      type: object
+      description: 统一错误码响应体（任何非 2xx 响应均采用此结构）
+      required:
+        - code
+        - msg
+      properties:
+        code:
+          type: integer
+          description: 业务错误码，0 表示成功，非 0 表示失败
+          example: 50001
+        msg:
+          type: string
+          description: 错误描述
+          example: 内部错误
+        data:
+          nullable: true
+          description: 附加错误数据（可为空）
+          example: null
+
+  responses:
+    Error:
+      description: 统一错误响应
+      headers:
+        X-Trace-Id:
+          $ref: '#/components/headers/X-Trace-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'

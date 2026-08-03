@@ -28,11 +28,11 @@
 
 | 章节 | 内容 | 状态 | 备注 |
 |------|------|------|------|
-| 第1章+§1.0 | 骨架 + easyserver Shutdown/Close | ⬜ 进行中 | 批次1 |
-| 第2章 | internal/conf | ⬜ 未开始 | 批次2 |
+| 第1章+§1.0 | 骨架 + easyserver Shutdown/Close | ✅ 已完成 | 批次1 |
+| 第2章 | internal/conf | ✅ 已完成 | 批次2 |
 | 第3章 | internal/engine | ⬜ 未开始 | 批次3 |
-| 第4章 | internal/chain | ⬜ 未开始 | 批次3 |
-| 第5章 | internal/dataflow | ⬜ 未开始 | 批次2 |
+| 第4章 | internal/chain | ✅ 已完成 | 批次3 |
+| 第5章 | internal/dataflow | ✅ 已完成 | 批次2 |
 | 第6章 | internal/hotswap | ⬜ 未开始 | 批次4 |
 | 第7章 | cmd/rocksys | ⬜ 未开始 | 批次4 |
 | 第8章 | adminapi + cmd/rockctl | ⬜ 未开始 | 批次4 |
@@ -45,14 +45,13 @@
 
 ## 四、当前工作位置
 
-- 批次：**批次 1（进行中）**
-- 已派发任务：T1(easyserver Shutdown/Close)、T2(根骨架)
-- 执行详情见下文"批次日志"。
+- 批次：**批次 3（进行中）**
+- 已完成：第4章 internal/chain（转发链编排）
+- 下次：第3章 internal/engine（依赖 conf+chain+dataflow）
 
 ## 五、未完成任务与下次起点
 
-- 批次 2：第2章 conf、第5章 dataflow（依赖：根骨架已就绪）
-- 批次 3：第4章 chain（依赖 dataflow）、第3章 engine（依赖 conf+chain+dataflow）
+- 批次 3：第3章 engine（依赖 conf+chain+dataflow；chain 已完成）
 - 批次 4：hotswap(依赖 chain+conf)、adminapi(依赖 hotswap+conf)、cmd/rocksys(依赖 engine+hotswap)、rockctl(依赖 admin API 协议)
 - 批次 5：P1 挂件 7 个（依赖 chain+dataflow+hotswap+conf）
 - 批次 6：P2 组件 4 个
@@ -63,11 +62,10 @@
 
 ## 六、批次日志
 
-### 批次 1（进行中）
-- [ ] T1: easyserver/httpsvr 新增 Shutdown/Close（§1.0）
-- [ ] T2: 根 go.mod + 全部空目录 + doc.go + cmd/rocksys/main.go 占位（第1章）
-- 验证：`cd easyserver && go test ./...`；根目录 `go build ./... && go vet ./...`
-- 提交：批次 1 验证通过后 `git add -A && git commit -m "第1章: 项目骨架与easyserver优雅停机"`
+### 批次 3（进行中）
+- [x] T1: internal/chain 转发链编排（第4章）：interface.go / impl.go / adapter.go / chain_test.go
+- 验证：`go build ./... && go vet ./... && go test -count=1 ./internal/chain/...` 全部通过
+- 未提交：等待总指挥统一提交
 
 ### Git 提交记录
 | 时间 | 提交 | 内容 |
