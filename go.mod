@@ -5,6 +5,7 @@ go 1.24.1
 require (
 	github.com/iotames/easyconf v0.0.0
 	github.com/iotames/easyserver v0.0.0
+	github.com/yuin/gopher-lua v1.1.2
 )
 
 require (
