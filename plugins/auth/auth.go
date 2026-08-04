@@ -1,19 +1,17 @@
 package auth
 
 import (
-	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/iotames/easyserver/log"
 
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
 	"rocksys/internal/hotswap"
+	"rocksys/internal/jwtutil"
 )
 
 // JWTConfig JWT 认证配置（运行态快照内容，§16）。
@@ -21,13 +19,6 @@ type JWTConfig struct {
 	Issuer string        // 签发方
 	Secret string        // 签名密钥
 	TTL    time.Duration // 令牌有效期
-}
-
-// Claims JWT 载荷：租户/用户标识 + 标准声明。
-type Claims struct {
-	TenantID string `json:"tenant_id"`
-	UserID   string `json:"user_id"`
-	jwt.RegisteredClaims
 }
 
 // Verifier JWT 验签器：密钥缓存 + 轮换（atomic.Value 原子替换，§16）。
@@ -49,26 +40,10 @@ func (v *Verifier) Rotate(secret string) {
 }
 
 // Verify 解析并校验 JWT：验签（HS256）、issuer、过期时间。
-func (v *Verifier) Verify(token string) (Claims, error) {
-	var c Claims
+// 成功返回载荷 map（含 tenant_id/user_id），供上层提取写入 DataFlow。
+func (v *Verifier) Verify(token string) (map[string]interface{}, error) {
 	secret, _ := v.key.Load().([]byte)
-	opts := []jwt.ParserOption{jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()})}
-	if v.issuer != "" {
-		opts = append(opts, jwt.WithIssuer(v.issuer))
-	}
-	parsed, err := jwt.ParseWithClaims(token, &c, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("auth: 不支持的签名算法 %v", t.Header["alg"])
-		}
-		return secret, nil
-	}, opts...)
-	if err != nil {
-		return Claims{}, err
-	}
-	if !parsed.Valid {
-		return Claims{}, errors.New("auth: 无效令牌")
-	}
-	return c, nil
+	return jwtutil.Verify(secret, token, v.issuer)
 }
 
 // authSnapshot 不可变运行态快照（整体重建后原子替换，§6.2/§6.3）。
@@ -164,8 +139,8 @@ func (a *Auth) Handle(ctx *chain.Context) (next bool) {
 		http.Error(ctx.W, "unauthorized", http.StatusUnauthorized)
 		return false
 	}
-	if claims.TenantID != "" {
-		ctx.DF.SetTenantID(claims.TenantID)
+	if tenant, _ := claims["tenant_id"].(string); tenant != "" {
+		ctx.DF.SetTenantID(tenant)
 	}
 	return true
 }

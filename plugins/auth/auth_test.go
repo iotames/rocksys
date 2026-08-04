@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/iotames/easyserver/httpsvr"
 
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
 	"rocksys/internal/dataflow"
+	"rocksys/internal/jwtutil"
 )
 
 // fakeConfMgr 测试用假配置管理器：仅记录注册项，不触发真实重载。
@@ -32,21 +32,15 @@ func (f *fakeConfMgr) Register(pval any, name, defval, title string, usage ...st
 }
 func (f *fakeConfMgr) Set(name, value string) error { return nil }
 
-// signToken 生成合法 HS256 JWT（测试辅助）。
+// signToken 生成合法 HS256 JWT（测试辅助，走自研 jwtutil）。
 func signToken(t *testing.T, secret, issuer string, ttl time.Duration, tenantID, userID string) string {
 	t.Helper()
-	now := time.Now()
-	claims := Claims{
-		TenantID: tenantID,
-		UserID:   userID,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    issuer,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
-		},
+	claims := map[string]interface{}{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+		"iss":       issuer,
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	s, err := tok.SignedString([]byte(secret))
+	s, err := jwtutil.Sign([]byte(secret), claims, ttl)
 	if err != nil {
 		t.Fatalf("签发 JWT 失败: %v", err)
 	}
@@ -248,7 +242,7 @@ func TestVerifierRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("轮换后新密钥令牌应校验通过: %v", err)
 	}
-	if c.TenantID != "tenant-2" {
-		t.Errorf("新令牌 TenantID 应为 tenant-2，实际 %q", c.TenantID)
+	if c["tenant_id"] != "tenant-2" {
+		t.Errorf("新令牌 TenantID 应为 tenant-2，实际 %q", c["tenant_id"])
 	}
 }
