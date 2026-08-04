@@ -2,6 +2,7 @@ package conf
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -89,5 +90,55 @@ func TestLoadEnvVar(t *testing.T) {
 	}
 	if cfg.LogLevel != "warn" {
 		t.Errorf("LogLevel=%q, want warn", cfg.LogLevel)
+	}
+}
+
+// TestLoadEnvOverridesConfigFile 优先级契约：环境变量 > --config 指定文件 > .env
+func TestLoadEnvOverridesConfigFile(t *testing.T) {
+	cleanup(t)
+	cfgPath := filepath.Join(t.TempDir(), "app.env")
+	content := "ROCKSYS_UPSTREAM = \"http://127.0.0.1:8080\"\nROCKSYS_LISTEN = \":8080\"\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROCKSYS_UPSTREAM", "http://127.0.0.1:9001")
+	t.Setenv("ROCKSYS_LISTEN", ":9090")
+
+	mgr, err := Load([]string{"--config", cfgPath})
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	cfg := mgr.Current()
+	if cfg.DefaultUpstream != "http://127.0.0.1:9001" {
+		t.Errorf("DefaultUpstream=%q, want 9001（环境变量应覆盖 config 文件）", cfg.DefaultUpstream)
+	}
+	if cfg.ListenAddr != ":9090" {
+		t.Errorf("ListenAddr=%q, want :9090", cfg.ListenAddr)
+	}
+}
+
+// TestRegisterKeepsEnvPriority 挂件 Register 后不得破坏优先级契约：环境变量 > .env。
+// 回归：Register 曾以 .env 后置覆盖环境变量，导致默认 upstream 被静默改回 .env 值。
+func TestRegisterKeepsEnvPriority(t *testing.T) {
+	cleanup(t)
+	if err := os.WriteFile(".env", []byte("ROCKSYS_UPSTREAM = \"http://127.0.0.1:8080\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROCKSYS_UPSTREAM", "http://127.0.0.1:9001")
+
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	if got := mgr.Current().DefaultUpstream; got != "http://127.0.0.1:9001" {
+		t.Fatalf("Load 后 upstream=%q, want 9001", got)
+	}
+
+	var rules string
+	if err := mgr.Register(&rules, "REWRITE_RULES", "", "测试挂件项"); err != nil {
+		t.Fatalf("Register err: %v", err)
+	}
+	if got := mgr.Current().DefaultUpstream; got != "http://127.0.0.1:9001" {
+		t.Errorf("Register 后 upstream=%q, want 9001（环境变量应覆盖 .env）", got)
 	}
 }

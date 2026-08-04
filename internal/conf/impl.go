@@ -254,11 +254,13 @@ func (m *confManager) Register(pval any, name, defval, title string, usage ...st
 	default:
 		return fmt.Errorf("conf: Register(%s) 不支持类型 %T", name, pval)
 	}
-	// 注册后触发"重载 + 广播"：环境变量 → .env → 命令行重放
-	if err := m.ec.SetValuesByEnv(); err != nil {
+	// 注册后触发"重载 + 广播"：.env 文件 → 环境变量 → 命令行重放
+	// ★ 优先级必须与 defaultLoader/reloadFiles 一致（命令行 > 环境变量 > .env）：
+	// 先读文件（低优先）、再环境变量（覆盖）、最后命令行（最高）。
+	if err := m.ec.SetValuesByEnvFile(envFile); err != nil {
 		return err
 	}
-	if err := m.ec.SetValuesByEnvFile(envFile); err != nil {
+	if err := m.ec.SetValuesByEnv(); err != nil {
 		return err
 	}
 	for k, v := range parseArgsToMap(m.args) {
