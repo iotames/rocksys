@@ -34,6 +34,8 @@ import (
 	"rocksys/plugins/shield"
 	"rocksys/plugins/trace"
 
+	"rocksys/webui"
+
 	"github.com/iotames/easyserver/log"
 
 	_ "modernc.org/sqlite"
@@ -217,12 +219,20 @@ func buildServer(args []string) (*Server, error) {
 	if err := adminSrv.RegisterPlugin(script.PathRollback, scriptAdmin.Rollback); err != nil {
 		return nil, fmt.Errorf("register script rollback: %w", err)
 	}
+	if err := adminSrv.RegisterPlugin(script.PathList, scriptAdmin.List); err != nil {
+		return nil, fmt.Errorf("register script list: %w", err)
+	}
 	obsAdmin := obs.NewAdminHandler(mgr)
 	if err := adminSrv.RegisterPlugin("/admin/metrics", obsAdmin.Metrics); err != nil {
 		return nil, fmt.Errorf("register obs metrics: %w", err)
 	}
 	if err := adminSrv.RegisterPlugin("/admin/logs", obsAdmin.Logs); err != nil {
 		return nil, fmt.Errorf("register obs logs: %w", err)
+	}
+
+	// 5b. WebUI 管理控制台静态资源（内嵌单页，根路径 / 打开）。
+	if err := adminSrv.RegisterWebUI(webui.FS); err != nil {
+		return nil, fmt.Errorf("register webui static: %w", err)
 	}
 
 	return &Server{

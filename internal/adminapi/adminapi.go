@@ -9,8 +9,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/iotames/easyserver"
 	"github.com/iotames/easyserver/httpsvr"
@@ -21,10 +23,11 @@ import (
 
 // 内建端点路径（§8.1 表）。
 const (
-	PathSwitchOn  = "/admin/switch/on"
-	PathSwitchOff = "/admin/switch/off"
+	PathSwitchOn   = "/admin/switch/on"
+	PathSwitchOff  = "/admin/switch/off"
 	PathSwitchList = "/admin/switch/list"
 	PathConfig     = "/admin/config"
+	PathConfigList = "/admin/config/list"
 )
 
 const (
@@ -79,7 +82,7 @@ func (s *AdminServer) RegisterPlugin(path string, h func(http.ResponseWriter, *h
 	return nil
 }
 
-// registerBuiltin 注册 5 个内建端点，外层统一套一层鉴权检查（§8.3）。
+// registerBuiltin 注册内建端点，外层统一套一层鉴权检查（§8.3）。
 func (s *AdminServer) registerBuiltin() {
 	check := s.requireAuth()
 	s.srv.AddHandler(http.MethodPost, PathSwitchOn, check(s.handleSwitchOn))
@@ -87,6 +90,62 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodGet, PathSwitchList, check(s.handleSwitchList))
 	s.srv.AddHandler(http.MethodGet, PathConfig, check(s.handleConfigGet))
 	s.srv.AddHandler(http.MethodPut, PathConfig, check(s.handleConfigPut))
+	s.srv.AddHandler(http.MethodGet, PathConfigList, check(s.handleConfigList))
+}
+
+// RegisterWebUI 注册内嵌 WebUI 静态资源（管理控制台）。
+// fsys 为嵌入的静态资源（含 index.html 与 assets/ 等），为每个文件注册一个精确 GET 路由：
+// embed 中 "index.html" → GET "/"；其余文件 → "/<相对路径>"（如 "/assets/js/main.js"）。
+func (s *AdminServer) RegisterWebUI(fsys fs.FS) error {
+	return fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return err
+		}
+		urlPath := "/" + path
+		if path == "index.html" {
+			urlPath = "/"
+		}
+		contentType := contentTypeByExt(path)
+		s.srv.AddHandler(http.MethodGet, urlPath, func(ctx httpsvr.Context) {
+			ctx.Writer.Header().Set("Content-Type", contentType)
+			ctx.Writer.WriteHeader(http.StatusOK)
+			_, _ = ctx.Writer.Write(data)
+		})
+		return nil
+	})
+}
+
+// contentTypeByExt 根据文件扩展名返回 Content-Type（用于内嵌 WebUI 静态资源）。
+func contentTypeByExt(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".html"), strings.HasSuffix(path, ".htm"):
+		return "text/html; charset=utf-8"
+	case strings.HasSuffix(path, ".css"):
+		return "text/css; charset=utf-8"
+	case strings.HasSuffix(path, ".js"):
+		return "application/javascript; charset=utf-8"
+	case strings.HasSuffix(path, ".json"):
+		return "application/json"
+	case strings.HasSuffix(path, ".svg"):
+		return "image/svg+xml"
+	case strings.HasSuffix(path, ".png"):
+		return "image/png"
+	case strings.HasSuffix(path, ".jpg"), strings.HasSuffix(path, ".jpeg"):
+		return "image/jpeg"
+	case strings.HasSuffix(path, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(path, ".webp"):
+		return "image/webp"
+	default:
+		return "text/plain; charset=utf-8"
+	}
 }
 
 // requireAuth 返回构造时的鉴权包装器：可选 ROCKSYS_ADMIN_TOKEN 校验。
@@ -186,6 +245,11 @@ func (s *AdminServer) handleConfigPut(ctx httpsvr.Context) {
 		}
 	}
 	_ = ctx.Json(map[string]any{"ok": true}, http.StatusOK)
+}
+
+// handleConfigList 查看全部已注册配置项元数据（底座 + 各挂件，供 WebUI 分组展示）。
+func (s *AdminServer) handleConfigList(ctx httpsvr.Context) {
+	_ = writeJSON(ctx.Writer, s.confMgr.List(), http.StatusOK)
 }
 
 // writeJSON 将任意值以 JSON 写回客户端（用于 map 与数组响应）。

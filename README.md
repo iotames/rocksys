@@ -111,6 +111,18 @@ curl -X POST http://127.0.0.1:19527/admin/switch/off/dispatch
 
 每个挂件的配置项均通过环境变量 / `.env` 设置，热更生效（详见开发手册 `docs/COMPONENTS.md`）。
 
+# 管理控制台（WebUI）
+
+浏览器打开 `http://127.0.0.1:19527/` 即得图形化管理控制台（纯静态单页，内嵌在二进制中，零额外部署）：
+
+- **概览**：网关状态、运行指标、降级链可视化、组件总览
+- **组件**：13 个挂件启停与配置（二次确认，失败原因透出）
+- **配置**：全部配置项分组查看与热改（即时生效，无需重启）
+- **脚本**：RockScript 策略发布与版本回滚
+- **观测**：指标趋势图 + 按天访问日志查询
+
+产品设计见 `docs/webui.md`，对接契约见 `docs/webui-api.md`。控制台仅监听回环地址，勿对外暴露。
+
 ---
 
 ## 部署
@@ -159,6 +171,8 @@ curl -X POST http://127.0.0.1:19527/admin/switch/off/dispatch
 |------|------|------|
 | [README.md](README.md) | 终端用户 | 本页：功能、构建、部署、使用 |
 | [docs/COMPONENTS.md](docs/COMPONENTS.md) | 开发者 | 各组件/子组件作用与使用方法、配置项详解 |
+| [docs/webui.md](docs/webui.md) | 产品 | 管理控制台产品设计（页面/交互/视觉规范） |
+| [docs/webui-api.md](docs/webui-api.md) | 前端 | 管理接口契约（WebUI 对接唯一权威，无需读源码） |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构 | 设计底座：转发链、三层时间戳、降级链、红线 |
 | [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) | 开发者 | 目录结构、模块关系、热运维引擎 |
 | [docs/DEV_HANDBOOK.md](docs/DEV_HANDBOOK.md) | AI/实现 | 详细技术规格，供对照实现 |

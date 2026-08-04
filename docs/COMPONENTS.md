@@ -69,8 +69,13 @@ type MiddlewareLifecycle interface {
 
 ### 2.6 `internal/adminapi` — 管理 API
 
-- **作用**：回环地址管理接口（默认 `127.0.0.1:19527`），供 rockctl / curl 在线操作。
-- **接口**：`GET /admin/switch/list`、`POST /admin/switch/on|off/<name>`、`GET/PUT /admin/config/...`、`POST /admin/script/publish|rollback`、`GET /admin/metrics`、`GET /admin/logs`。
+- **作用**：回环地址管理接口（默认 `127.0.0.1:19527`），供 rockctl / curl / WebUI 在线操作。
+- **接口**：
+  - `GET /admin/switch/list`、`POST /admin/switch/on|off/<name>`：组件热开关与状态
+  - `GET /admin/config`、`PUT /admin/config`、`GET /admin/config/list`：底座/热改/全量配置项清单（供 WebUI 分组展示）
+  - `POST /admin/script/publish|rollback`、`GET /admin/script/list`：脚本发布/回滚/版本历史
+  - `GET /admin/metrics`、`GET /admin/logs`：观测指标与日志（obs 挂件端点注入）
+- **WebUI 托管**：`RegisterWebUI(fsys fs.FS)` 注册内嵌静态资源（根路径 `/` 返回 index.html，`/assets/...` 返回各静态文件）。控制台为纯静态单页（ElementUI 风格、无框架），`webui/embed.go` 用 `//go:embed index.html assets` 打包进二进制，访问 `http://<admin-addr>/` 打开。
 
 ---
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
@@ -175,6 +176,72 @@ func TestRegisterPlugin(t *testing.T) {
 	}
 	if err := s.RegisterPlugin("", nil); err == nil {
 		t.Fatal("空参数未报错")
+	}
+}
+
+// TestHandleConfigList 验证全量配置清单端点（WebUI 配置页数据源）。
+func TestHandleConfigList(t *testing.T) {
+	cfgMgr, _, _ := setup(t)
+	s := New("127.0.0.1:19527", cfgMgr, nil)
+	ctx := newCtx(http.MethodGet, PathConfigList, "")
+	s.handleConfigList(ctx)
+	rec := ctx.Writer.(*httptest.ResponseRecorder)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码=%d, want 200", rec.Code)
+	}
+	var list []conf.ConfigItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("解析失败: %v, body=%s", err, rec.Body.String())
+	}
+	if len(list) < 6 {
+		t.Fatalf("至少应含底座 6 项配置, got %d", len(list))
+	}
+	seen := false
+	for _, it := range list {
+		if it.Key == "ROCKSYS_UPSTREAM" {
+			seen = true
+			if it.Current == "" || it.Defval == "" {
+				t.Errorf("配置项字段缺失: %+v", it)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("清单中缺少 ROCKSYS_UPSTREAM")
+	}
+}
+
+// TestRegisterWebUI 验证内嵌静态资源托管注册（index.html 根路径 + assets 静态文件）。
+func TestRegisterWebUI(t *testing.T) {
+	fsys := fstest.MapFS{
+		"index.html":        {Data: []byte("<!doctype html><html></html>")},
+		"assets/style.css":  {Data: []byte("body{}")},
+		"assets/js/main.js": {Data: []byte("console.log('ok')")},
+	}
+	s := New("127.0.0.1:19527", nil, nil)
+	if err := s.RegisterWebUI(fsys); err != nil {
+		t.Fatalf("RegisterWebUI: %v", err)
+	}
+	// 每个文件注册为精确 GET 路由，无报错即成功。真实 HTTP 链路由集成验证覆盖。
+	if err := s.RegisterWebUI(fstest.MapFS{}); err != nil {
+		t.Fatalf("RegisterWebUI 空资源应成功: %v", err)
+	}
+}
+
+func TestContentTypeByExt(t *testing.T) {
+	cases := map[string]string{
+		"index.html":      "text/html",
+		"assets/style.css": "text/css",
+		"assets/js/main.js": "application/javascript",
+		"data.json":       "application/json",
+		"pic.svg":         "image/svg+xml",
+		"pic.png":         "image/png",
+		"file.txt":        "text/plain",
+	}
+	for path, want := range cases {
+		got := contentTypeByExt(path)
+		if !strings.HasPrefix(got, want) {
+			t.Errorf("contentTypeByExt(%q)=%q, want 前缀 %q", path, got, want)
+		}
 	}
 }
 

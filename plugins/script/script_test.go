@@ -313,3 +313,92 @@ func TestAdmin_EngineNotRegistered(t *testing.T) {
 		t.Error("未注册时 engine() 应返回 nil")
 	}
 }
+
+func TestListScripts(t *testing.T) {
+	e := New(0)
+	if got := e.ListScripts(); len(got) != 0 {
+		t.Fatalf("未发布时 ListScripts 应为空, got %v", got)
+	}
+
+	v1, err := e.Publish("rule1", `print("v1")`)
+	if err != nil {
+		t.Fatalf("Publish v1 err: %v", err)
+	}
+	v2, err := e.Publish("rule1", `print("v2")`)
+	if err != nil {
+		t.Fatalf("Publish v2 err: %v", err)
+	}
+	if _, err = e.Publish("rule2", `print("x")`); err != nil {
+		t.Fatalf("Publish rule2 err: %v", err)
+	}
+
+	infos := e.ListScripts()
+	if len(infos) != 2 {
+		t.Fatalf("ListScripts 数量=%d, want 2", len(infos))
+	}
+	var r1, r2 *ScriptInfo
+	for i := range infos {
+		switch infos[i].Name {
+		case "rule1":
+			r1 = &infos[i]
+		case "rule2":
+			r2 = &infos[i]
+		}
+	}
+	if r1 == nil || r2 == nil {
+		t.Fatalf("缺少脚本: %+v", infos)
+	}
+	if r1.CurrentVersion != v2 || r2.CurrentVersion != 3 {
+		t.Errorf("CurrentVersion 不符: rule1=%d(want %d) rule2=%d(want 3, 全局单调版本号)", r1.CurrentVersion, v2, r2.CurrentVersion)
+	}
+	if len(r1.Versions) != 2 {
+		t.Fatalf("rule1 版本历史=%d, want 2", len(r1.Versions))
+	}
+	if r1.Versions[0].Version != v1 || r1.Versions[1].Version != v2 {
+		t.Errorf("rule1 版本序不符: %+v", r1.Versions)
+	}
+	if r1.Versions[0].PublishedAt == "" {
+		t.Error("published_at 不应为空")
+	}
+}
+
+func TestAdmin_List(t *testing.T) {
+	admin := NewAdminHandler(newMgr(t))
+	// 未发布：空列表。
+	req := httptest.NewRequest(http.MethodGet, "/admin/script/list", nil)
+	rec := httptest.NewRecorder()
+	admin.List(rec, req)
+	m := decodeResp(t, rec)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("List 未返回 200: %d", rec.Code)
+	}
+	scripts, ok := m["scripts"].([]any)
+	if !ok || len(scripts) != 0 {
+		t.Fatalf("空列表不符: %v", m)
+	}
+
+	// 发布两条后：列表含 1 个脚本、2 个版本。
+	pubReq := func(src string) *http.Request {
+		return httptest.NewRequest(http.MethodPost, "/admin/script/publish", strings.NewReader(`{"name":"r","source":"`+src+`"}`))
+	}
+	admin.Publish(recWriter(), pubReq("print(1)"))
+	admin.Publish(recWriter(), pubReq("print(2)"))
+	req = httptest.NewRequest(http.MethodGet, "/admin/script/list", nil)
+	rec = httptest.NewRecorder()
+	admin.List(rec, req)
+	m = decodeResp(t, rec)
+	scripts = m["scripts"].([]any)
+	if len(scripts) != 1 {
+		t.Fatalf("脚本数量=%d, want 1", len(scripts))
+	}
+	first := scripts[0].(map[string]any)
+	if first["name"] != "r" || first["current_version"].(float64) != 2 {
+		t.Errorf("列表内容不符: %v", first)
+	}
+	if vers := first["versions"].([]any); len(vers) != 2 {
+		t.Errorf("版本数=%d, want 2", len(vers))
+	}
+}
+
+// recWriter 返回用于 Publish 的 ResponseRecorder（忽略响应内容）。
+func recWriter() *httptest.ResponseRecorder { return httptest.NewRecorder() }

@@ -279,6 +279,27 @@ func (m *confManager) Set(name, value string) error {
 	return nil
 }
 
+// List 列出全部已注册配置项元数据（含底座与各挂件）。
+// 跳过注释项（Name 为空）与 Value 为 nil 的异常项，避免序列化 panic。
+func (m *confManager) List() []ConfigItem {
+	items := m.ec.GetItems()
+	out := make([]ConfigItem, 0, len(items))
+	for _, it := range items {
+		if it == nil || it.Name == "" || it.Value == nil {
+			continue
+		}
+		item := ConfigItem{
+			Key:     it.Name,
+			Title:   it.Title,
+			Defval:  it.GetDefaultValue(),
+			Current: it.GetValue(),
+			Example: strings.Join(it.Usage, " "),
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 // mapShortFlags 将 --listen 等短名改写为 --ROCKSYS_* 注册名
 // 支持 "--listen=:9090" 与 "--listen :9090" 两种形态
 func mapShortFlags(args []string) []string {

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RockSys 控制台</title>
+  <!-- 纯静态资源，全部本地相对路径，无任何外部依赖 -->
+  <link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ 顶部工具条 ============ -->
+  <header class="topbar">
+    <div class="brand">
+      <!-- 磐石盾牌标识 -->
+      <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/>
+        <path d="M8.5 12l2.5 2.5 4.5-4.5"/>
+      </svg>
+      <span class="brand-name">RockSys 控制台</span>
+    </div>
+    <div class="topbar-mid">
+      <span class="gw-status" title="网关连通状态">
+        <span class="dot dot-ok" id="gw-status-dot"></span>
+        <span id="gw-status-text">网关在线</span>
+      </span>
+      <span class="gw-addr" id="gw-addr">管理地址：—</span>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn" id="btn-token" title="设置访问凭证（Token）">访问凭证</button>
+      <label class="topbar-label">自动刷新
+        <select id="auto-refresh" class="select select-sm">
+          <option value="0">关</option>
+          <option value="5000" selected>5 秒</option>
+          <option value="15000">15 秒</option>
+          <option value="30000">30 秒</option>
+        </select>
+      </label>
+      <button class="btn" id="btn-refresh" title="手动刷新当前页">
+        <span class="refresh-ico">⟳</span> 刷新
+      </button>
+      <span class="updated" id="last-updated">最近更新 --:--:--</span>
+    </div>
+  </header>
+
+  <!-- ============ 全局横幅：管理接口不可达 ============ -->
+  <div id="unreachable-banner" class="banner hidden">
+    <span class="banner-ico">⚠</span>
+    <span>管理接口不可达，已保留上次数据（最后更新 <b id="banner-last-updated">--</b>）</span>
+  </div>
+
+  <!-- ============ 主体布局：侧边栏 + 主内容 ============ -->
+  <div class="layout">
+    <!-- 左侧侧边栏 -->
+    <aside class="sidebar" id="sidebar">
+      <nav class="menu">
+        <a class="menu-item" data-route="overview" href="#/overview">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+          </svg>
+          <span>概览</span>
+        </a>
+        <a class="menu-item" data-route="components" href="#/components">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2l10 6-10 6L2 8z"/><path d="M2 14l10 6 10-6"/>
+          </svg>
+          <span>组件</span>
+        </a>
+        <a class="menu-item" data-route="config" href="#/config">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 6h5M13 6h7M4 12h9M17 12h3M4 18h7M15 18h5"/>
+            <circle cx="11" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="13" cy="18" r="2"/>
+          </svg>
+          <span>配置</span>
+        </a>
+        <a class="menu-item" data-route="scripts" href="#/scripts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 6l-6 6 6 6"/><path d="M16 6l6 6-6 6"/>
+          </svg>
+          <span>脚本</span>
+        </a>
+        <div class="menu-group" id="menu-group-obs">
+          <div class="menu-item menu-parent" data-group="obs">
+            <span class="menu-parent-label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 20V10M12 20V4M18 20v-6"/>
+              </svg>
+              <span>观测</span>
+            </span>
+            <span class="menu-arrow">▾</span>
+          </div>
+          <div class="menu-sub" id="menu-sub-obs">
+            <a class="menu-item menu-sub-item" data-route="metrics" href="#/metrics">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19h16"/>
+              </svg>
+              <span>指标</span>
+            </a>
+            <a class="menu-item menu-sub-item" data-route="logs" href="#/logs">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>
+              </svg>
+              <span>日志</span>
+            </a>
+          </div>
+        </div>
+      </nav>
+      <div class="sidebar-foot">关闭只是降级，转发永不中断</div>
+    </aside>
+
+    <!-- 右侧主内容：6 个视图容器（JS 按路由切换显示） -->
+    <main class="main" id="main">
+      <section class="page" id="page-overview"></section>
+      <section class="page hidden" id="page-components"></section>
+      <section class="page hidden" id="page-config"></section>
+      <section class="page hidden" id="page-scripts"></section>
+      <section class="page hidden" id="page-metrics"></section>
+      <section class="page hidden" id="page-logs"></section>
+    </main>
+  </div>
+</div>
+
+<!-- 弹窗根容器 -->
+<div id="modal-root"></div>
+<!-- Toast 根容器（右上角消息提示） -->
+<div id="toast-root"></div>
+
+<!-- 全部逻辑：原生 JavaScript 模块（按依赖顺序加载，无任何第三方库） -->
+<script src="./assets/js/util.js"></script>
+<script src="./assets/js/ui.js"></script>
+<script src="./assets/js/api.js"></script>
+<script src="./assets/js/state.js"></script>
+<script src="./assets/js/views/overview.js"></script>
+<script src="./assets/js/views/components.js"></script>
+<script src="./assets/js/views/config.js"></script>
+<script src="./assets/js/views/scripts.js"></script>
+<script src="./assets/js/views/metrics.js"></script>
+<script src="./assets/js/views/logs.js"></script>
+<script src="./assets/js/main.js"></script>
+</body>
+</html>

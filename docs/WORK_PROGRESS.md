@@ -55,16 +55,16 @@
 
 ## 四、当前工作位置
 
-- 批次：**批次 10（✅ 完成）**——easywaf 借鉴：shield WAF 检测 + dispatch 节点组负载均衡 + WAF 规则文件外置。
-- 全仓库 22 包 `go build/vet/test` 全绿。
+- 批次：**批次 11（✅ 完成）**——WebUI 管理控制台（纯静态单页，内嵌二进制）+ 后端只读扩展。
+- 全仓库 24 包 `go build/vet/test` 全绿。
 - 剩余事项：仅「真实 Linux 服务器 P99<10ms 复验」建议（本 WSL 环境无法达标，非代码缺陷）。
 
 ## 五、未完成任务与下次起点
 
-- 批次 1-10 全部完成。**P0+P1+P2 后端底座 + 数据访问层 + WAF/LB 增强交付完毕。**
+- 批次 1-11 全部完成。**P0+P1+P2 后端底座 + 数据访问层 + WAF/LB 增强 + WebUI 管理控制台交付完毕。**
 - 可选后续（不在本阶段范围）：
   - 真实 Linux 服务器上按 §23.2 用 hey 复验 P99<10ms
-  - 前端（下一阶段）
+  - WebUI 二期：多实例集群视图、指标历史持久化、脚本源码查看
   - 补全 `sql/mysql/`、`sql/postgres/` 下的业务脚本（当前仅默认 SQLite 完整）
   - easywaf 第二期：路由参数/通配匹配、Admin 观测端点
 - **断点恢复**：无需恢复，全部批次已完成。
@@ -143,6 +143,18 @@
 - ✅ `plugins/dispatch/healthcheck.go`：主动探活（启动即探 + interval 轮询，2xx/3xx 健康），生命周期随路由表启停防 goroutine 泄漏；全挂写 503 中断链
 - ✅ 验证：22 包 `go build/vet/test` 全绿（新增 balancer/healthcheck/rules/waf 测试 + dispatch_test 重写）
 - 说明：`easywaf/` 为借鉴项目源码，已加入 `.gitignore` 不提交
+
+### 批次 11（✅ 完成）——WebUI 管理控制台（纯静态单页，内嵌二进制）
+- ✅ `webui/` 前端：纯静态单页（HTML+CSS+原生 JS，**不引入 Vue/任何框架**，ElementUI 视觉风格，零 CDN），经 `web-front-end-engineer` 实现，拆分 11 个 JS 模块（util/ui/api/state/main + views/*），`node --check` 全通过
+- ✅ 6 页控制台：概览（网关信息+指标+降级链可视化+组件总览）/ 组件（启停+二次确认）/ 配置（分组+热改+掩码+恢复默认）/ 脚本（发布+回滚+版本时间线）/ 指标（Canvas 趋势图）/ 日志（日期范围+筛选+行详情）
+- ✅ 产品设计：`docs/webui.md`（纯产品视角，不含技术细节）；API 契约：`docs/webui-api.md`（前端对接权威文档，无需读源码）
+- ✅ 后端扩展（纯只读端点，不破契约）：
+  - `internal/conf` 新增 `List() []ConfigItem`（透出 easyconf 全部注册项元数据）
+  - `adminapi` 新增 `GET /admin/config/list`（全量配置清单）
+  - `plugins/script` 新增 `ListScripts()` + `ScriptVersion.PublishedAt`，端点 `GET /admin/script/list`（版本历史）
+  - `webui/embed.go`：`//go:embed index.html assets` 打包静态资源；`adminapi.RegisterWebUI(fsys)` 逐文件注册精确 GET 路由（`/`→index.html，`/assets/...`→静态文件）
+- ✅ 集成验证：24 包 `go build/vet/test` 全绿（新增 conf.List/adminapi/script 测试）；实机验证：首页 200、12 个静态资源全部 200、37 项配置清单、脚本发布/回滚/list、开关、热改配置全链路正常
+- 前端文档与新增测试补齐（此前 web-front-end-engineer 首次调用返回空、app.js 单文件 86KB 两处工程问题均已修正）
 
 ### Git 提交记录
 | 时间 | 提交 | 内容 |

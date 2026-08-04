@@ -12,6 +12,7 @@ import (
 const (
 	PathPublish  = "/admin/script/publish"
 	PathRollback = "/admin/script/rollback"
+	PathList     = "/admin/script/list"
 )
 
 // AdminHandler 脚本管理端点处理器。
@@ -94,6 +95,17 @@ func (h *AdminHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true}, http.StatusOK)
+}
+
+// List GET /admin/script/list → {"scripts":[{name,current_version,versions:[{version,published_at}]}]}
+// 供 WebUI 展示脚本列表与版本时间线。engine 未注册时返回空列表（前端容错）。
+func (h *AdminHandler) List(w http.ResponseWriter, r *http.Request) {
+	eng := h.engine()
+	if eng == nil {
+		writeJSON(w, map[string]any{"scripts": []any{}}, http.StatusOK)
+		return
+	}
+	writeJSON(w, map[string]any{"scripts": eng.ListScripts()}, http.StatusOK)
 }
 
 // writeJSON 以 JSON 写回客户端。

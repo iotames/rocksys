@@ -33,10 +33,24 @@ var forbiddenModules = []string{"os", "io", "file", "net", "ffi"}
 // Proto 为 gopher-lua 预编译产物：发布（Publish）时一次性编译缓存，
 // 运行期用 L.NewFunctionFromProto 还原为 Lua 函数执行，零编译成本。
 type ScriptVersion struct {
-	Name    string
-	Source  string
-	Version int
-	Proto   *lua.FunctionProto
+	Name        string
+	Source      string
+	Version     int
+	PublishedAt time.Time // 发布时刻（供 WebUI 版本时间线展示）
+	Proto       *lua.FunctionProto
+}
+
+// ScriptInfo 脚本概要（供 WebUI /admin/script/list 输出）。
+type ScriptInfo struct {
+	Name          string        `json:"name"`
+	CurrentVersion int          `json:"current_version"`
+	Versions      []ScriptVerInfo `json:"versions"`
+}
+
+// ScriptVerInfo 单个历史版本概要（供 WebUI 版本时间线展示）。
+type ScriptVerInfo struct {
+	Version     int    `json:"version"`
+	PublishedAt string `json:"published_at"` // RFC3339
 }
 
 // scriptsSnapshot 不可变脚本快照（§6.2/§15）：Publish/Rollback/Start 整体重建后原子替换，
@@ -134,7 +148,7 @@ func (e *Engine) Publish(name, source string) (int, error) {
 	ns := cloneSnapshot(e.current())
 	ver := ns.nextVer
 	ns.nextVer++
-	sv := &ScriptVersion{Name: name, Source: source, Version: ver, Proto: proto}
+	sv := &ScriptVersion{Name: name, Source: source, Version: ver, PublishedAt: time.Now(), Proto: proto}
 	ns.scripts[name] = sv
 	ns.history[name] = append(ns.history[name], sv)
 	e.scripts.Store(ns)
@@ -170,6 +184,32 @@ func (e *Engine) Rollback(name string, version int) error {
 		}
 	}
 	return fmt.Errorf("script: 未找到脚本 %q 的版本 %d", name, version)
+}
+
+// ListScripts 返回全部已发布脚本概要（含版本历史，按版本升序）。
+// 仅供管理接口 /admin/script/list 输出；脚本为内存态，进程重启后为空。
+func (e *Engine) ListScripts() []ScriptInfo {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cur := e.current()
+	names := cur.names()
+	out := make([]ScriptInfo, 0, len(names))
+	for _, name := range names {
+		sv := cur.scripts[name]
+		info := ScriptInfo{
+			Name:           name,
+			CurrentVersion: sv.Version,
+			Versions:       make([]ScriptVerInfo, 0, len(cur.history[name])),
+		}
+		for _, v := range cur.history[name] {
+			info.Versions = append(info.Versions, ScriptVerInfo{
+				Version:     v.Version,
+				PublishedAt: v.PublishedAt.Format(time.RFC3339),
+			})
+		}
+		out = append(out, info)
+	}
+	return out
 }
 
 // Handle 每请求执行全部已发布脚本（§15：默认执行全部脚本，脚本内用 req.path() 等自行判断）。

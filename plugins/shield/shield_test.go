@@ -27,6 +27,7 @@ func (f *fakeConfMgr) Register(pval any, name, defval, title string, usage ...st
 	return nil
 }
 func (f *fakeConfMgr) Set(name, value string) error { return nil }
+func (f *fakeConfMgr) List() []conf.ConfigItem      { return nil }
 
 func newTestShield(t *testing.T) (*Shield, *fakeConfMgr) {
 	t.Helper()

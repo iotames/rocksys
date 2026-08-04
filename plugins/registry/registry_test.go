@@ -42,6 +42,7 @@ func (f *fakeConfMgr) Set(name, value string) error {
 	f.vals[name] = value
 	return nil
 }
+func (f *fakeConfMgr) List() []conf.ConfigItem { return nil }
 func (f *fakeConfMgr) value(name string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
