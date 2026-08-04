@@ -19,14 +19,29 @@ const respBufferLimit = 4 << 20 // 4MB
 // 是 easyserver 进入 rocksys 转发链的唯一入口。
 type Adapter struct {
 	chain           *Chain
-	defaultUpstream string
+	defaultUpstream atomic.Value // 持有 string：默认 upstream，支持配置热更（SetDefaultUpstream）
 	forward         func(w http.ResponseWriter, r *http.Request, target string, df *dataflow.DataFlow) error
 	activeCount     atomic.Int64 // 活跃请求计数：Handler 入口 +1、出口 -1，hotswap 排空依赖
 }
 
 // NewAdapter 创建适配器。
 func NewAdapter(ch *Chain, defaultUpstream string, forward func(http.ResponseWriter, *http.Request, string, *dataflow.DataFlow) error) *Adapter {
-	return &Adapter{chain: ch, defaultUpstream: defaultUpstream, forward: forward}
+	a := &Adapter{chain: ch, forward: forward}
+	a.defaultUpstream.Store(defaultUpstream)
+	return a
+}
+
+// SetDefaultUpstream 热更新默认上游（配置热更时由 engine 调用，§2.4/§8.2）。
+func (a *Adapter) SetDefaultUpstream(upstream string) {
+	a.defaultUpstream.Store(upstream)
+}
+
+// defaultUpstreamValue 返回当前默认上游。
+func (a *Adapter) defaultUpstreamValue() string {
+	if v := a.defaultUpstream.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
 }
 
 // ActiveCount 返回当前活跃请求数（供 hotswap 排空轮询）。
@@ -54,10 +69,10 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 		return false
 	}
 
-	// 5. 确定转发目标（dispatch 中间件负责写入）
+	// 5. 确定转发目标（dispatch 中间件负责写入；未命中回退默认 upstream——支持热更）
 	target := df.Target()
 	if target == "" {
-		target = a.defaultUpstream
+		target = a.defaultUpstreamValue()
 	}
 
 	// 6. 转发前一刻取点（必须在 Forward 前，禁止 defer）

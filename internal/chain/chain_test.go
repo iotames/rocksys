@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -273,5 +274,68 @@ func TestRespBufferWriterTruncate(t *testing.T) {
 	}
 	if len(rec.Body.Bytes()) != len(big) {
 		t.Fatalf("截断后全部数据应直写底层，得到 %d 期望 %d", len(rec.Body.Bytes()), len(big))
+	}
+}
+
+// 回归测试 BUG#2：上游设置了 Content-Length，但 Tail hook 用 WriteFinal 改写为
+// 不同长度的 body 时，必须删除过期的 Content-Length，由 Go 按实际 body 重新计算，
+// 否则客户端会因长度不匹配而截断响应（曾导致 0 字节接收）。
+func TestWriteFinalDropsStaleContentLength(t *testing.T) {
+	ch := New()
+	ch.Add(Tail, &tailHook{name: "result", onResp: func(ctx *Context) error {
+		// 上游 body 为 68 字节，改写为更短的 body，长度必然不一致。
+		return ctx.WriteFinal(http.StatusOK, nil, []byte(`{"code":0,"msg":"ok"}`))
+	}})
+
+	adapter := NewAdapter(ch, "http://default", func(w http.ResponseWriter, r *http.Request, target string, df *dataflow.DataFlow) error {
+		w.Header().Set("Content-Length", "68") // 模拟上游设置的过期长度
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("upstream-body-with-a-longer-length-than-rewritten"))
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	adapter.Handler(rec, httptest.NewRequest(http.MethodGet, "/", nil), httpsvr.NewDataFlow())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 200，得到 %d", rec.Code)
+	}
+	got := rec.Body.String()
+	want := `{"code":0,"msg":"ok"}`
+	if got != want {
+		t.Fatalf("WriteFinal 改写后 body 应完整返回，得到 %q 期望 %q", got, want)
+	}
+	// 关键断言：Content-Length 必须与改写后的实际 body 长度一致。
+	if cl := rec.Header().Get("Content-Length"); cl != "" && cl != fmt.Sprintf("%d", len(want)) {
+		t.Fatalf("Content-Length 应与改写后 body 一致，得到 %q 期望 %d", cl, len(want))
+	}
+}
+
+// 回归测试 BUG#1：Adapter 的默认 upstream 应支持运行时热更（SetDefaultUpstream），
+// 而非构造时固定。热更后新请求必须转发到新 upstream。
+func TestAdapterSetDefaultUpstreamHotReload(t *testing.T) {
+	ch := New()
+	var gotTarget atomic.Value
+	adapter := NewAdapter(ch, "http://old", func(w http.ResponseWriter, r *http.Request, target string, df *dataflow.DataFlow) error {
+		gotTarget.Store(target)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+		return nil
+	})
+
+	// 初始请求走旧 upstream
+	rec := httptest.NewRecorder()
+	adapter.Handler(rec, httptest.NewRequest(http.MethodGet, "/", nil), httpsvr.NewDataFlow())
+	if gotTarget.Load() != "http://old" {
+		t.Fatalf("初始应转发到 http://old，得到 %q", gotTarget.Load())
+	}
+
+	// 热更到新 upstream
+	adapter.SetDefaultUpstream("http://new")
+
+	rec2 := httptest.NewRecorder()
+	adapter.Handler(rec2, httptest.NewRequest(http.MethodGet, "/", nil), httpsvr.NewDataFlow())
+	if gotTarget.Load() != "http://new" {
+		t.Fatalf("热更后应转发到 http://new，得到 %q", gotTarget.Load())
 	}
 }

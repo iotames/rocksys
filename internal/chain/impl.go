@@ -99,6 +99,8 @@ func (c *Chain) ResponseHooks(slot Slot) []ResponseHook {
 
 // WriteFinal 由 Tail 中间件调用：写入最终响应并置 done=true。
 // 若已有中间件写过（done=true）则返回 error；响应头须在调用前设置完。
+// ★ 移除可能过期的 Content-Length：Tail 中间件（如 result）改写 body 后，
+//   上游响应头里的 Content-Length 已不匹配，须让 Go 按实际 body 重新计算，否则连接被截断。
 func (c *Context) WriteFinal(code int, header http.Header, body []byte) error {
 	if c.done {
 		return errors.New("final response already written")
@@ -108,6 +110,7 @@ func (c *Context) WriteFinal(code int, header http.Header, body []byte) error {
 	if header != nil {
 		copyHeader(c.RespW.Header(), header)
 	}
+	c.RespW.Header().Del("Content-Length")
 	c.RespW.WriteHeader(code)
 	c.RespW.Write(body)
 	return nil

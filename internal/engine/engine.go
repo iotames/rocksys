@@ -27,12 +27,20 @@ type Engine struct {
 }
 
 // New 创建引擎：装配 easyserver + 注册 chain 适配器为 head 中间件。
+// 订阅配置热更：默认 upstream 变化时热更新适配器（§2.4/§8.2），保证代理立即切换。
 func New(cfgMgr conf.Manager, c *chain.Chain) *Engine {
 	cfg := cfgMgr.Current()
 	srv := easyserver.NewServer(cfg.ListenAddr)
 	e := &Engine{server: srv, chain: c, conf: cfgMgr, pool: newUpstreamPool()}
 	e.adapter = chain.NewAdapter(c, cfg.DefaultUpstream, e.Forward)
 	srv.AddMiddleHead(e.adapter)
+	if cfgMgr != nil {
+		cfgMgr.Watch(func(newCfg *conf.Config) {
+			if newCfg != nil {
+				e.adapter.SetDefaultUpstream(newCfg.DefaultUpstream)
+			}
+		})
+	}
 	return e
 }
 
