@@ -48,90 +48,306 @@
 
 ## 快速开始
 
-### 编译构建
+### 1. 构建
+
+**环境要求**：Go 1.25+（Linux / macOS / Windows 均可，产物为 Linux 目标时可直接交叉编译）。
 
 ```bash
-# 同步依赖地基库（easyconf/easyserver/easydb）并构建
-make build              # 产物 bin/rocksys
+# 同步依赖地基库（easyconf/easyserver/easydb，自动 git pull）并构建
+make build                        # 产物 bin/rocksys
 
-# 或直接构建
+# 或跳过 make deps，直接构建
 go build -o bin/rocksys ./cmd/rocksys
+
+# 交叉编译生产产物（纯 Go 无 CGO，可直接产出目标平台二进制）
+make cross-build                  # 产物 bin/rocksys-linux-amd64、bin/rocksys-linux-arm64
 ```
 
-### 启动
+> 构建产物为**单个可执行文件**，WebUI 管理控制台已 `go:embed` 内嵌在二进制中，零额外前端文件。
+
+### 2. 运行
+
+运行 RockSys 会同时出现 **3 个地址**，先看清各自职责：
+
+```
+客户端 ──HTTP──▶ 代理监听端口  ──转发──▶ 被代理的后端（upstream）
+                 （默认 :8080）            （默认 http://127.0.0.1:8080）
+                      │
+                      └── 管理接口 + WebUI 控制台（默认 127.0.0.1:19527，仅回环）
+```
+
+| 地址 | 默认值 | 是谁 | 谁访问 |
+|------|--------|------|--------|
+| 代理监听端口 | `:8080` | 对外收请求的入口 | 客户端/浏览器 |
+| 被代理后端 | `http://127.0.0.1:8080` | 真正干活的业务服务 | 只有代理转发给它 |
+| 管理/WebUI | `127.0.0.1:19527` | 管理接口 + 图形控制台 | 运维（回环，不对外） |
 
 ```bash
-# 最小运行态：裸反向代理（无需配置文件、无需数据库）
-./bin/rocksys --upstream http://127.0.0.1:8080
+# 最小运行态：裸反向代理
+#   代理端口   = 默认 :8080        → 客户端访问 http://<host>:8080/
+#   被代理后端 = http://127.0.0.1:9000   （实际业务服务，建议与代理端口不同，避免混淆）
+#   WebUI      = http://127.0.0.1:19527/
+./bin/rocksys --upstream http://127.0.0.1:9000
 
-# 指定监听端口与默认后端
-./bin/rocksys --listen :8080 --upstream http://127.0.0.1:9000
+# 显式指定三个地址（最清晰）：
+#   --listen    :8080                  代理对外端口（客户端访问 http://<host>:8080/）
+#   --upstream  http://127.0.0.1:9000  被代理的后端（业务服务）
+#   --admin     127.0.0.1:19527        管理/WebUI 地址（浏览器打开 http://127.0.0.1:19527/）
+./bin/rocksys --listen :8080 --upstream http://127.0.0.1:9000 --admin 127.0.0.1:19527
 
 # 指定配置文件（.env）
-./bin/rocksys --config .env
+./bin/rocksys --config /etc/rocksys/rocksys.env
 ```
 
-启动即代理：`http://<host>:8080/` 收到的请求全部转发到默认后端。
+### 3. 打开管理控制台（WebUI）
 
-### 验证
+浏览器访问 **`http://127.0.0.1:19527/`**（即 `--admin` 指定的地址）即打开图形化管理控制台（默认仅监听回环地址）。
+
+首次使用：
+1. 若启动了管理接口令牌（`ROCKSYS_ADMIN_TOKEN`），点击顶部工具条「访问凭证」输入令牌并保存。
+2. 默认落地「概览」页：查看网关状态、运行指标、降级链与组件总览。
+
+### 4. 验证代理
 
 ```bash
+# 8080 是代理端口；此请求经代理转发到后端（上例 :9000），返回后端响应原样
 curl http://127.0.0.1:8080/hello
 # → 上游响应原样返回
 ```
 
 ---
 
+## 管理控制台（WebUI）使用指南
+
+> 纯静态单页，随二进制分发，无需单独安装。产品设计见 `docs/webui.md`，对接契约见 `docs/webui-api.md`。
+
+| 页面 | 做什么 |
+|------|--------|
+| **概览** | 巡检入口：网关信息、实时指标（QPS/延迟分位/错误率）、**降级链可视化**、13 个组件状态总览 |
+| **组件** | 查看全部挂件启停状态；一键开启/关闭（二次确认，失败原因透出）；展开卡片查看运行信息与配置 |
+| **配置** | 全部配置项按「网关 + 各组件」分组展示；行内编辑**即时生效、无需重启**；敏感项默认掩码；支持恢复默认值 |
+| **脚本** | 编写/发布 RockScript 策略（Lua，带语法着色与校验）；版本时间线一键回滚或移除 |
+| **观测 · 指标** | 实时指标卡 + 趋势折线图（按刷新周期累积采样） |
+| **观测 · 日志** | 按日期范围查询访问日志；按请求标识（trace_id）过滤、只看异常；行展开查看分环节耗时与转发目标 |
+
+**通用交互**：
+- 顶栏可设「自动刷新」（关/5s/15s/30s，作用于概览/组件/指标）；配置/脚本/日志手动刷新。
+- 所有写操作（启停组件/改配/发布脚本）均为：**二次确认 → 执行 → 结果提示 → 自动刷新**。
+- 网关不可达时显示「管理接口不可达」横幅并保留上次数据。
+
+**WebUI 专属说明**：
+- 脚本为内存态：**网关重启后需重新发布**。
+- 控制台仅监听回环地址，勿对外暴露；如需远程访问，用 SSH 隧道或置于受控内网。
+
+---
+
 ## 配置
 
-所有配置支持三种来源（优先级从高到低）：**命令行参数 > 环境变量 > `.env` 配置文件**。配置文件热更（修改后约 3s 自动生效）。
+所有配置支持三种来源（优先级从高到低）：**命令行参数 > 环境变量 > `.env` 配置文件**。配置文件热更（修改后约 3s 自动生效，无需重启）。
 
 ### 底座配置
 
 | 项 | 默认值 | 说明 |
 |----|--------|------|
-| `--listen` | `:8080` | 代理监听地址 |
-| `--upstream` | `http://127.0.0.1:8080` | 默认后端 |
-| `--admin` | `127.0.0.1:19527` | 管理接口（回环，不对外网） |
-| `--timeout` | `5s` | 转发超时 |
-| `--config` | 空 | `.env` 配置文件路径 |
+| `--listen` / `ROCKSYS_LISTEN` | `:8080` | 代理监听地址 |
+| `--upstream` / `ROCKSYS_UPSTREAM` | `http://127.0.0.1:8080` | 默认后端 |
+| `--admin` / `ROCKSYS_ADMIN` | `127.0.0.1:19527` | 管理接口（回环，不对外网） |
+| `--timeout` / `ROCKSYS_TIMEOUT` | `5` | 转发超时（秒） |
+| `--config` / `ROCKSYS_CONFIG` | 空 | `.env` 配置文件路径 |
+| `ROCKSYS_LOG_LEVEL` | `info` | 日志级别（debug/info/warn/error） |
 
-### 启用挂件（热开关，不重启）
+### 配置文件示例（`.env`）
 
 ```bash
-# 查看挂件状态
-curl http://127.0.0.1:19527/admin/switch/list
+# ===== 底座 =====
+ROCKSYS_LISTEN = :8080
+ROCKSYS_UPSTREAM = http://127.0.0.1:9000
+ROCKSYS_TIMEOUT = 5
+ROCKSYS_ADMIN = 127.0.0.1:19527
+ROCKSYS_LOG_LEVEL = info
 
-# 启用 L1 防护
-curl -X POST http://127.0.0.1:19527/admin/switch/on/shield
+# ===== 防护 shield（L1）=====
+SHIELD_ENABLED = true
+SHIELD_IP_BLACKLIST = 10.0.0.5,192.168.1.0/24
+SHIELD_IP_WHITELIST =
+SHIELD_RATE_LIMIT_RPS = 100
+SHIELD_RATE_LIMIT_BURST = 50
+SHIELD_ALLOW_METHODS = GET,POST,PUT,DELETE
+SHIELD_MAX_BODY_SIZE = 10485760
+SHIELD_WAF_SQL_INJECTION = true
+SHIELD_WAF_XSS = true
+SHIELD_WAF_PATH_TRAVERSAL = true
+SHIELD_WAF_RISK_PATH = true
+SHIELD_WAF_CRAWLER_UA = true
+SHIELD_RULES_DIR = rules
 
-# 关闭 L2 路由（请求回退默认后端）
-curl -X POST http://127.0.0.1:19527/admin/switch/off/dispatch
+# ===== 分发 dispatch（L2）=====
+# 格式：<prefix>=<spec>[;<spec>...]；节点 <url>[|w=权重]；可选 @间隔@超时@路径 健康检查
+# 例：/api/order/ 走 o1/o2 两个节点（加权轮询 + 健康检查）
+DISPATCH_RULES = /api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz;/=http://default-svc:9000
+
+# ===== 改写 rewrite =====
+REWRITE_RULES = /api/v1/=uri|/api/;header=X-Proxy-Tag:rewrite
+
+# ===== 观测 obs =====
+OBS_LOG_DIR = logs
+OBS_RETENTION_DAYS = 30
+
+# ===== 抄送 copy =====
+COPY_TARGETS =
+
+# ===== 结果 result（L3）=====
+RESULT_WRAP =
+RESULT_MASK_FIELDS = phone,id_card
+
+# ===== 认证 auth =====
+AUTH_ENABLED = true
+AUTH_JWT_SECRET = change-me
+AUTH_JWT_ISSUER = rocksys
+AUTH_JWT_TTL = 3600
+
+# ===== 消息 mq（条件装配：两者同时满足才注册）=====
+MQ_ENABLED = false
+MQ_DSN = mq.db
+
+# ===== 数据访问层 =====
+DB_DRIVER = sqlite
+DB_DSN = rocksys.db
+SQL_DIR = sql
 ```
 
-每个挂件的配置项均通过环境变量 / `.env` 设置，热更生效（详见开发手册 `docs/COMPONENTS.md`）。
+> 每个挂件默认关闭；`.env` 里写配置不等于启用，需在 WebUI「组件」页或 `rockctl switch on` 显式开启。
+> 全部挂件配置项详解见 `docs/COMPONENTS.md`；完整键清单可在 WebUI「配置」页查看。
 
-# 管理控制台（WebUI）
+### 管理接口令牌
 
-浏览器打开 `http://127.0.0.1:19527/` 即得图形化管理控制台（纯静态单页，内嵌在二进制中，零额外部署）：
-
-- **概览**：网关状态、运行指标、降级链可视化、组件总览
-- **组件**：13 个挂件启停与配置（二次确认，失败原因透出）
-- **配置**：全部配置项分组查看与热改（即时生效，无需重启）
-- **脚本**：RockScript 策略发布与版本回滚
-- **观测**：指标趋势图 + 按天访问日志查询
-
-产品设计见 `docs/webui.md`，对接契约见 `docs/webui-api.md`。控制台仅监听回环地址，勿对外暴露。
+```bash
+export ROCKSYS_ADMIN_TOKEN=your-secret
+./bin/rocksys --upstream http://127.0.0.1:9000
+# 此后所有管理操作（curl / rockctl / WebUI）需带请求头 Authorization: Bearer your-secret
+```
 
 ---
 
-## 部署
+## 常用运维命令
 
-1. **单二进制分发**：纯 Go 无 CGO，编译产物为单个可执行文件，零外部依赖。
-2. **多副本**：无状态转发层，可多副本水平扩展；配置集中下发（RockConfig / 环境变量）。
-3. **优雅停机**：`Ctrl+C` 触发排空，在途请求不丢失（30s 超时）。
-4. **观测**：启用 obs 后，访问日志落在 `logs/access-YYYY-MM-DD.jsonl`（按天切分、超期清理），指标查询 `GET /admin/metrics`。
-5. **业务层**：stbiz_* 微服务（Python/PHP）不依赖 SDK 也可被代理（裸转发）；如需内网互调，使用 `sdk/python`（HTTP 一等公民，gRPC 可选）。
+### rockctl（命令行工具）
+
+`rockctl` 是独立的运维 CLI（与 `rocksys` 是两个二进制）：
+
+```bash
+# 构建 rockctl
+go build -o bin/rockctl ./cmd/rockctl
+
+# 默认连 127.0.0.1:19527；远程可 --admin 指定；令牌经环境变量 ROCKSYS_ADMIN_TOKEN
+rockctl switch list                # 列出组件状态
+rockctl switch on shield           # 开启防护
+rockctl switch off dispatch        # 关闭路由（回退默认后端）
+rockctl config get                 # 查看当前配置
+rockctl config set ROCKSYS_UPSTREAM http://127.0.0.1:9001   # 热改配置
+rockctl script publish rule.lua    # 发布 Lua 策略
+rockctl script rollback            # 回滚脚本
+```
+
+### 直接调用管理 API
+
+```bash
+curl http://127.0.0.1:19527/admin/switch/list
+curl -X POST http://127.0.0.1:19527/admin/switch/on -d '{"name":"shield"}'
+curl -X PUT  http://127.0.0.1:19527/admin/config -d '{"ROCKSYS_UPSTREAM":"http://127.0.0.1:9001"}'
+curl http://127.0.0.1:19527/admin/metrics
+curl "http://127.0.0.1:19527/admin/logs?from=2026-08-04&to=2026-08-04"
+```
+
+---
+
+## 生产部署
+
+### 目录规划
+
+```text
+/opt/rocksys/
+├── bin/rocksys              # 编译产物（或 cross-build 产物）
+├── rocksys.env              # 配置文件
+├── logs/                    # 访问日志（obs 启用后，按天切分）
+├── rules/                   # WAF 规则外置目录（可选）
+├── sql/                     # SQL 脚本外置目录（可选）
+└── rocksys.db               # 默认 SQLite 数据库（自动创建）
+```
+
+### systemd 服务
+
+```ini
+# /etc/systemd/system/rocksys.service
+[Unit]
+Description=RockSys Gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rocksys
+ExecStart=/opt/rocksys/bin/rocksys --config /opt/rocksys/rocksys.env
+Restart=always
+RestartSec=3
+# 管理接口令牌（可选）
+Environment=ROCKSYS_ADMIN_TOKEN=change-me
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo cp bin/rocksys /opt/rocksys/bin/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rocksys
+```
+
+### 安全建议
+
+1. **管理接口仅监听回环**（默认 `127.0.0.1:19527`），严禁 `ROCKSYS_ADMIN` 设为 `0.0.0.0` 暴露外网。
+2. 远程管理用 SSH 隧道：`ssh -L 19527:127.0.0.1:19527 user@host` 后浏览器访问 `http://127.0.0.1:19527/`。
+3. 设置 `ROCKSYS_ADMIN_TOKEN`，避免回环端口被本机其他进程访问。
+4. 对外暴露的监听端口建议置于防火墙 / 安全组之后。
+
+### 升级与优雅重启
+
+```bash
+# 1. 替换二进制
+sudo cp bin/rocksys /opt/rocksys/bin/rocksys
+# 2. 优雅重启（SIGTERM 触发排空，在途请求不丢失，30s 超时）
+sudo systemctl restart rocksys
+```
+
+配置与前端均内嵌/外置，升级二进制即可，无需迁移数据（状态为内存态，日志落盘保留）。
+
+### 多副本
+
+转发层无状态，可多副本水平扩展：
+
+```bash
+./bin/rocksys --listen :8081 --config rocksys.env &
+./bin/rocksys --listen :8082 --config rocksys.env &
+```
+
+前方用负载均衡器 / DNS 轮询分发；配置集中下发（同一配置文件或环境变量）。
+
+### 日志与留存
+
+- obs 启用后：访问日志 `logs/access-YYYY-MM-DD.jsonl`（按天切分，超期自动清理，`OBS_RETENTION_DAYS`）。
+- 指标：`GET /admin/metrics`（1 分钟滑动窗口），WebUI「观测 · 指标」查看趋势。
+- 业务日志与网关日志分离；如需聚合到统一平台，可对接日志采集器消费 `logs/` 目录。
+
+---
+
+## 故障与降级
+
+| 症状 | 处理 |
+|------|------|
+| 后端全挂 | dispatch 健康检查将节点摘除；全挂写 503 中断链；关闭 dispatch 即回退默认后端 |
+| 防护误拦 | WebUI「组件」页关闭 shield（或调整规则）；转发自动降级不受影响 |
+| Lua 脚本出错 | 自动回滚脚本或 `script rollback` 移除；脚本仅策略、不影响转发 |
+| 配置改坏 | WebUI「配置」页恢复默认值，或改回 `.env` 后 3s 热更生效 |
+| 组件故障 | 关闭该组件即摘除环节，转发链自动降级，**转发永不中断** |
 
 ---
 
@@ -182,7 +398,7 @@ curl -X POST http://127.0.0.1:19527/admin/switch/off/dispatch
 
 ## 技术栈
 
-- Go 1.24+，纯 Go 无 CGO
+- Go 1.25+，纯 Go 无 CGO
 - 依赖地基库：`easyserver`（HTTP 服务器框架）、`easyconf`（配置）、`easydb`（数据访问）
 - 独立子仓库，主模块经 `go.mod replace` 引用
 
