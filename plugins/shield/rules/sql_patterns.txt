@@ -1,0 +1,28 @@
+# SQL 注入组合特征：每行一个模式，匹配时先做 URL 解码并转小写（子串匹配）。
+# 采用"关键词组合"而非单词匹配，避免误杀（URL 中出现 select 等普通单词不拦截）。
+# 以 # 开头的行是注释，空行忽略。外置目录（SHIELD_RULES_DIR）同名文件可覆盖本文件。
+union select
+union all select
+union distinct select
+select * from
+select count(
+select version(
+drop table
+drop database
+drop index
+truncate table
+sleep(
+benchmark(
+waitfor delay
+information_schema.
+into outfile
+into dumpfile
+load_file(
+concat(
+char(
+';
+' or '1'='1
+" or "1"="1
+ or 1=1
+ or 1=1--
+/*

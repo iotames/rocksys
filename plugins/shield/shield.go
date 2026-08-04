@@ -20,6 +20,9 @@ import (
 // bucketsMax 限流桶数量上限，LRU 淘汰防内存膨胀（§9.3）。
 const bucketsMax = 10000
 
+// defaultRulesDir WAF 规则外置目录默认值（相对工作目录；缺失时回退内嵌 rules/）。
+const defaultRulesDir = "rules"
+
 // PathRule 路径/UA 规则（glob 风格，* 通配任意串，? 通配单字符）。
 type PathRule struct {
 	Pattern string // 匹配目标：URL 路径或 User-Agent
@@ -45,6 +48,17 @@ type Shield struct {
 	// pathRules 路径/UA 规则：无配置项，代码注入（SetPathRules），Start 时并入快照。
 	pathRules []PathRule
 
+	// WAF 检测配置项（§9.6）：全部默认关闭，Start 时编译进快照。
+	wafSQLEnabled     bool   // SHIELD_WAF_SQL_INJECTION（*bool）
+	wafXSSEnabled     bool   // SHIELD_WAF_XSS（*bool）
+	wafPathEnabled    bool   // SHIELD_WAF_PATH_TRAVERSAL（*bool）
+	wafRiskPathOn     bool   // SHIELD_WAF_RISK_PATH（*bool）风险路径检测开关
+	wafCrawlerOn      bool   // SHIELD_WAF_CRAWLER_UA（*bool）爬虫 UA 拦截开关
+	wafRiskPaths      string // SHIELD_WAF_RISK_PATHS（*string）追加风险路径
+	allowMethods      string // SHIELD_ALLOW_METHODS（*string）方法白名单
+	maxBodySize       int    // SHIELD_MAX_BODY_SIZE（*int）请求体上限字节
+	rulesDir          string // SHIELD_RULES_DIR（*string）WAF 规则外置目录（优先加载，嵌入兜底）
+
 	mu       sync.Mutex   // 保护 pathRules 读写
 	snapshot atomic.Value // *shieldSnapshot
 }
@@ -57,6 +71,7 @@ type shieldSnapshot struct {
 	pathRules   []PathRule
 	limitBy     string
 	limiter     *RateLimiter
+	waf         *wafSnapshot // WAF 检测编译态（§9.6）
 }
 
 // ipSet 编译后的 IP 匹配集：精确 + CIDR。
@@ -212,6 +227,15 @@ func New(cfgMgr conf.Manager) (*Shield, error) {
 		{&s.rps, "SHIELD_RATE_LIMIT_RPS", "0", "限流速率（每秒请求数，0=不限流）"},
 		{&s.burst, "SHIELD_RATE_LIMIT_BURST", "0", "限流突发容量"},
 		{&s.limitBy, "SHIELD_RATE_LIMIT_BY", "ip", "限流维度（当前仅支持 ip）"},
+		{&s.wafSQLEnabled, "SHIELD_WAF_SQL_INJECTION", "false", "SQL 注入检测（URL 路径/查询串，组合特征，默认关闭）"},
+		{&s.wafXSSEnabled, "SHIELD_WAF_XSS", "false", "XSS 检测（URL 查询串，默认关闭）"},
+		{&s.wafPathEnabled, "SHIELD_WAF_PATH_TRAVERSAL", "false", "路径遍历检测（默认关闭）"},
+		{&s.wafRiskPathOn, "SHIELD_WAF_RISK_PATH", "false", "风险路径检测（内置 + SHIELD_WAF_RISK_PATHS 追加，默认关闭）"},
+		{&s.wafCrawlerOn, "SHIELD_WAF_CRAWLER_UA", "false", "爬虫/扫描器 UA 拦截（特征见规则文件 crawler_ua.txt，默认关闭）"},
+		{&s.wafRiskPaths, "SHIELD_WAF_RISK_PATHS", "", "追加风险路径（逗号分隔，需先开启 SHIELD_WAF_RISK_PATH）"},
+		{&s.allowMethods, "SHIELD_ALLOW_METHODS", "", "HTTP 方法白名单（逗号分隔，空=不限）"},
+		{&s.maxBodySize, "SHIELD_MAX_BODY_SIZE", "0", "请求体大小上限（字节，0=不限）"},
+		{&s.rulesDir, "SHIELD_RULES_DIR", "rules", "WAF 规则外置目录（优先加载，缺失回退内嵌 rules/）"},
 	}
 	for _, it := range items {
 		if err := cfgMgr.Register(it.pval, it.name, it.defval, it.title); err != nil {
@@ -236,6 +260,8 @@ func (s *Shield) Name() string { return "shield" }
 func (s *Shield) Slot() chain.Slot { return chain.Head }
 
 // Start 从配置项字段读取最新值，重建不可变快照并原子替换（§6.2/§6.3）。
+// 规则文件（SQL/XSS/路径遍历/风险路径/爬虫 UA）在 Start 时经 ruleLoader 加载：
+// 加载失败返回 error 并保留旧快照（实例继续以旧规则服务），符合"Start 失败保留旧快照"约定。
 func (s *Shield) Start(cfg any) error {
 	s.mu.Lock()
 	rules := append([]PathRule(nil), s.pathRules...)
@@ -245,6 +271,21 @@ func (s *Shield) Start(cfg any) error {
 	if limitBy == "" {
 		limitBy = "ip"
 	}
+
+	// 加载 WAF 规则文件（外置目录优先、嵌入兜底）。
+	rulesDir := s.rulesDir
+	if rulesDir == "" {
+		rulesDir = defaultRulesDir
+	}
+	loader, err := newRuleLoader(rulesDir)
+	if err != nil {
+		return err
+	}
+	rs, err := loader.load()
+	if err != nil {
+		return err
+	}
+
 	snap := &shieldSnapshot{
 		enabled:     s.enabled,
 		ipBlacklist: newIPSet(splitList(s.ipBlacklist)),
@@ -252,6 +293,20 @@ func (s *Shield) Start(cfg any) error {
 		pathRules:   rules,
 		limitBy:     limitBy,
 		limiter:     newRateLimiter(s.rps, s.burst),
+		waf: &wafSnapshot{
+			sqlEnabled:      s.wafSQLEnabled,
+			xssEnabled:      s.wafXSSEnabled,
+			pathTravEnabled: s.wafPathEnabled,
+			riskPathEnabled: s.wafRiskPathOn,
+			crawlerEnabled:  s.wafCrawlerOn,
+			allowMethods:    newMethodSet(s.allowMethods),
+			maxBodySize:     int64(s.maxBodySize),
+			sqlPatterns:     rs.SQLPatterns,
+			xssPatterns:     rs.XSSPatterns,
+			pathPatterns:    rs.PathTraversal,
+			crawlerUAs:      rs.CrawlerUA,
+			riskPaths:       mergeRiskPaths(rs.RiskPaths, s.wafRiskPaths),
+		},
 	}
 	s.snapshot.Store(snap)
 	return nil
@@ -276,6 +331,10 @@ func (s *Shield) Handle(ctx *chain.Context) (next bool) {
 	}
 	if snap.ipBlacklist.contains(ip) {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		return false
+	}
+	// ★ WAF 安全检测（§9.6，默认全部关闭；开启后位于 IP 检查之后、路径/UA 规则之前）
+	if !runWAF(ctx, snap.waf) {
 		return false
 	}
 	deny, allow := snap.matchRules(ctx.R.URL.Path, ctx.R.UserAgent())
@@ -378,3 +437,51 @@ func matchGlob(pattern, s string) bool {
 
 // 编译期断言：Shield 满足 hotswap.MiddlewareLifecycle。
 var _ hotswap.MiddlewareLifecycle = (*Shield)(nil)
+
+// runWAF 执行 WAF 检测链（§9.6）。返回 true 放行；false 表示已写拦截响应。
+// 检测顺序：方法白名单 → 体积限制 → 风险路径 → 路径遍历 → SQL 注入 → XSS → 爬虫 UA。
+// 除方法白名单/体积限制按配置值决定外，其余检测项各自独立开关（全部默认关闭）。
+// waf 为 nil（快照未构建）时直接放行。
+func runWAF(ctx *chain.Context, waf *wafSnapshot) bool {
+	if waf == nil {
+		return true
+	}
+	// 1. 方法白名单（空 = 不限）
+	if len(waf.allowMethods) > 0 {
+		if _, ok := waf.allowMethods[strings.ToUpper(ctx.R.Method)]; !ok {
+			http.Error(ctx.W, "method not allowed", http.StatusForbidden)
+			return false
+		}
+	}
+	// 2. 请求体大小预检（仅 ContentLength；-1 表示 chunked/未知，跳过，见 §9.6 边界）
+	if waf.maxBodySize > 0 && ctx.R.ContentLength > waf.maxBodySize {
+		http.Error(ctx.W, "request body too large", http.StatusRequestEntityTooLarge)
+		return false
+	}
+	// 3. 风险路径（文件风险路径 + 配置追加）
+	if waf.riskPathEnabled && len(waf.riskPaths) > 0 && waf.matchRiskPath(ctx.R.URL.Path) {
+		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		return false
+	}
+	// 4. 路径遍历（原始转义路径 + 解码路径双路）
+	if waf.pathTravEnabled && waf.hasPathTraversal(ctx.R.URL.EscapedPath(), ctx.R.URL.Path) {
+		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		return false
+	}
+	// 5. SQL 注入
+	if waf.sqlEnabled && waf.hasSQL(ctx.R.URL.Path, ctx.R.URL.RawQuery) {
+		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		return false
+	}
+	// 6. XSS
+	if waf.xssEnabled && waf.hasXSS(ctx.R.URL.RawQuery) {
+		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		return false
+	}
+	// 7. 爬虫/扫描器 UA
+	if waf.crawlerEnabled && waf.hasCrawlerUA(ctx.R.UserAgent()) {
+		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
+}

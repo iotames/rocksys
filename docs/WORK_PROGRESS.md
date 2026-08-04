@@ -55,17 +55,18 @@
 
 ## 四、当前工作位置
 
-- 批次：**批次 9（✅ 完成）**——数据访问层 + SQL 脚本外置 + 工作池落地。
-- 全仓库 22 包 `go build/vet/test` 全绿；端到端验证（降级链/压测/高可用/Python链路）已由批次8完成。
+- 批次：**批次 10（✅ 完成）**——easywaf 借鉴：shield WAF 检测 + dispatch 节点组负载均衡 + WAF 规则文件外置。
+- 全仓库 22 包 `go build/vet/test` 全绿。
 - 剩余事项：仅「真实 Linux 服务器 P99<10ms 复验」建议（本 WSL 环境无法达标，非代码缺陷）。
 
 ## 五、未完成任务与下次起点
 
-- 批次 1-9 全部完成。**P0+P1+P2 后端底座 + 数据访问层交付完毕。**
+- 批次 1-10 全部完成。**P0+P1+P2 后端底座 + 数据访问层 + WAF/LB 增强交付完毕。**
 - 可选后续（不在本阶段范围）：
   - 真实 Linux 服务器上按 §23.2 用 hey 复验 P99<10ms
   - 前端（下一阶段）
   - 补全 `sql/mysql/`、`sql/postgres/` 下的业务脚本（当前仅默认 SQLite 完整）
+  - easywaf 第二期：路由参数/通配匹配、Admin 观测端点
 - **断点恢复**：无需恢复，全部批次已完成。
 
 ## 六、批次日志
@@ -134,6 +135,15 @@
 - ✅ go.mod 新增 `github.com/iotames/easydb => ./easydb` 本地 replace
 - 验证：22 包 `go build/vet/test` 全绿（internal/db、internal/workpool、plugins/mq、cmd/rocksys 新增测试）
 
+### 批次 10（✅ 完成）——easywaf 借鉴：WAF 检测 + 节点组负载均衡 + 规则文件外置
+- ✅ `plugins/shield/waf.go`：WAF 检测（SQL 注入/XSS/路径遍历/风险路径/方法白名单/体积限制），全部默认关闭 = 开关切换，检测仅查 URL+UA 不读 body（避免 Body 重放），注入用组合特征子串防误报
+- ✅ `plugins/shield/rules/`：5 个规则文件外置（risk_paths/sql_patterns/xss_patterns/path_traversal/crawler_ua），经 `internal/hotswap.ScriptDir` 加载（外置目录优先、嵌入兜底，改规则不重编译）；新增 `SHIELD_RULES_DIR`/`SHIELD_WAF_RISK_PATH`/`SHIELD_WAF_CRAWLER_UA` 配置项
+- ✅ `plugins/dispatch` 升级 v2：新格式 `<Prefix>=<spec>`（节点组分号分隔 + `@interval@timeout@path` 健康检查 + `|w=权重`/`|p=0高优/1备份`），旧格式仍兼容
+- ✅ `plugins/dispatch/balancer.go`：平滑加权轮询 + 高优优先，选点语义（§10.5）
+- ✅ `plugins/dispatch/healthcheck.go`：主动探活（启动即探 + interval 轮询，2xx/3xx 健康），生命周期随路由表启停防 goroutine 泄漏；全挂写 503 中断链
+- ✅ 验证：22 包 `go build/vet/test` 全绿（新增 balancer/healthcheck/rules/waf 测试 + dispatch_test 重写）
+- 说明：`easywaf/` 为借鉴项目源码，已加入 `.gitignore` 不提交
+
 ### Git 提交记录
 | 时间 | 提交 | 内容 |
 |------|------|------|
@@ -147,3 +157,5 @@
 | - | a5de453 | 第16-19章P2组件(auth/registry/mq/object) |
 | - | ef04196 | 第7章cmd/rocksys装配 |
 | - | 519e9ee | easyserver listenPrepare幂等修复（响应双写BUG） |
+| - | 5dd95b7 | 批次9: 数据访问层(easydb本地replace+SQL外置sql/<dbtype>/逐级加载)+workpool |
+| - | (批次10) | easywaf借鉴: shield WAF检测+dispatch节点组负载均衡+规则文件外置 |

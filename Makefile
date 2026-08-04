@@ -1,9 +1,13 @@
 # RockSys 构建入口
 #
 # 依赖地基库（easyconf/easyserver/easydb）为独立 git 仓库，主模块经 go.mod replace
-# 引用本地路径。make deps 自动处理依赖：
+# 引用本地路径。三个子仓库的 origin 一律以 github.com/iotames 为准（githost/nas 仅作
+# 私有 push 目标）。make deps 自动处理依赖：
 #   - 子仓库目录缺失 → 从 github.com 拉取（clone 失败报错退出）
 #   - 子仓库目录已存在 → 执行 git pull 同步（网络不可达时警告并继续，不阻塞构建）
+#
+# 注意：deps 使用 https 公共仓库（只读）clone/pull；push 请用
+# `github:iotames/xxx.git` SSH 别名（配好权限、默认登录），本 Makefile 不做 push。
 #
 # 用法：
 #   make deps    # 同步依赖仓库

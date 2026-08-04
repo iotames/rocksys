@@ -1176,6 +1176,22 @@ type RateLimiter struct {
     burst   int
     buckets sync.Map  // key → *tokenBucket，LRU 淘汰上限 10000
 }
+
+// WAF 检测编译态（§9.6）：构建于 Start，随不可变快照整体原子替换。
+type wafSnapshot struct {
+    sqlEnabled      bool   // SQL 注入开关
+    xssEnabled      bool   // XSS 开关
+    pathTravEnabled bool   // 路径遍历开关
+    riskPathEnabled bool   // 风险路径开关
+    crawlerEnabled  bool   // 爬虫 UA 开关
+    allowMethods    map[string]struct{} // 方法白名单（nil=不限）
+    maxBodySize     int64               // 请求体上限（0=不限）
+    sqlPatterns     []string            // 检测模式（来自规则文件）
+    xssPatterns     []string
+    pathPatterns    []string
+    crawlerUAs      []string
+    riskPaths       map[string]struct{} // 文件风险路径 + 配置追加
+}
 ```
 
 ### 9.2 处理流程
@@ -1183,6 +1199,7 @@ type RateLimiter struct {
 ```
 白名单 IP → 放行
 黑名单 IP → 403 Forbidden
+WAF 检测链（§9.6，各项独立开关，默认关闭）→ 命中 → 403 Forbidden
 路径/UA 规则匹配 deny → 403
 路径规则匹配 allow → 跳过限流
 限流检查 → 超限 → 429 Too Many Requests + Retry-After 头
@@ -1204,9 +1221,21 @@ SHIELD_IP_WHITELIST=127.0.0.1
 SHIELD_RATE_LIMIT_RPS=100
 SHIELD_RATE_LIMIT_BURST=20
 SHIELD_RATE_LIMIT_BY=ip
+
+# WAF 检测（§9.6，全部默认关闭 = 演进开关切换，不影响存量行为）
+SHIELD_WAF_SQL_INJECTION=false
+SHIELD_WAF_XSS=false
+SHIELD_WAF_PATH_TRAVERSAL=false
+SHIELD_WAF_RISK_PATH=false
+SHIELD_WAF_RISK_PATHS=
+SHIELD_WAF_CRAWLER_UA=false
+SHIELD_ALLOW_METHODS=
+SHIELD_MAX_BODY_SIZE=0
+SHIELD_RULES_DIR=rules
 ```
 
 > 以上配置项由挂件在构造时通过 `cfgMgr.Register(...)` 注册（见 §2.2），注册后自动纳入 .env 读写与热更广播；未注册的 key 在 `/admin/config` 写入时静默无效。
+> WAF 配置项为 `*bool`/`*string`/`*int`（easyconf Register 支持类型）。
 
 ### 9.5 验收
 
@@ -1228,34 +1257,97 @@ for i in $(seq 1 110); do curl -s -o /dev/null -w "%{http_code}\n" http://localh
 # → 前 100 个 200，之后 429
 ```
 
+### 9.6 WAF 检测（批次10 新增）
+
+WAF 检测链在 IP 黑白名单之后、路径/UA 规则之前执行，各检测项独立开关、**全部默认关闭**（符合"演进 = 开关切换"红线）。
+
+**检测顺序**：方法白名单 → 请求体大小预检 → 风险路径 → 路径遍历 → SQL 注入 → XSS → 爬虫 UA。命中任一 → 403 Forbidden 并中断转发链。
+
+设计要点：
+
+- **不读请求体**：检测仅基于 URL 路径/查询串与 User-Agent，避免 Body 重放问题；请求体大小仅按 `ContentLength` 预检，`-1`（chunked/未知）跳过。
+- **注入检测用组合特征子串**（如 `union select`、`select * from`）而非单关键词，避免误杀 URL 中的普通单词。
+- **规则全部外置文件**：`plugins/shield/rules/*.txt` 经 `internal/hotswap.ScriptDir` 加载（**外置目录优先、嵌入兜底**，与 `internal/db` 加载 `sql/<dbtype>/` 同机制），**改规则无需重新编译**。
+
+规则文件清单（每行一个模式，`#` 注释、空行忽略；`SHIELD_RULES_DIR` 外置同名文件整体替换嵌入文件）：
+
+| 文件 | 内容 | 对应开关 |
+|------|------|---------|
+| `rules/risk_paths.txt` | 风险路径（`/.env`、`/.git`、`/.well-known` 等，目录前缀匹配其下全部子路径） | `SHIELD_WAF_RISK_PATH` |
+| `rules/sql_patterns.txt` | SQL 注入组合特征 | `SHIELD_WAF_SQL_INJECTION` |
+| `rules/xss_patterns.txt` | XSS 特征 | `SHIELD_WAF_XSS` |
+| `rules/path_traversal.txt` | 路径遍历特征（同时匹配转义/解码双路） | `SHIELD_WAF_PATH_TRAVERSAL` |
+| `rules/crawler_ua.txt` | 爬虫/扫描器 UA 特征 | `SHIELD_WAF_CRAWLER_UA` |
+
+- **生命周期**：`Start` 时经 `ruleLoader` 加载规则文件构建 `wafSnapshot`，随不可变快照原子替换；加载失败返回 error 并**保留旧快照**（实例继续以旧规则服务）。
+- **风险路径合并**：`SHIELD_WAF_RISK_PATHS` 配置追加到规则文件集合（需先开启 `SHIELD_WAF_RISK_PATH`）。
+
+验收示例：
+
+```bash
+# 开启 SQL 注入检测
+curl -X PUT http://127.0.0.1:19527/admin/config \
+  -d '{"SHIELD_WAF_SQL_INJECTION":"true"}'
+curl "http://localhost:8080/api/list?id=1%20union%20select%20*%20from%20users"
+# → 403 Forbidden
+
+# 开启风险路径检测后访问 /.env
+curl -X PUT http://127.0.0.1:19527/admin/config \
+  -d '{"SHIELD_WAF_RISK_PATH":"true"}'
+curl http://localhost:8080/.env
+# → 403 Forbidden
+
+# 外置规则覆盖（不重新编译）：在 SHIELD_RULES_DIR 放同名 crawler_ua.txt 新增自定义 UA
+```
+
 ---
 
 ## 第 10 章 plugins/dispatch（L2 路由分发）
 
-- **职责**：URI 前缀路由表 → 目标 upstream；未命中 → 默认 upstream。
+- **职责**：URI 前缀路由表 → 目标节点组（多节点负载均衡）；未命中 → 默认 upstream。
 - **依赖**：`internal/chain`、`internal/dataflow`、`internal/hotswap`、`internal/conf`。
+- **v2（批次10）**：前缀可指向【节点组】——多节点 + 平滑加权轮询 + 主动健康检查 + 高优节点优先（借鉴 easywaf，修掉其"未加权轮询、健康检查空壳"不足）。
 
 ### 10.1 关键类型
 
 ```go
 package dispatch
 
+// Rule 一条路由规则：Prefix 匹配的 URI 前缀，Nodes 为转发目标节点组。
 type Rule struct {
-    Prefix   string  // 前缀路径，必须以 "/" 开头
-    Upstream string  // 目标地址 http://host:port
+    Prefix      string       // 前缀路径，必须以 "/" 开头
+    Nodes       []*Node      // 上游节点组（≥1）
+    HealthCheck *HealthCheck // 主动健康检查（nil = 不探活，所有节点视为健康）
+    rr          *rrState     // 平滑加权轮询状态（与 Nodes 等长）
+}
+
+// Node 上游节点。
+type Node struct {
+    URL      string // http(s)://host[:port]
+    Weight   int    // 权重（>0，默认 1）
+    Priority int    // 0=高优（默认），1=备份（高优全挂才用）
+}
+
+// HealthCheck 主动健康检查配置与运行态。
+type HealthCheck struct {
+    Interval time.Duration // 探活周期（如 10s）
+    Timeout  time.Duration // 单次探测超时（如 2s）
+    Path     string        // 探测路径（如 /healthz）
 }
 
 type RouteTable struct {
-    rules []Rule  // 有序列表，最长前缀优先
+    rules []*Rule  // 有序列表，最长前缀优先
 }
 
 // Slot 挂载位置：路由分发在防护之后、转发之前执行（同一请求内只允许一个 dispatch 挂 Middle）
 func (d *Dispatch) Slot() chain.Slot { return chain.Middle }
 ```
 
-> ★ **DISPATCH_RULES 配置格式**：配置字符串为逗号分隔的规则列表，每条规则格式为 `<Prefix>=<Upstream>`。
-> - 分隔符 `,` 与 `=` **不可转义**：Prefix 以 `/` 开头，Upstream 以 `http://` 或 `https://` 开头，因此逗号/等号不会出现在 Prefix 或 Upstream 的合法位置。无需转义机制。
-> - 示例：`/api/order/=http://order-svc:9001,/api/user/=http://user-svc:9002`
+> ★ **DISPATCH_RULES 配置格式**：配置字符串为逗号分隔的规则列表，每条规则格式为 `<Prefix>=<spec>`。
+> - `spec = <node>[;<node>...][@interval@timeout@path]`，`node = http(s)://host[:port][|w=<权重>][|p=<优先级>]`。
+> - 分隔符 `,` `=` `;` `|` `@` **不可转义**：Prefix 以 `/` 开头，node URL 以 `http(s)://` 开头，因此这些分隔符不会出现在合法位置的取值中。无需转义机制。
+> - 示例：`/api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz,/api/user/=http://user-svc:9002`
+> - 旧格式 `/api/=http://host:port` 仍兼容（单节点，无健康检查，全节点视为健康）。
 > - 空字符串或格式错误 → 路由表为空，所有请求走默认 upstream。
 
 ### 10.2 前缀匹配算法
@@ -1275,19 +1367,27 @@ func (rt *RouteTable) Match(path string) (upstream string, ok bool) {
 
 ### 10.3 边界
 
-- 路由表热更：hotswap 流程 C（§6.3）——`Start(newCfg)` 重建 RouteTable 并**原子替换实例内部快照**，无需 chain.Replace（实例保持挂载在 Middle 槽）。
+- 路由表热更：hotswap 流程 C（§6.3）——`Start(newCfg)` 重建 RouteTable 并**原子替换实例内部快照**，无需 chain.Replace（实例保持挂载在 Middle 槽）。解析失败保留旧快照并返回 error。
+- **健康检查生命周期**：随路由表启停——`Start` 启动新表探活 goroutine、停止旧表（阻塞等待退出，避免 goroutine 泄漏）；`Stop` 停止当前表。探活启动即探一次（避免窗口期流量全打向坏节点），随后按 `Interval` 轮询，2xx/3xx 判健康。
+- **全挂语义**：命中规则但节点组全部不可达（已配置健康检查）→ 写 **503** 并中断链，避免错误转发；未配置健康检查时节点恒健康（兼容旧版）。
+- **选点语义**（§10.5）：高优节点优先 → 平滑加权轮询。
 - **Target 写入约定**：dispatch 是唯一写入者，通过 `ctx.DF.SetTarget(target)` 写入 DataFlow。Adapter 从 `df.Target()` 读取。其余组件只读。
 
 ### 10.4 验收
 
 ```bash
-# 配置路由
+# 配置路由（节点组 + 健康检查 + 权重）
 curl -X PUT http://127.0.0.1:19527/admin/config \
-  -d '{"DISPATCH_RULES":"/api/order/=http://order-svc:9001,/api/user/=http://user-svc:9002"}'
+  -d '{"DISPATCH_RULES":"/api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz,/api/user/=http://user-svc:9002"}'
 
-# 测试路由
+# 测试路由：/api/order 请求在 o1/o2 间加权轮询（权重 1:2）
 curl http://localhost:8080/api/order/123
-# → 转发到 order-svc:9001
+# → 转发到 o1:9001 或 o2:9001
+
+# o2 探活失败后流量全部切到 o1（健康节点）
+# o1、o2 全部不可达 → 503
+curl http://localhost:8080/api/order/123
+# → 503 Service Unavailable
 
 # 未配置路径 → 默认 upstream
 curl http://localhost:8080/other/path
@@ -1296,6 +1396,15 @@ curl http://localhost:8080/other/path
 # 前缀边界：/api/order 不匹配 /api/ordering
 curl http://localhost:8080/api/ordering/list
 # → 不命中 /api/order/，走默认 upstream
+```
+
+### 10.5 负载均衡选点语义（批次10 新增）
+
+```
+高优节点（Priority=0）中选健康的
+  └─ 无健康高优 → 备份节点（Priority=1）中选健康的
+       └─ 仍无健康（已配置健康检查）→ ok=false → Handle 写 503
+候选内按【平滑加权轮询】选点：权重 w 越大被选概率越高，且分布平滑（非简单随机）
 ```
 
 ---
