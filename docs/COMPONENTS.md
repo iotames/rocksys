@@ -1,0 +1,270 @@
+# RockSys 开发者组件手册
+
+面向**开发者用户**：讲解 RockSys 各组件、子组件的作用与使用方法。终端用户请见项目主页 [README](../README.md)。
+
+---
+
+## 1. 三层结构
+
+| 层 | 目录 | 性质 |
+|----|------|------|
+| 地基库 | 根下 `easyserver/`、`easyconf/`、`easydb/` | 独立子模块，可脱离复用 |
+| 框架私有 | `internal/`（engine/chain/dataflow/hotswap/conf/adminapi） | 不可关、外部不可 import |
+| 可选挂件 | `plugins/`（13 个平铺目录） | 默认全关，可热插拔 |
+
+红线：**底座不依赖任何挂件；挂件是底座的"挂件"，摘除不影响底座。** 所有挂件经 `internal/hotswap` 统一管理生命周期（启用/禁用/排空/热更）。
+
+---
+
+## 2. 框架私有（internal/）
+
+### 2.1 `internal/engine` — 反向代理引擎
+
+- **作用**：接收全部 HTTP 请求、转发、回传响应；WebSocket 拒绝（501）、转发超时（504）、自动追加 `X-Forwarded-For` / `X-Trace-Id`。
+- **使用**：由 `cmd/rocksys` 装配，一般不需要开发者直接操作。`Forward(w, r, target, df)` 是转发核心。
+
+### 2.2 `internal/chain` — 转发链编排
+
+- **作用**：中间件链，三个槽位 `Head`（防护/认证）→ `Middle`（路由/改写）→ 转发 → `Tail`（响应处理）。
+- **接口**：
+
+```go
+type Middleware interface {
+    Name() string
+    Handle(ctx *Context) (next bool) // false = 中断链（已写响应）
+}
+
+type ResponseHook interface { // 挂 Tail 槽位
+    OnResponse(ctx *Context) error
+}
+```
+
+- **编写中间件**：实现 `chain.Middleware` + `hotswap.MiddlewareLifecycle`（见 §3），即可被热开关管理。
+
+### 2.3 `internal/dataflow` — 请求级数据流
+
+- **作用**：请求穿越转发链的"车厢"：`trace_id` / 三时间戳（BeginAt/BeginBizAt/DoneBizAt）/ 租户 / 转发目标（Target）。
+- **使用**：`ctx.DF.SetTarget(url)` 设置转发目标（dispatch 用）；`ctx.DF.TraceID()` 读取链路 ID；耗时分解 `ShieldMs()` / `BizMs()` / `TotalMs()`。
+
+### 2.4 `internal/hotswap` — 生产热运维引擎 ★
+
+- **作用**：统一承载三类热操作：配置热更、组件热开关（原子切换 + 排空）、脚本热载。
+- **接口**：
+
+```go
+type MiddlewareLifecycle interface {
+    chain.Middleware
+    Start(cfg any) error // 重建不可变快照并原子替换
+    Stop() error
+    Slot() chain.Slot
+}
+```
+
+- **约定**：Start 用不可变快照（`atomic.Value`）承载运行态，保证与在途请求并发安全；Start 失败保留旧快照。
+
+### 2.5 `internal/conf` — 底座配置
+
+- **作用**：统一配置源（命令行 > 环境变量 > `.env` 文件），支持热更回调。
+- **使用**：挂件在 `New()` 里调用 `cfgMgr.Register(&field, "ENV_NAME", defval, title)` 注册配置项，easyconf 自动写入字段；配置变更时 hotswap 对已启用实体调用 `Start(nil)` 重建快照。
+
+### 2.6 `internal/adminapi` — 管理 API
+
+- **作用**：回环地址管理接口（默认 `127.0.0.1:19527`），供 rockctl / curl 在线操作。
+- **接口**：`GET /admin/switch/list`、`POST /admin/switch/on|off/<name>`、`GET/PUT /admin/config/...`、`POST /admin/script/publish|rollback`、`GET /admin/metrics`、`GET /admin/logs`。
+
+---
+
+## 3. 可选挂件（plugins/）
+
+所有挂件**默认关闭**，`rockctl switch on <name>` 或 `POST /admin/switch/on/<name>` 启用。
+
+### 3.1 shield — L1 防护（转发链中间件，Head）
+
+**作用**：IP 黑白名单、路径/UA 规则、令牌桶限流、WAF 检测。
+
+**配置项**：
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `SHIELD_ENABLED` | true | 是否启用（挂件开启时生效） |
+| `SHIELD_IP_BLACKLIST` / `WHITELIST` | 空 | 逗号分隔，支持精确 IP 与 CIDR |
+| `SHIELD_RATE_LIMIT_RPS` / `BURST` | 0 / 0 | 限流速率与突发容量（0=不限流） |
+| `SHIELD_ALLOW_METHODS` | 空 | HTTP 方法白名单（空=不限） |
+| `SHIELD_MAX_BODY_SIZE` | 0 | 请求体上限字节（0=不限） |
+| `SHIELD_WAF_SQL_INJECTION` / `XSS` / `PATH_TRAVERSAL` / `RISK_PATH` / `CRAWLER_UA` | false | WAF 检测开关 |
+| `SHIELD_RULES_DIR` | rules | WAF 规则外置目录（优先加载，嵌入兜底） |
+
+**示例**：
+
+```bash
+rockctl switch on shield
+SHIELD_IP_BLACKLIST="10.0.0.5,192.168.1.0/24" SHIELD_RATE_LIMIT_RPS=100 \
+SHIELD_WAF_SQL_INJECTION=true SHIELD_WAF_XSS=true rocksys --upstream http://127.0.0.1:9000
+```
+
+### 3.2 dispatch — L2 路由分发（转发链中间件，Middle）
+
+**作用**：按 URI 分发到不同后端；未命中回退默认 upstream。
+
+**配置项**：`DISPATCH_RULES`
+
+```
+格式：<prefix>=<spec>[;<spec>...]，逗号分隔
+  prefix  匹配 pattern（见下）
+  spec    节点组：<node>[;<node>...]；节点 <url>[|w=权重][|p=0高优/1备份]
+          可选尾缀：[@interval@timeout@path]（健康检查）[|alg=roundrobin|chash][|key=$remote_addr|$http_<h>|$cookie_<c>]
+```
+
+**匹配 pattern 支持三种**（Radix Tree 前缀树引擎，最长匹配优先）：
+
+| pattern | 说明 | 示例 |
+|---------|------|------|
+| 纯前缀 | 匹配以该前缀开头的任意路径 | `/api/order/` |
+| 参数 | 匹配单段并捕获 `:param` | `/api/order/:id` |
+| 通配 | 匹配剩余所有路径 | `/api/*` |
+| 兜底 | 根路径匹配所有 | `/` |
+
+**参数捕获**：命中 `:id` 规则时，参数存入 DataFlow（`rocksys:path_params`）并注入请求头 `X-Route-Param-<name>`（透传上游）。
+
+**负载均衡**：`roundrobin`（默认，平滑加权轮询）/ `chash`（一致性哈希，按 key 稳定选点，会话保持/缓存亲和）。
+
+**示例**：
+
+```bash
+# 前缀 + 节点组 + 健康检查 + 权重
+DISPATCH_RULES="/api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz"
+
+# 参数路由（捕获 id）
+DISPATCH_RULES="/api/order/:id=http://order-svc:9001"
+
+# 通配 + 一致性哈希（按用户头稳定选点）
+DISPATCH_RULES="/api/*=http://api1:9001;http://api2:9001|alg=chash|key=$http_x-user-id"
+
+# 兜底
+DISPATCH_RULES="/=http://default-svc"
+```
+
+**内部子组件**：
+
+| 子组件 | 文件 | 作用 |
+|--------|------|------|
+| Radix Tree 路由引擎 | `router.go` | 前缀树匹配（参数/通配/最长匹配），dispatch 内部实现 |
+| 平滑加权轮询 | `balancer.go` | 默认负载均衡算法 |
+| 一致性哈希 | `chash.go` | 按 key 稳定选点（会话保持） |
+| 主动健康检查 | `healthcheck.go` | 周期探测节点，2xx/3xx 判健康 |
+
+### 3.3 rewrite — 转发前改写（转发链中间件，Middle）
+
+**作用**：转发前改写 URI 前缀与请求头（路径归一化 / 版本剥离 / 注入标记头）。
+
+**配置项**：`REWRITE_RULES`
+
+```
+格式：<prefix>=<spec>[;<spec>...]，逗号分隔
+  spec：uri|<new_prefix>        改写 URI 前缀
+        header=<name>:<value>   设置请求头
+```
+
+**示例**：
+
+```bash
+# /api/v1/orders/123 → /api/orders/123，并注入标记头
+REWRITE_RULES="/api/v1/=uri|/api/;header=X-Proxy-Tag:rewrite"
+```
+
+**限制**：不支持改写 Host（engine 转发时强制使用目标节点 host，改 Host 属路由职责，由 dispatch 的 Target 决定）。
+
+### 3.4 script — RockScript（转发链中间件，Middle）
+
+**作用**：Lua 策略引擎，只做网关策略（安全规则、路由改写、A/B 分流），不落业务数据。
+
+**使用**：
+
+```bash
+rockctl script publish <file.lua>   # 发布策略（沙箱校验，禁 os 等危险库）
+rockctl script rollback             # 回滚上一版本
+```
+
+### 3.5 obs — RockObs（转发链中间件，Tail + ResponseHook）
+
+**作用**：访问日志（异步落盘）+ 指标聚合 + 查询 API。
+
+**配置项**：`OBS_LOG_DIR`（默认 logs）、`OBS_RETENTION_DAYS`（默认 30）。
+
+**异步落盘**：日志写入有界队列（4096 条，满则丢弃告警），后台 goroutine 批量写盘；`Flush` 保证停机前全部落盘。
+
+**查询**：`GET /admin/metrics` 返回 QPS / P50 / P95 / P99 / 错误率；日志文件 `logs/access-YYYY-MM-DD.jsonl`（按天切分、超期清理）。
+
+### 3.6 copy — 请求抄送（转发链中间件，Tail + ResponseHook）
+
+**作用**：复制线上请求异步发送到 shadow 后端（流量审计 / 影子验证）。
+
+**配置项**：`COPY_TARGETS`（逗号分隔 shadow URL，空 = 关闭）
+
+```bash
+COPY_TARGETS="http://shadow-a:9100;http://shadow-b:9100"
+```
+
+**限制**：不复制请求体（engine 转发时请求体已被上游消费）；发送失败仅告警不阻塞。
+
+### 3.7 result — L3 结果处理（转发链中间件，Tail + ResponseHook）
+
+**作用**：统一出口格式、字段脱敏。
+
+**配置项**：`RESULT_WRAP`（响应封装）、`RESULT_MASK_FIELDS`（脱敏字段）。
+
+### 3.8 trace — trace_id 透传（转发链中间件，Head）
+
+**作用**：将 trace_id 注入转发请求头与响应头，确保上游与客户端拿到同一 ID（框架默认生成/透传 trace_id，此挂件负责显式注入响应头）。
+
+### 3.9 auth — RockAuth（转发链中间件，Head）
+
+**作用**：JWT 认证。
+
+**配置项**：`AUTH_ENABLED`、`AUTH_JWT_SECRET`、`AUTH_JWT_ISSUER`、`AUTH_JWT_TTL`。
+
+### 3.10 config — RockConfig（独立组件）
+
+**作用**：KV 配置服务，集中下发配置并热更新广播。
+
+### 3.11 registry — RockRegistry（独立组件）
+
+**作用**：服务注册与发现（`POST /register` 注册实例，实例变更发布）。
+
+### 3.12 object — RockObject（独立组件）
+
+**作用**：对象存储（默认本地磁盘，S3 兼容适配器可选）。
+
+### 3.13 mq — RockMQ（独立组件）
+
+**作用**：异步消息解耦（Outbox 模式），依赖数据访问层（`MQ_ENABLED` + `MQ_DSN` 同时满足才装配）。
+
+---
+
+## 4. 编写新挂件（三步）
+
+```go
+// 1. 实现 chain.Middleware + hotswap.MiddlewareLifecycle
+type MyPlugin struct {
+    cfg conf.Manager
+    rules string                 // 配置字段（*string 注册）
+    snap  atomic.Value           // 不可变快照
+}
+
+func (p *MyPlugin) Name() string { return "my-plugin" }
+func (p *MyPlugin) Slot() chain.Slot { return chain.Middle }
+func (p *MyPlugin) Handle(ctx *chain.Context) bool { /* 返回 false 中断链 */ }
+func (p *MyPlugin) Start(cfg any) error { /* 重建快照 */ }
+func (p *MyPlugin) Stop() error { return nil }
+
+// 2. 注册配置项（New 中调用）
+cfgMgr.Register(&p.rules, "MY_RULES", "", "说明", "示例")
+
+// 3. 装配（cmd/rocksys/main.go）
+mgr.RegisterMiddleware(New(cfgMgr))
+```
+
+要点：
+- **快照不可变**：Start 整体重建快照，`atomic.Value` 原子替换，与在途 Handle 并发安全。
+- **Start 失败保留旧快照**：实例继续以旧配置服务，不中断。
+- **默认关闭**：注册即 Disabled，启用才挂载。

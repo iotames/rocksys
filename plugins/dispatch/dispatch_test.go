@@ -27,7 +27,7 @@ func matchUp(rt *RouteTable, path string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return rule.Select()
+	return rule.Select(nil)
 }
 
 func TestRouteTable_Match_newline(t *testing.T) {
@@ -236,7 +236,7 @@ func TestRule_Select_WeightedRoundRobin(t *testing.T) {
 	counts := map[string]int{}
 	const n = 300
 	for i := 0; i < n; i++ {
-		up, ok := rule.Select()
+		up, ok := rule.Select(nil)
 		if !ok {
 			t.Fatal("Select 应返回节点")
 		}
@@ -258,7 +258,7 @@ func TestRule_Select_PriorityBackup(t *testing.T) {
 	rule.Nodes[2].healthy.Store(true)
 
 	for i := 0; i < 5; i++ {
-		up, ok := rule.Select()
+		up, ok := rule.Select(nil)
 		if !ok || up != "http://c:1" {
 			t.Errorf("高优全挂应选备份节点, got (%q, %v)", up, ok)
 		}
@@ -270,7 +270,7 @@ func TestRule_Select_AllDown(t *testing.T) {
 	rule := rt.rules[0]
 	rule.Nodes[0].healthy.Store(false)
 	rule.Nodes[1].healthy.Store(false)
-	if _, ok := rule.Select(); ok {
+	if _, ok := rule.Select(nil); ok {
 		t.Error("全部节点不健康时应返回 ok=false")
 	}
 }
@@ -297,7 +297,7 @@ func TestHealthCheck_Probe_PicksHealthy(t *testing.T) {
 	// 等待首次探活完成
 	time.Sleep(250 * time.Millisecond)
 	for i := 0; i < 5; i++ {
-		up, ok := rule.Select()
+		up, ok := rule.Select(nil)
 		if !ok || up != healthySrv.URL {
 			t.Errorf("Select 应只选健康节点 %q, got (%q, %v)", healthySrv.URL, up, ok)
 		}

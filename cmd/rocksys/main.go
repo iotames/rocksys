@@ -22,12 +22,14 @@ import (
 
 	"rocksys/plugins/auth"
 	"rocksys/plugins/config"
+	"rocksys/plugins/copy"
 	"rocksys/plugins/dispatch"
 	"rocksys/plugins/mq"
 	"rocksys/plugins/object"
 	"rocksys/plugins/obs"
 	"rocksys/plugins/registry"
 	"rocksys/plugins/result"
+	"rocksys/plugins/rewrite"
 	"rocksys/plugins/script"
 	"rocksys/plugins/shield"
 	"rocksys/plugins/trace"
@@ -136,8 +138,10 @@ func buildServer(args []string) (*Server, error) {
 	mgr.RegisterMiddleware(trace.New(&cfgMgr))        // trace 透传 → chain.Head
 	mgr.RegisterMiddleware(auth.New(&cfgMgr))         // JWT 认证 → chain.Head
 	mgr.RegisterMiddleware(dispatch.New(cfgMgr))      // L2 路由 → chain.Middle
+	mgr.RegisterMiddleware(rewrite.New(cfgMgr))       // L2 转发前改写 → chain.Middle
 	mgr.RegisterMiddleware(script.New(scriptTimeout)) // Lua 策略 → chain.Middle
 	mgr.RegisterMiddleware(obs.New(cfgMgr))           // 访问日志/指标 → chain.Tail(+ResponseHook)
+	mgr.RegisterMiddleware(copy.New(cfgMgr))          // 请求抄送 → chain.Tail(+ResponseHook)
 	mgr.RegisterMiddleware(result.New(cfgMgr))        // L3 结果 → chain.Tail(+ResponseHook)
 
 	// 独立组件（RegisterComponent）：config/registry/object 无条件注册。

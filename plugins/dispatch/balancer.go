@@ -1,14 +1,26 @@
-// 负载均衡：上游节点模型 + 平滑加权轮询 + 高优节点优先。
+// 负载均衡：上游节点模型 + 平滑加权轮询 / 一致性哈希 + 高优节点优先。
 //
 // 选点语义（§10.5）：
 //   1. 优先在高优节点（Priority=0）中选健康的；
 //   2. 高优全部不健康 → 在备份节点（Priority=1）中选健康的；
 //   3. 无任何健康节点（且已配置健康检查）→ 返回 ok=false，由 Handle 写 503 中断链。
+//
+// 算法（Rule.Algo）：
+//   - roundrobin（默认）：平滑加权轮询，请求均匀分散到各节点。
+//   - chash：一致性哈希（按 key 稳定取模），同一 key 的请求固定打到同一节点，
+//     用于会话保持 / 缓存亲和。key 支持 $remote_addr（默认）、$http_<name>、$cookie_<name>。
 package dispatch
 
 import (
+	"net/http"
 	"sync"
 	"sync/atomic"
+)
+
+// 负载均衡算法名。
+const (
+	AlgoRoundRobin = "roundrobin"
+	AlgoCHash      = "chash"
 )
 
 // Node 上游节点。
@@ -30,23 +42,32 @@ func (r *Rule) healthyNodes(priority int) []*Node {
 	return out
 }
 
-// Select 按"高优优先 + 平滑加权轮询"选择一个健康节点的 URL。
+// Select 按"高优优先 + 算法（轮询/一致性哈希）"选择一个健康节点的 URL。
+// req 用于 chash 提取哈希 key（roundrobin 忽略，传 nil 亦可）。
 // 全部不可达（已配置健康检查）返回 ok=false。
-func (r *Rule) Select() (string, bool) {
+func (r *Rule) Select(req *http.Request) (string, bool) {
 	if high := r.healthyNodes(0); len(high) > 0 {
-		return r.pick(high)
+		return r.pick(req, high)
 	}
 	if backup := r.healthyNodes(1); len(backup) > 0 {
-		return r.pick(backup)
+		return r.pick(req, backup)
 	}
 	return "", false
 }
 
-// pick 在候选健康节点上执行平滑加权轮询，返回选中节点 URL。
-func (r *Rule) pick(nodes []*Node) (string, bool) {
+// pick 在候选健康节点上按算法选点。
+func (r *Rule) pick(req *http.Request, nodes []*Node) (string, bool) {
 	if len(nodes) == 0 {
 		return "", false
 	}
+	if r.Algo == AlgoCHash {
+		return r.pickChash(req, nodes)
+	}
+	return r.pickRR(nodes)
+}
+
+// pickRR 平滑加权轮询选点。
+func (r *Rule) pickRR(nodes []*Node) (string, bool) {
 	if len(nodes) == 1 {
 		return nodes[0].URL, true
 	}
@@ -75,6 +96,23 @@ func (r *Rule) pick(nodes []*Node) (string, bool) {
 		}
 	}
 	return nodes[0].URL, true
+}
+
+// pickChash 一致性哈希选点：按 key（remote_addr / header / cookie）稳定取模。
+// 未配置 key 或提取为空时回退平滑加权轮询（避免全部哈希到同一节点）。
+func (r *Rule) pickChash(req *http.Request, nodes []*Node) (string, bool) {
+	if req == nil {
+		return r.pickRR(nodes)
+	}
+	key := extractHashKey(req, r.ChashKey)
+	if key == "" {
+		return r.pickRR(nodes)
+	}
+	if len(nodes) == 1 {
+		return nodes[0].URL, true
+	}
+	idx := hashKey(key) % uint32(len(nodes))
+	return nodes[idx].URL, true
 }
 
 // index 返回节点在 Rule.Nodes 中的位置（用于共享轮询游标）。

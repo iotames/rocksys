@@ -24,17 +24,37 @@ import (
 // 编译期断言：Dispatch 实现 hotswap.MiddlewareLifecycle。
 var _ hotswap.MiddlewareLifecycle = (*Dispatch)(nil)
 
-// Rule 一条路由规则：Prefix 匹配的 URI 前缀，Nodes 为转发目标节点组。
+// Rule 一条路由规则：Prefix 匹配的 URI 前缀（支持 :param / * 通配），Nodes 为转发目标节点组。
 type Rule struct {
-	Prefix      string       // 前缀路径，必须以 "/" 开头
+	Prefix      string       // 匹配 pattern，必须以 "/" 开头（如 /api/order/、/api/order/:id、/api/*）
 	Nodes       []*Node      // 上游节点组（≥1）
 	HealthCheck *HealthCheck // 主动健康检查（nil = 不探活，所有节点视为健康）
+	Algo        string       // 负载均衡算法：roundrobin（默认）| chash
+	ChashKey    string       // chash key 提取方式（$remote_addr 默认 / $http_<h> / $cookie_<c>）
 	rr          *rrState     // 平滑加权轮询状态（与 Nodes 等长）
 }
 
-// RouteTable 前缀路由表：有序列表（最长前缀优先）。
+// RouteTable 前缀路由表：有序列表（最长前缀优先）+ Radix Tree 路由引擎（子组件）。
+// router 为 nil 时回退线性前缀扫描（向后兼容）。
 type RouteTable struct {
-	rules []*Rule
+	rules  []*Rule
+	router *Router
+}
+
+// keyPathParams DataFlow 中路径参数（:param 捕获）的 KV key。
+const keyPathParams = "rocksys:path_params"
+
+// MatchParams 匹配路径，返回命中的规则与捕获的参数（:param）。未命中返回 (nil, nil)。
+func (rt *RouteTable) MatchParams(path string) (*Rule, map[string]string) {
+	if rt.router != nil {
+		return rt.router.match(path)
+	}
+	// 回退线性前缀扫描：无参数捕获。
+	rule, ok := rt.Match(path)
+	if !ok {
+		return nil, nil
+	}
+	return rule, nil
 }
 
 // Dispatch L2 路由分发中间件（chain.Middle 槽位）。
@@ -90,11 +110,18 @@ func (d *Dispatch) Stop() error {
 // 命中但节点组全部不可达（已配置健康检查）→ 写 503 并中断链，避免错误转发。
 func (d *Dispatch) Handle(ctx *chain.Context) bool {
 	rt := d.rt.Load().(*RouteTable)
-	rule, ok := rt.Match(ctx.R.URL.Path)
-	if !ok {
+	rule, params := rt.MatchParams(ctx.R.URL.Path)
+	if rule == nil {
 		return true
 	}
-	target, ok := rule.Select()
+	// 参数捕获（:param）：存入 DataFlow（供日志/后续中间件）并注入请求头（透传给上游）。
+	if len(params) > 0 {
+		ctx.DF.Set(keyPathParams, params)
+		for k, v := range params {
+			ctx.R.Header.Set("X-Route-Param-"+k, v)
+		}
+	}
+	target, ok := rule.Select(ctx.R)
 	if !ok {
 		log.Warn("dispatch: no healthy node in upstream group", "prefix", rule.Prefix)
 		http.Error(ctx.W, "no healthy upstream node", http.StatusServiceUnavailable)
@@ -106,10 +133,15 @@ func (d *Dispatch) Handle(ctx *chain.Context) bool {
 
 // Match 匹配 path，返回命中的最长前缀所对应的规则，未命中返回 ok=false。
 //
+// 优先使用 Radix Tree 路由引擎（支持参数/通配）；引擎未构建时回退线性前缀扫描。
 // 1. path 末尾补 "/"（统一处理）；例外：根路径 "/" 不补。
 // 2. Prefix 也要求以 "/" 结尾才算完整段；例外：Prefix "/" 为兜底路由。
 // 3. 从 rules 中找到匹配的最长前缀。
 func (rt *RouteTable) Match(path string) (*Rule, bool) {
+	if rt.router != nil {
+		rule, _ := rt.router.match(path)
+		return rule, rule != nil
+	}
 	p := path
 	if p != "/" && !strings.HasSuffix(p, "/") {
 		p += "/"
@@ -156,17 +188,36 @@ func parseRules(s string) (*RouteTable, error) {
 		}
 		rt.rules = append(rt.rules, rule)
 	}
-	// 最长前缀优先：按归一化前缀长度降序排列。
+	// 最长前缀优先：按归一化前缀长度降序排列（供线性回退与健康检查遍历）。
 	sort.SliceStable(rt.rules, func(i, j int) bool {
 		return normLen(rt.rules[i].Prefix) > normLen(rt.rules[j].Prefix)
 	})
+	// 构建 Radix Tree 路由引擎（子组件）：参数/通配/前缀匹配统一由引擎接管。
+	rt.router = newRouter()
+	for _, rule := range rt.rules {
+		rt.router.insert(rule.Prefix, rule)
+	}
 	return rt, nil
 }
 
-// parseRule 解析单条规则：spec = <node>[;<node>...][@interval@timeout@path]。
+// parseRule 解析单条规则：spec = <node>[;<node>...][@interval@timeout@path][|alg=<algo>][|key=<chash_key>]。
 func parseRule(prefix, spec string) (*Rule, error) {
 	if spec == "" {
 		return nil, fmt.Errorf("DISPATCH_RULES 条目 %q 缺少 spec", prefix)
+	}
+	// 剥离规则级参数（从右往左）：|key= 在 |alg= 之后。
+	algo := AlgoRoundRobin
+	chashKey := defaultChashKey
+	if i := strings.LastIndex(spec, "|key="); i >= 0 {
+		chashKey = strings.TrimSpace(spec[i+len("|key="):])
+		spec = spec[:i]
+	}
+	if i := strings.LastIndex(spec, "|alg="); i >= 0 {
+		algo = strings.TrimSpace(spec[i+len("|alg="):])
+		spec = spec[:i]
+	}
+	if algo != AlgoRoundRobin && algo != AlgoCHash {
+		return nil, fmt.Errorf("DISPATCH_RULES 不支持的负载均衡算法 %q（仅支持 roundrobin/chash）: %q", algo, prefix)
 	}
 	nodesPart := spec
 	var hc *HealthCheck
@@ -187,7 +238,7 @@ func parseRule(prefix, spec string) (*Rule, error) {
 	if err != nil {
 		return nil, err
 	}
-	rule := &Rule{Prefix: prefix, Nodes: nodes, HealthCheck: hc, rr: newRRState(len(nodes))}
+	rule := &Rule{Prefix: prefix, Nodes: nodes, HealthCheck: hc, Algo: algo, ChashKey: chashKey, rr: newRRState(len(nodes))}
 	if hc == nil {
 		// 未配置健康检查：全部节点视为健康（兼容旧版单节点语义）。
 		for _, n := range nodes {
