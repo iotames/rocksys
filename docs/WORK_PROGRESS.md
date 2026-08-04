@@ -158,4 +158,4 @@
 | - | ef04196 | 第7章cmd/rocksys装配 |
 | - | 519e9ee | easyserver listenPrepare幂等修复（响应双写BUG） |
 | - | 5dd95b7 | 批次9: 数据访问层(easydb本地replace+SQL外置sql/<dbtype>/逐级加载)+workpool |
-| - | (批次10) | easywaf借鉴: shield WAF检测+dispatch节点组负载均衡+规则文件外置 |
+| - | 0661d4e | 批次10: easywaf借鉴: shield WAF检测+dispatch节点组负载均衡+规则文件外置 |
