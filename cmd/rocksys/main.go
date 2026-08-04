@@ -16,6 +16,7 @@ import (
 	"rocksys/internal/adminapi"
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
+	"rocksys/internal/db"
 	"rocksys/internal/engine"
 	"rocksys/internal/hotswap"
 
@@ -50,6 +51,7 @@ type Server struct {
 	mgr      *hotswap.Manager
 	adminSrv *adminapi.AdminServer
 	mqDB     *sql.DB // 条件装配（MQ_ENABLED && MQ_DSN）时打开，停机关闭
+	dataDB   *db.DB  // 统一数据访问层（DB_DRIVER/DB_DSN），mq 等插件复用；nil 表示未启用
 }
 
 func main() {
@@ -93,8 +95,11 @@ func main() {
 	// 8b. 关闭挂件（逆序：先停 obs flush 日志，再停 hotswap 排空组件，最后停配置热更）
 	_ = srv.mgr.Shutdown(ctx)
 	_ = srv.cfgMgr.Shutdown(ctx)
-	if srv.mqDB != nil {
+	if srv.mqDB != nil && srv.dataDB != nil && srv.mqDB != srv.dataDB.EasyDB().GetSqlDB() {
 		_ = srv.mqDB.Close()
+	}
+	if srv.dataDB != nil {
+		_ = srv.dataDB.Close()
 	}
 }
 
@@ -140,7 +145,30 @@ func buildServer(args []string) (*Server, error) {
 	mgr.RegisterComponent(registry.New(cfgMgr)) // 服务注册中心
 	mgr.RegisterComponent(object.New())         // 对象存储
 
-	// mq 条件装配：仅当 MQ_ENABLED=true 且 MQ_DSN 非空时打开 sqlite 并注册；否则跳过。
+	// 统一数据访问层（§? 数据访问层）：为可插拔组件（mq 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
+	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）/ SQL_DIR（默认 sql，外置脚本目录）。
+	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；mq 等依赖方因此不可用。
+	var dataDB *db.DB
+	var dbDriver, dbDSN, sqlDir string
+	if err := cfgMgr.Register(&dbDriver, "DB_DRIVER", "sqlite", "数据库驱动名（sqlite/mysql/postgres）"); err != nil {
+		return nil, fmt.Errorf("register DB_DRIVER: %w", err)
+	}
+	if err := cfgMgr.Register(&dbDSN, "DB_DSN", "rocksys.db", "数据库连接串（sqlite 为文件路径）"); err != nil {
+		return nil, fmt.Errorf("register DB_DSN: %w", err)
+	}
+	if err := cfgMgr.Register(&sqlDir, "SQL_DIR", "sql", "外置 SQL 脚本目录（优先加载，嵌入文件兜底）"); err != nil {
+		return nil, fmt.Errorf("register SQL_DIR: %w", err)
+	}
+	if d, err := db.Open(dbDriver, dbDSN, sqlDir); err != nil {
+		log.Warn("db: 数据访问层初始化失败（不阻断底座）", "driver", dbDriver, "err", err.Error())
+	} else {
+		dataDB = d
+		log.Info("db: 数据访问层已就绪", "driver", dataDB.Driver())
+	}
+
+	// mq 条件装配：仅当 MQ_ENABLED=true 且 MQ_DSN 非空时注册（保持既有语义）。
+	// mq 数据连接独立打开 sqlite(MQ_DSN)；SQL 脚本源优先复用 dataDB（sql/<dbtype>/ 逐级加载），
+	// dataDB 未就绪时回退到编译期内嵌的 sqlite 脚本（EmbeddedSQLSource），保证 mq 独立可用。
 	var mqDB *sql.DB
 	var mqEnabled bool
 	var mqDSN string
@@ -151,12 +179,25 @@ func buildServer(args []string) (*Server, error) {
 		return nil, fmt.Errorf("register MQ_DSN: %w", err)
 	}
 	if mqEnabled && mqDSN != "" {
-		db, err := sql.Open("sqlite", mqDSN)
+		sqldb, err := sql.Open("sqlite", mqDSN)
 		if err != nil {
 			return nil, fmt.Errorf("mq: 打开 sqlite(%s) 失败: %w", mqDSN, err)
 		}
-		mqDB = db
-		mgr.RegisterComponent(mq.New(db, "outbox"))
+		mqDB = sqldb
+
+		var mqSQLSrc db.SQLSource = dataDB
+		if mqSQLSrc == nil {
+			// dataDB 未就绪：回退内嵌 sqlite 脚本（mq 固定 sqlite 驱动）
+			src, srcErr := db.EmbeddedSQLSource("sqlite")
+			if srcErr != nil {
+				return nil, fmt.Errorf("mq: 内嵌 sqlite 脚本不可用: %w", srcErr)
+			}
+			mqSQLSrc = src
+			log.Warn("mq: 数据访问层未就绪，SQL 脚本回退到编译期内嵌 sqlite")
+		}
+		mqComp := mq.New(mqDB, "outbox")
+		mqComp.SetSQLSource(mqSQLSrc)
+		mgr.RegisterComponent(mqComp)
 		log.Info("mq component registered", "dsn", mqDSN)
 	}
 
@@ -187,6 +228,7 @@ func buildServer(args []string) (*Server, error) {
 		mgr:      mgr,
 		adminSrv: adminSrv,
 		mqDB:     mqDB,
+		dataDB:   dataDB,
 	}, nil
 }
 

@@ -55,17 +55,18 @@
 
 ## 四、当前工作位置
 
-- 批次：**批次 8（✅ 完成）**——第23章集成验证全部通过。
-- 全仓库 19 个包 `go build/vet/test` 全绿；端到端验证（降级链/压测/高可用/Python链路）全部通过。
+- 批次：**批次 9（✅ 完成）**——数据访问层 + SQL 脚本外置 + 工作池落地。
+- 全仓库 22 包 `go build/vet/test` 全绿；端到端验证（降级链/压测/高可用/Python链路）已由批次8完成。
 - 剩余事项：仅「真实 Linux 服务器 P99<10ms 复验」建议（本 WSL 环境无法达标，非代码缺陷）。
 
 ## 五、未完成任务与下次起点
 
-- 批次 1-8 全部完成。**P0+P1+P2 后端底座交付完毕。**
+- 批次 1-9 全部完成。**P0+P1+P2 后端底座 + 数据访问层交付完毕。**
 - 可选后续（不在本阶段范围）：
   - 真实 Linux 服务器上按 §23.2 用 hey 复验 P99<10ms
   - 前端（下一阶段）
-- **断点恢复**：无需恢复，全部批次已完成并 push。
+  - 补全 `sql/mysql/`、`sql/postgres/` 下的业务脚本（当前仅默认 SQLite 完整）
+- **断点恢复**：无需恢复，全部批次已完成。
 
 ## 六、批次日志
 
@@ -122,6 +123,16 @@
 - ✅ 23.3 高可用：多副本 :8081/:8082 正常；SIGTERM 4ms 优雅退出含日志；故障回滚返回 `{"ok":false,"error":"hotswap: entity not found..."}`
 - ✅ 23.4 验收清单：19 包全绿；trace_id 自定义透传 + 自动生成 32 位 hex；Lua 沙箱拦截；黑名单 403/限流 429；三时间戳 <1ms
 - ✅ Python 链路：stbiz_hello 经 rocksys 代理返回 `{"msg":"hello","trace_id":"..."}`，X-Trace-Id 透传成功
+
+### 批次 9（✅ 完成）——数据访问层 + SQL 脚本外置 + 工作池
+- ✅ 根目录 `sqlfiles.go`（embed sql/）+ `sql/sqlite` 默认 mq 脚本 + `sql/mysql`、`sql/postgres` 目录骨架（README 说明扩展）
+- ✅ `internal/hotswap/script.go`：ScriptDir 逐级加载机制（外置目录优先、嵌入兜底），泛化 fs.FS，与组件热切同包不同文件（运行时实时操作管理类能力）
+- ✅ `internal/db` 数据访问层：easydb 封装 + SQLSource 接口；`Open` 校验驱动/内嵌脚本目录，切换数据库缺脚本即报错；默认 SQLite 零配置
+- ✅ `internal/workpool`：移植 todo/hotswap/workpool.go 并修复并发缺陷（队列切换竞态、Stop/rebuild 串行化、阻塞 Submit 死锁、减少 worker 优雅退出）
+- ✅ mq 改造：OutboxStore 走 easydb + SQLSource，SQL 全部外置到 sql/<dbtype>/
+- ✅ cmd/rocksys 装配：注册 DB_DRIVER/DB_DSN/SQL_DIR；dataDB 失败不阻断底座；mq 独立连接回退内嵌脚本
+- ✅ go.mod 新增 `github.com/iotames/easydb => ./easydb` 本地 replace
+- 验证：22 包 `go build/vet/test` 全绿（internal/db、internal/workpool、plugins/mq、cmd/rocksys 新增测试）
 
 ### Git 提交记录
 | 时间 | 提交 | 内容 |

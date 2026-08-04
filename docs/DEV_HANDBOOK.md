@@ -1901,3 +1901,49 @@ ec.IntListVar(pval *[]int, name string, defval []int, title)  // []int 逗号分
 - `.env` 文件不存在时自动创建并写入默认值。
 - `Parse(true)` 才解析 `flag`，若不用命令行参数传 `Parse(false)`。
 - `UpdateFile` 是增量写回，保留原注释和空行。
+
+## 附录 C：easydb 数据操作层速查（地基库 3/2）
+
+> 数据访问层 = `internal/db`（装配）+ `easydb`（数据操作）+ `sql/<dbtype>/`（SQL 脚本）。
+
+### C.1 配置项（cmd/rocksys 装配注册）
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `DB_DRIVER` | `sqlite` | 数据库驱动名（sqlite/mysql/postgres） |
+| `DB_DSN` | `rocksys.db` | 连接串（sqlite 为文件路径） |
+| `SQL_DIR` | `sql` | 外置 SQL 脚本目录（优先加载，嵌入兜底） |
+
+### C.2 SQL 脚本目录约定
+
+- 目录：`sql/<dbtype>/`（如 `sql/sqlite/`、`sql/mysql/`、`sql/postgres/`）。
+- 占位符：参数化查询用 `?`（sqlite/mysql）或 `$1`（postgres）；动态表名等标识符用 `{xxx}`（运行时由组件替换，禁止来自用户输入）。
+- 加载：`internal/hotswap/script.go` 的 `ScriptDir`——外置 `SQL_DIR` 优先，找不到回退编译期 embed。
+- 缺脚本即报错：切换 `DB_DRIVER` 后若 `sql/<dbtype>/` 缺某条查询脚本，`SQL()` 直接返回错误。
+
+### C.3 数据操作
+
+```go
+// 装配（cmd/rocksys）
+dataDB, err := db.Open(dbDriver, dbDSN, sqlDir)   // 失败不阻断底座，仅 Warn
+mqComp := mq.New(mqDB, "outbox")
+mqComp.SetSQLSource(dataDB)                        // 组件经 SQLSource 读脚本
+
+// 脚本读取
+txt, err := dataDB.SQL("mq_insert.sql")            // = sql/<driver>/mq_insert.sql
+
+// 参数化执行（脚本名 + 参数）
+dataDB.Exec("mq_mark_done.sql", id)
+dataDB.GetMany("some_query.sql", &rows, args...)
+```
+
+### C.4 工作池（internal/workpool）
+
+```go
+wp := workpool.NewWorkerPool(workpool.Config{MinWorkers: 4, QueueSize: 100})
+wp.Start()
+wp.Submit(workpool.TaskFunc(func() { /* 任务 */ }))       // 阻塞提交
+wp.TrySubmit(task)                                        // 非阻塞
+wp.UpdateWorkers(8)                                       // 动态扩/缩 worker
+wp.Stop()                                                 // 停止并排空剩余任务
+```

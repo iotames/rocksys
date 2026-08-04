@@ -5,6 +5,10 @@
 # 配置测试副作用
 .env
 default.env
+# 数据库测试副作用
+*.db
 # Python 缓存
 __pycache__/
 *.pyc
+# 构建产物
+bin/

@@ -24,12 +24,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/iotames/easydb"
 	"github.com/iotames/easyserver/log"
 
+	"rocksys/internal/db"
 	"rocksys/internal/hotswap"
 )
 
@@ -61,17 +64,24 @@ type Message struct {
 }
 
 // OutboxStore 业务库内 outbox 表访问层（§18）。
-// 生产经 *sql.DB 注入，不绑定具体数据库驱动。
+// 数据操作经 easydb 执行；SQL 语句从 sql/<dbtype>/ 目录脚本读取（外置优先、嵌入兜底）。
 type OutboxStore struct {
-	db         *sql.DB
+	edb        *easydb.EasyDb
+	sqls       db.SQLSource // SQL 脚本源；nil 时无法执行任何 SQL 操作
 	tableName  string
 	maxRetries int
 }
 
 // NewOutboxStore 创建基于 db 的 outbox 存储；tableName 为 outbox 表名。
 // 不自动建表（构造函数不返回 error），请调用 EnsureTable。
+// 注意：使用前需调用 SetSQLSource 注入 SQL 脚本源（SQL 外置到 sql 目录）。
 func NewOutboxStore(db *sql.DB, tableName string) *OutboxStore {
-	return &OutboxStore{db: db, tableName: tableName, maxRetries: defaultMaxRetries}
+	return &OutboxStore{edb: easydb.NewEasyDbBySqlDB(db), tableName: tableName, maxRetries: defaultMaxRetries}
+}
+
+// SetSQLSource 注入 SQL 脚本源（通常为 internal/db 数据访问层）。
+func (s *OutboxStore) SetSQLSource(src db.SQLSource) {
+	s.sqls = src
 }
 
 // SetMaxRetries 设置失败判定死信的最大次数；n<=0 时忽略保持默认。
@@ -81,30 +91,42 @@ func (s *OutboxStore) SetMaxRetries(n int) {
 	}
 }
 
+// sqlText 从脚本源读取 SQL 文本并替换 {table} 表名占位符。
+func (s *OutboxStore) sqlText(name string) (string, error) {
+	if s.sqls == nil {
+		return "", fmt.Errorf("mq: 未设置 SQL 脚本源（请调用 SetSQLSource 注入 internal/db）")
+	}
+	txt, err := s.sqls.SQL(name)
+	if err != nil {
+		return "", fmt.Errorf("mq: 读取 SQL 脚本 %s 失败（切换数据库时缺少 sql/<dbtype>/ 下对应脚本）: %w", name, err)
+	}
+	return strings.ReplaceAll(txt, "{table}", s.tableName), nil
+}
+
 // EnsureTable 幂等建表（含 status 索引）。
 func (s *OutboxStore) EnsureTable() error {
-	ddl := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		topic TEXT NOT NULL,
-		payload TEXT NOT NULL,
-		status TEXT NOT NULL DEFAULT 'pending',
-		retry_count INTEGER NOT NULL DEFAULT 0,
-		last_error TEXT NOT NULL DEFAULT '',
-		created_at DATETIME NOT NULL
-	)`, s.tableName)
-	if _, err := s.db.Exec(ddl); err != nil {
+	ddl, err := s.sqlText("mq_create_table.sql")
+	if err != nil {
 		return err
 	}
-	idx := fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_%s_status ON %s(status)", s.tableName, s.tableName)
-	_, err := s.db.Exec(idx)
+	if _, err := s.edb.Exec(ddl); err != nil {
+		return err
+	}
+	idx, err := s.sqlText("mq_create_index.sql")
+	if err != nil {
+		return err
+	}
+	_, err = s.edb.Exec(idx)
 	return err
 }
 
 // Insert 写入一条 pending 消息；返回新行自增 id。
 func (s *OutboxStore) Insert(topic, payload string) (int64, error) {
-	stmt := fmt.Sprintf("INSERT INTO %s (topic, payload, status, created_at) VALUES (?, ?, '%s', ?)",
-		s.tableName, statusPending)
-	res, err := s.db.Exec(stmt, topic, payload, time.Now().UTC().Format(time.RFC3339))
+	stmt, err := s.sqlText("mq_insert.sql")
+	if err != nil {
+		return 0, err
+	}
+	res, err := s.edb.Exec(stmt, topic, payload, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return 0, err
 	}
@@ -116,10 +138,11 @@ func (s *OutboxStore) FetchPending(limit int) ([]Message, error) {
 	if limit <= 0 {
 		limit = defaultFetchLimit
 	}
-	stmt := fmt.Sprintf(`SELECT id, topic, payload, status, retry_count, created_at
-		FROM %s WHERE status IN ('%s','%s') ORDER BY id ASC LIMIT ?`,
-		s.tableName, statusPending, statusFailed)
-	rows, err := s.db.Query(stmt, limit)
+	stmt, err := s.sqlText("mq_fetch_pending.sql")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.edb.Query(stmt, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -142,30 +165,40 @@ func (s *OutboxStore) FetchPending(limit int) ([]Message, error) {
 
 // MarkDone 标记消息已成功投递。
 func (s *OutboxStore) MarkDone(id int64) error {
-	stmt := fmt.Sprintf("UPDATE %s SET status = '%s' WHERE id = ?", s.tableName, statusDone)
-	_, err := s.db.Exec(stmt, id)
+	stmt, err := s.sqlText("mq_mark_done.sql")
+	if err != nil {
+		return err
+	}
+	_, err = s.edb.Exec(stmt, id)
 	return err
 }
 
 // MarkFailed 记录一次失败：retry_count+1；若更新后达到最大重试次数则转死信（dead），
 // 否则置为 failed（下次轮询重试）。返回更新后的重试次数。
 func (s *OutboxStore) MarkFailed(id int64, errMsg string) (int, error) {
-	stmt := fmt.Sprintf(`UPDATE %s SET retry_count = retry_count + 1,
-		status = CASE WHEN retry_count + 1 >= ? THEN '%s' ELSE '%s' END,
-		last_error = ? WHERE id = ?`,
-		s.tableName, statusDead, statusFailed)
-	if _, err := s.db.Exec(stmt, s.maxRetries, errMsg, id); err != nil {
+	stmt, err := s.sqlText("mq_mark_failed.sql")
+	if err != nil {
+		return 0, err
+	}
+	if _, err := s.edb.Exec(stmt, s.maxRetries, errMsg, id); err != nil {
 		return 0, err
 	}
 	var c int
-	err := s.db.QueryRow(fmt.Sprintf("SELECT retry_count FROM %s WHERE id = ?", s.tableName), id).Scan(&c)
+	q, err := s.sqlText("mq_get_retry_count.sql")
+	if err != nil {
+		return 0, err
+	}
+	err = s.edb.QueryRow(q, id).Scan(&c)
 	return c, err
 }
 
 // MarkDead 强制标记为死信。
 func (s *OutboxStore) MarkDead(id int64) error {
-	stmt := fmt.Sprintf("UPDATE %s SET status = '%s' WHERE id = ?", s.tableName, statusDead)
-	_, err := s.db.Exec(stmt, id)
+	stmt, err := s.sqlText("mq_mark_dead.sql")
+	if err != nil {
+		return err
+	}
+	_, err = s.edb.Exec(stmt, id)
 	return err
 }
 
@@ -362,6 +395,7 @@ type MQ struct {
 	mu        sync.Mutex
 	db        *sql.DB
 	table     string
+	sqls      db.SQLSource // SQL 脚本源（装配时注入 internal/db）
 	store     *OutboxStore
 	deliverer *PollingDeliverer
 	state     atomic.Value
@@ -371,10 +405,16 @@ type MQ struct {
 var _ hotswap.Component = (*MQ)(nil)
 
 // New 构造 MQ 组件（初始 StateDisabled，由 hotswap.Enable 触发 Start）。
+// 使用前需调用 SetSQLSource 注入 SQL 脚本源（SQL 外置到 sql/<dbtype>/ 目录）。
 func New(db *sql.DB, tableName string) *MQ {
 	m := &MQ{db: db, table: tableName}
 	m.state.Store(hotswap.StateDisabled)
 	return m
+}
+
+// SetSQLSource 注入 SQL 脚本源（通常为 internal/db 数据访问层）。
+func (m *MQ) SetSQLSource(src db.SQLSource) {
+	m.sqls = src
 }
 
 // Name 返回组件名：mq。
@@ -387,6 +427,9 @@ func (m *MQ) Start(cfg any) error {
 	if m.deliverer != nil {
 		return nil // 幂等：已启动
 	}
+	if m.sqls == nil {
+		return fmt.Errorf("mq: 未注入 SQL 脚本源（SetSQLSource），无法加载 sql/<dbtype>/ 下脚本")
+	}
 
 	opts := defaultOptions()
 	if cfg != nil {
@@ -398,6 +441,7 @@ func (m *MQ) Start(cfg any) error {
 	}
 
 	store := NewOutboxStore(m.db, m.table)
+	store.SetSQLSource(m.sqls)
 	store.SetMaxRetries(opts.MaxRetries)
 	if err := store.EnsureTable(); err != nil {
 		return fmt.Errorf("mq: 初始化 outbox 表失败: %w", err)

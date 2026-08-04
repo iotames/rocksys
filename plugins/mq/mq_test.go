@@ -13,6 +13,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	dbpkg "rocksys/internal/db"
 	"rocksys/internal/hotswap"
 )
 
@@ -25,6 +26,11 @@ func newTestStore(t *testing.T) (*OutboxStore, *sql.DB) {
 	}
 	db.SetMaxOpenConns(1)
 	store := NewOutboxStore(db, "outbox")
+	src, err := dbpkg.EmbeddedSQLSource("sqlite")
+	if err != nil {
+		t.Fatalf("EmbeddedSQLSource(sqlite) 失败: %v", err)
+	}
+	store.SetSQLSource(src)
 	if err := store.EnsureTable(); err != nil {
 		t.Fatalf("建表失败: %v", err)
 	}
@@ -222,6 +228,11 @@ func TestMQComponent(t *testing.T) {
 	if m.Name() != "mq" {
 		t.Errorf("Name=%q，want mq", m.Name())
 	}
+	src, err := dbpkg.EmbeddedSQLSource("sqlite")
+	if err != nil {
+		t.Fatalf("EmbeddedSQLSource(sqlite) 失败: %v", err)
+	}
+	m.SetSQLSource(src)
 	if m.State() != hotswap.StateDisabled {
 		t.Errorf("初始 State=%v，want disabled", m.State())
 	}

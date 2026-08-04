@@ -1,0 +1,24 @@
+# sql/mysql — MySQL 方言 SQL 脚本目录
+
+本目录存放 MySQL 方言的数据库查询脚本。加载规则（见 `internal/hotswap/script.go`）：
+
+1. 运行时优先加载外置目录（`SQL_DIR`，默认 `sql/`）中对应的脚本文件，可热修改无需重新编译；
+2. 找不到脚本（或内容为空）时，回退到编译期嵌入二进制的本目录文件；
+3. 切换数据库驱动为 `mysql` 时，如果某条查询在 `sql/mysql/` 下找不到脚本，系统直接报错。
+
+## 占位符约定
+
+- 参数化查询占位符：`?`
+- 表名/库名等动态标识符：`{xxx}`（运行时由组件替换，禁止来自外部用户输入）
+
+## 脚本清单
+
+当前默认仅保证 SQLite（`sql/sqlite/`）脚本完整。MySQL 脚本可参考 SQLite 对应文件改写：
+
+| SQLite 文件 | 改写要点 |
+|---|---|
+| mq_create_table.sql | `INTEGER PRIMARY KEY AUTOINCREMENT` → `BIGINT AUTO_INCREMENT` |
+| mq_fetch_pending.sql | `LIMIT ?` 语法一致，可直接复用 |
+| mq_mark_failed.sql | `retry_count + 1 >= ?` 条件表达式各数据库均支持 |
+
+补充完成后，将 `DB_DRIVER=mysql` 即可启用。

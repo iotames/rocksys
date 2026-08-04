@@ -4,7 +4,8 @@ go 1.25.0
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/iotames/easyconf v0.0.0
+	github.com/iotames/easyconf v1.1.3
+	github.com/iotames/easydb v0.0.0
 	github.com/iotames/easyserver v0.0.0
 	github.com/yuin/gopher-lua v1.1.2
 	gopkg.in/yaml.v3 v3.0.1
@@ -28,5 +29,6 @@ require (
 
 replace (
 	github.com/iotames/easyconf => ./easyconf
+	github.com/iotames/easydb => ./easydb
 	github.com/iotames/easyserver => ./easyserver
 )

@@ -73,15 +73,27 @@ xxx/
 |----|---------|------|
 | `easyserver` | ✅ 完全独立 | 独立 git 仓库/子模块（本就是开源框架） |
 | `easyconf` | ✅ 完全独立 | 独立 git 仓库/子模块（本就是工具库） |
+| `easydb` | ✅ 完全独立 | 独立 git 仓库/子模块（本就是数据操作库） |
+| `sqlfiles`（根目录 `sqlfiles.go`） | ✅ 独立 | 编译期嵌入 `sql/` 目录的 embed 包 |
 | `contracts` | ✅ 独立 | 独立契约仓库，对外发布版本 |
 | `sdk/python` | ✅ 独立 | 独立发布，业务微服务引用 |
 | `plugins/*` | ✅ 可独立演进 | 初期随框架，接口稳定后拆独立仓库 |
 | `internal/*` | ❌ 不可脱离 | 框架私有，外部禁止 import |
 
+## 3.5 数据访问层（easydb + SQL 脚本外置）
+
+- 根目录 `sql/<dbtype>/`：**项目所有数据库查询语句的统一存放目录**（sqlite/mysql/postgres 方言分目录），
+  编译期经 `sqlfiles` 包 embed 嵌入二进制，默认零配置可运行。
+- `internal/hotswap/script.go`：`ScriptDir` 逐级加载机制——运行时外置目录（`SQL_DIR`，默认 `sql/`）优先，
+  找不到再回退编译期嵌入文件；改 SQL 无需重新编译。
+- `internal/db`：统一数据访问层，数据操作以 easydb 为主，封装 `SQLSource` 接口；
+  切换数据库驱动时若 `sql/<dbtype>/` 缺脚本则直接报错。
+- 底座（反向代理转发引擎）**不直连业务数据库**（架构红线），本层仅服务可插拔组件（mq 等）。
+
 ## 4. ★ 生产热运维引擎（hotswap）
 
 - `easyserver/hotswap`：底层热加载工具（文件/脚本/embed 原子替换）。
-- `internal/hotswap`：生产运维引擎，统一承载三类热操作：
+- `internal/hotswap`：生产运维引擎，统一承载三类热操作（组件热切）与文件逐级加载（ScriptDir）：
 
 | 操作 | 能力 | 命令 |
 |------|------|------|
@@ -89,6 +101,9 @@ xxx/
 | 组件热开关 | 在线挂载/摘除，原子切换 + 排空 | `rockctl switch on/off` |
 | 紧急摘除 | 故障组件一键热关，转发链照常 | `rockctl switch off <comp>` |
 | 脚本热载 | RockScript 策略热发布 / 回滚 | `rockctl script publish` |
+| 文件逐级加载 | 外置目录优先、嵌入兜底（SQL/JSON 等纯文本） | `internal/hotswap/script.go` |
+
+> 组件热切与 ScriptDir 属同一类目（程序运行时的实时操作管理），同包不同文件。
 
 ## 5. 串联机制落地
 
@@ -97,10 +112,12 @@ xxx/
 | DataFlow | `internal/dataflow` |
 | trace_id 透传 | `plugins/trace` |
 | 配置/开关下发通道 | `internal/hotswap` + `plugins/config` |
+| 数据访问层 | `internal/db` + `easydb` + `sql/` |
+| 工作池 | `internal/workpool` |
 | 业务内网总线 | `sdk/python` |
 | 日志聚合 | `plugins/obs` |
 
 ## 6. 模块关系
 
-- 主模块 `go.mod` `replace` 引用 `./easyserver`、`./easyconf`（本地开发用源码，发布用版本）。
+- 主模块 `go.mod` `replace` 引用 `./easyserver`、`./easyconf`、`./easydb`（本地开发用源码，发布用版本）。
 - `stbiz_*` 是独立仓库独立 CI，本仓库只提供 `sdk/python` + `examples/stbiz_hello` 模板。
