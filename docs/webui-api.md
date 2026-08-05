@@ -128,7 +128,7 @@
 {
   "listen": ":8080",
   "upstream": "http://127.0.0.1:8080",
-  "timeout": 5,
+  "timeout": 18,
   "admin": "127.0.0.1:19527",
   "config_file": "",
   "log_level": "info"
@@ -295,16 +295,19 @@
 
 > 该接口为内存聚合快照，无历史数据。前端趋势图需按刷新周期自行累积采样。
 
-### 3.11 GET /admin/logs — 按日期查询访问日志
+### 3.11 GET /admin/logs — 按条件查询访问日志
 
-**查询参数**：
+**查询参数**（均可选）：
 
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| from | 否 | 开始日期 `YYYY-MM-DD`，缺省当天 |
-| to | 否 | 结束日期 `YYYY-MM-DD`，缺省当天 |
+| 参数 | 说明 |
+|------|------|
+| from | 开始时间，`YYYY-MM-DD`（当日 00:00）或 `YYYY-MM-DDTHH:MM`（精确到分），缺省当天 00:00 |
+| to | 结束时间，`YYYY-MM-DD`（当日 23:59）或 `YYYY-MM-DDTHH:MM`（精确到分），缺省当天 23:59 |
+| path | 请求路径精确匹配（如 `/api/order/1`） |
+| path_like | 请求路径模糊匹配（子串包含，如 `/api/order`） |
+| trace_id | 链路标识模糊匹配（API 层保留，WebUI 已移除该输入框） |
 
-**响应 200**：`Content-Type: application/x-ndjson`，每行一个 JSON 对象：
+**响应 200**：`Content-Type: application/x-ndjson`，每行一个 JSON 对象（平铺维度，扩展负载字段如 `request_body` 直接出现在顶层）：
 
 ```json
 {"time":"2026-08-04T10:12:03+08:00","trace_id":"ab34...","path":"/api/order/1","method":"GET","client_ip":"127.0.0.1:1234","status_code":200,"upstream":"http://o1:9001","shield_ms":1,"biz_ms":11,"total_ms":12,"req_bytes":512,"resp_bytes":1024}
@@ -325,11 +328,31 @@
 | total_ms | int | 总耗时（毫秒） |
 | req_bytes | int | 请求流量（字节） |
 | resp_bytes | int | 响应流量（字节） |
+| （扩展维度） | 不定 | 负载维度（如 `request_body`），由 obs 维度注册表定义，平铺输出 |
 
-**失败 `400`**：日期格式非法 / `from` 晚于 `to`，响应体文本为错误原因。
+**数据来源**：当前启用的 obs 存储后端（`OBS_STORE=file` 读 `logs/access-YYYY-MM-DD.jsonl`；`OBS_STORE=db` 查 `access_log` 表），切换后端后只查当前后端。**返回按完成时间倒序（最新在前），最多 `2000` 条**；耗时排序由 WebUI 端对已加载数据本地排序。
+
+**失败 `400`**：时间格式非法（应为 `YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`）/ `from` 晚于 `to`，响应体文本为错误原因。
 **失败 `503`**：观测组件未注册。
 
-> 前端按行解析（`split('\n')` + 每行 `JSON.parse`，跳过坏行）。某天无日志文件时后端自动跳过；整段为空时提示"所选日期无访问日志"。
+> 前端按行解析（`split('\n')` + 每行 `JSON.parse`，跳过坏行）。某时段无日志时后端返回空；整段为空时提示"所选时间范围无访问日志"。
+
+### 3.11.1 GET /admin/logs/storage — 日志存储总占用
+
+**响应 200**（`application/json`）：
+
+```json
+{"file_bytes":1048576,"db_bytes":40960,"total_bytes":1089536}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| file_bytes | int | 文件日志占用（`OBS_LOG_DIR` 下所有 `access-*.jsonl` 合计，file 后端） |
+| db_bytes | int | 数据库日志表占用（`access_log` 表 + 索引，db 后端；`dataDB` 未就绪时为 0） |
+| total_bytes | int | 合计 = file_bytes + db_bytes |
+
+> 与当前启用后端无关：切换 `OBS_STORE` 后旧数据仍计入（file 数据保留在磁盘、db 表保留在库）。
+> WebUI 日志页顶部展示该统计。
 
 ### 3.12 GET /admin/auth/status — 认证状态
 

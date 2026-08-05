@@ -517,6 +517,11 @@ b, strong { font-weight: 600; }
 .card.hoverable { transition: transform .15s, border-color .15s, box-shadow .15s; }
 .card.hoverable:hover { transform: translateY(-1px); border-color: var(--border-strong); box-shadow: var(--shadow); }
 
+/* 日志页存储占用统计条 */
+.storage-card { padding: 10px 16px; font-size: 13px; color: var(--text); }
+.storage-card .storage-label { color: var(--text-2); margin-right: 6px; }
+.storage-card b { color: var(--text); font-weight: 600; }
+
 .card-title {
   font-size: 14px;
   font-weight: 600;
@@ -852,28 +857,25 @@ b, strong { font-weight: 600; }
 .alert-warning { color: var(--warn); background: rgba(245, 158, 11, .1); border-color: rgba(245, 158, 11, .3); }
 .alert-danger { color: var(--danger-light); background: rgba(239, 68, 68, .1); border-color: rgba(239, 68, 68, .3); }
 
-/* ---------- 20. 工具提示（纯 CSS data-tip） ---------- */
+/* ---------- 20. 工具提示（JS 委托：跟随鼠标，见 main.js；CSS 仅提供外观） ---------- */
 [data-tip] { position: relative; cursor: help; }
 
-[data-tip]:hover::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 10px);
-  left: 50%;
-  transform: translateX(-50%);
+.tip-popup {
+  position: fixed;
+  max-width: 380px;
+  min-width: 200px;
+  padding: 8px 10px;
   background: var(--panel-2);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 8px 10px;
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.7;
   white-space: pre-line;
-  max-width: 380px;
-  min-width: 220px;
-  z-index: 60;
   box-shadow: var(--shadow);
-  font-weight: 400;
+  z-index: 200;
+  pointer-events: none;
+  display: none;
 }
 
 /* ==========================================================
@@ -1118,7 +1120,15 @@ b, strong { font-weight: 600; }
 .log-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 
 .log-toolbar .input, .log-toolbar .select { width: auto; }
-.log-trace { width: 220px !important; }
+.log-toolbar-filters { margin-bottom: 0; gap: 14px; }
+
+/* 开始/结束时间组：日期 + 时间两个控件一行排列 */
+.tool-group { display: flex; align-items: center; gap: 6px; }
+.tool-group .muted { font-size: 12.5px; white-space: nowrap; }
+.tool-group input[type="date"] { width: 132px; }
+.tool-group input[type="time"] { width: 92px; }
+
+.log-path { width: 200px !important; }
 
 .toolbar-divider { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
 

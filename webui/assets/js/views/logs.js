@@ -1,7 +1,8 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/logs.js 日志页
- * 按日期范围查询（NDJSON 按行解析）、trace_id 过滤、状态码筛选、
- * 只看异常、行展开详情、导出下载。挂载到全局命名空间 window.Rock.views.logs。
+ * 时间范围查询（date + time 组合，精确到分）、path 精确/模糊过滤（后端查询）、
+ * 状态码筛选、耗时排序、只看异常、行展开详情、存储占用、导出下载。
+ * 挂载到全局命名空间 window.Rock.views.logs。
  * ========================================================================== */
 (function () {
   'use strict';
@@ -13,7 +14,6 @@
   const esc = Rock.util.esc;
   const debounce = Rock.util.debounce;
   const fmtDate = Rock.util.fmtDate;
-  const fmtTime = Rock.util.fmtTime;
   const fmtDateTime = Rock.util.fmtDateTime;
   const fmtBytes = Rock.util.fmtBytes;
   const truncate = Rock.util.truncate;
@@ -23,14 +23,15 @@
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
 
-  // 查询条件 / 筛选条件 / 展开状态（页内私有）
-  const logsQuery = { from: '', to: '' };
-  const logsFilter = { traceId: '', status: '', onlyError: false };
+  // 查询条件（提交后端） / 本地筛选条件 / 展开状态（页内私有）
+  const logsQuery = { fromDate: '', fromTime: '', toDate: '', toTime: '', path: '', pathLike: '' };
+  const logsFilter = { status: '', onlyError: false, sortBy: 'time_desc' };
   let logsExpanded = {};
 
-  function todayStr() {
-    return fmtDate(new Date());
-  }
+  function today() { return fmtDate(new Date()); }
+  // 组装后端时间参数（精确到分）
+  function qFrom() { return (logsQuery.fromDate || today()) + 'T' + (logsQuery.fromTime || '00:00'); }
+  function qTo() { return (logsQuery.toDate || today()) + 'T' + (logsQuery.toTime || '23:59'); }
 
   function statusGroup(code) {
     code = Number(code) || 0;
@@ -56,6 +57,7 @@
       total_ms: Number(r.total_ms) || 0,
       req_bytes: Number(r.req_bytes) || 0,
       resp_bytes: Number(r.resp_bytes) || 0,
+      extras: r, // 保留扩展维度（负载字段如 request_body），详情展开时平铺展示
     };
   }
 
@@ -75,18 +77,20 @@
     return out;
   }
 
-  // 加载日志（默认当天；首次进入且页面为空时展示骨架屏）
+  // 加载日志（默认当天全天；首次进入且页面为空时展示骨架屏）
   async function loadPage(opts) {
     const host = $('#page-logs');
-    if (!logsQuery.from) logsQuery.from = todayStr();
-    if (!logsQuery.to) logsQuery.to = todayStr();
     if (!store.logsLoaded && host && !host.innerHTML.trim()) {
       host.innerHTML = skeletonHTML(5);
     }
-    const from = logsQuery.from;
-    const to = logsQuery.to;
+    const params = new URLSearchParams();
+    params.set('from', qFrom());
+    params.set('to', qTo());
+    if (logsQuery.path) params.set('path', logsQuery.path);
+    if (logsQuery.pathLike) params.set('path_like', logsQuery.pathLike);
+    loadStorage(); // 存储占用（不阻塞日志主流程）
     try {
-      const txt = await api.text('/admin/logs?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to));
+      const txt = await api.text('/admin/logs?' + params.toString());
       store.logs = parseNdjson(txt);
       store.logsLoaded = true;
       store.logsError = null;
@@ -108,20 +112,34 @@
     render();
   }
 
-  // 按当前筛选条件过滤（trace_id / 状态码 / 只看异常）
-  function filteredLogs() {
-    let rows = store.logs || [];
-    if (logsFilter.traceId) {
-      const q = logsFilter.traceId;
-      rows = rows.filter(r => (r.trace_id || '').indexOf(q) >= 0);
+  // 加载存储占用：文件日志 + 数据库日志表总空间（当前存储全量，与启用后端无关）
+  async function loadStorage() {
+    try {
+      const s = await api.get('/admin/logs/storage');
+      store.logsStorage = s || null;
+      store.storageError = null;
+    } catch (e) {
+      store.logsStorage = null;
+      store.storageError = e.obsDisabled ? 'obs' : e.message;
     }
-    if (logsFilter.status) {
-      rows = rows.filter(r => statusGroup(r.status_code) === logsFilter.status);
-    }
-    if (logsFilter.onlyError) {
-      rows = rows.filter(r => Number(r.status_code) >= 400);
-    }
-    return rows;
+    renderStorage();
+  }
+
+  function storageHTML() {
+    if (store.storageError === 'obs') return '<span class="muted">观测组件未开启，无法统计存储占用</span>';
+    if (store.storageError) return '<span class="muted">存储占用不可用：' + esc(store.storageError) + '</span>';
+    if (!store.logsStorage) return '<span class="muted">存储占用加载中…</span>';
+    const s = store.logsStorage;
+    return [
+      '文件日志 <b>' + fmtBytes(Number(s.file_bytes) || 0) + '</b>',
+      '数据库表 <b>' + fmtBytes(Number(s.db_bytes) || 0) + '</b>',
+      '总计 <b>' + fmtBytes(Number(s.total_bytes) || 0) + '</b>',
+    ].join(' · ');
+  }
+
+  function renderStorage() {
+    const el = $('#log-storage');
+    if (el) el.innerHTML = storageHTML();
   }
 
   const STATUS_OPTIONS = [
@@ -132,8 +150,36 @@
     ['5xx', '5xx 服务端错误'],
   ];
 
+  const SORT_OPTIONS = [
+    ['time_desc', '时间：最新在前'],
+    ['total_desc', '耗时：从高到低'],
+    ['total_asc', '耗时：从低到高'],
+  ];
+
+  // 按当前筛选条件过滤 + 排序（path 与时间已由后端查询过滤；耗时排序为本地排序）
+  function filteredLogs() {
+    let rows = store.logs || [];
+    if (logsFilter.status) {
+      rows = rows.filter(r => statusGroup(r.status_code) === logsFilter.status);
+    }
+    if (logsFilter.onlyError) {
+      rows = rows.filter(r => Number(r.status_code) >= 400);
+    }
+    rows = rows.slice();
+    if (logsFilter.sortBy === 'total_desc') {
+      rows.sort((a, b) => (b.total_ms || 0) - (a.total_ms || 0));
+    } else if (logsFilter.sortBy === 'total_asc') {
+      rows.sort((a, b) => (a.total_ms || 0) - (b.total_ms || 0));
+    }
+    // time_desc（默认）：后端已按最新在前返回
+    return rows;
+  }
+
+  // 详情：核心字段 + 扩展维度（extra 平铺字段，非核心字段自动列出）
+  const KNOWN = new Set(['time', 'trace_id', 'tenant_id', 'path', 'method', 'client_ip', 'status_code', 'upstream', 'shield_ms', 'biz_ms', 'total_ms', 'req_bytes', 'resp_bytes']);
+
   function logDetailHTML(r) {
-    const items = [
+    const core = [
       ['请求标识', r.trace_id],
       ['租户', r.tenant_id],
       ['请求来源', r.client_ip],
@@ -147,26 +193,39 @@
       ['请求流量', fmtBytes(r.req_bytes)],
       ['响应流量', fmtBytes(r.resp_bytes)],
     ];
+    // 扩展维度（后端平铺返回的负载字段，如 request_body）
+    const extras = [];
+    const flat = r.extras || {};
+    Object.keys(flat).forEach(k => {
+      if (!KNOWN.has(k)) {
+        let v = flat[k];
+        if (typeof v === 'object' && v !== null) v = JSON.stringify(v);
+        extras.push([k, String(v)]);
+      }
+    });
+    const items = core.concat(extras);
     return '<div class="detail-grid">' + items.map(it =>
       '<div class="detail-item"><span class="k">' + esc(it[0]) + '：</span><span class="v">' + esc(it[1] === '' ? '—' : it[1]) + '</span></div>'
     ).join('') + '</div>';
   }
 
+  // 展开状态以行标识（time|trace_id）为键：排序/过滤变化后展开状态跟随行，不错位
+  function expKey(r) { return (r.time || '') + '|' + (r.trace_id || ''); }
+
   function logRowHTML(r, idx) {
-    const expanded = !!logsExpanded[idx];
+    const expanded = !!logsExpanded[expKey(r)];
     const st = r.status_code;
     const stCls = st >= 500 ? 'status-red' : (st >= 400 ? 'status-warn' : (st >= 300 ? 'status-info' : (st >= 200 ? 'status-ok' : '')));
     const methodCls = 'method method-' + (r.method || '').toLowerCase();
-    return '<tr class="log-row' + (st >= 400 ? ' is-error' : '') + '" data-act="log-expand" data-idx="' + idx + '">' +
-      '<td class="mono">' + esc(fmtTime(r.time)) + '</td>' +
+    return '<tr class="log-row' + (st >= 400 ? ' is-error' : '') + '" data-act="log-expand" data-idx="' + esc(expKey(r)) + '">' +
+      '<td class="mono" title="' + esc(r.time) + '">' + esc(fmtDateTime(r.time)) + '</td>' +
       '<td><span class="' + methodCls + '">' + esc(r.method) + '</span></td>' +
       '<td class="log-path" title="' + esc(r.path) + '">' + esc(truncate(r.path, 60)) + '</td>' +
       '<td><span class="status ' + stCls + '">' + (st || '-') + '</span></td>' +
       '<td class="mono">' + r.total_ms + 'ms</td>' +
-      '<td class="mono" title="' + esc(r.trace_id) + '">' + esc(truncate(r.trace_id, 14)) + '</td>' +
       '<td class="row-arrow">' + (expanded ? '▾' : '▸') + '</td>' +
       '</tr>' +
-      (expanded ? '<tr class="log-detail-row"><td colspan="7">' + logDetailHTML(r) + '</td></tr>' : '');
+      (expanded ? '<tr class="log-detail-row"><td colspan="6">' + logDetailHTML(r) + '</td></tr>' : '');
   }
 
   function renderTable() {
@@ -182,7 +241,7 @@
       return;
     }
     if (store.logsError === 'bad-params') {
-      wrap.innerHTML = '<div class="card"><div class="empty">日期参数不合法，请检查后重试。</div></div>';
+      wrap.innerHTML = '<div class="card"><div class="empty">时间参数不合法，请检查后重试。</div></div>';
       return;
     }
     if (store.logsError) {
@@ -191,7 +250,7 @@
       return;
     }
     if (!store.logs.length) {
-      wrap.innerHTML = '<div class="card"><div class="empty">所选日期无访问日志</div></div>';
+      wrap.innerHTML = '<div class="card"><div class="empty">所选时间范围无访问日志</div></div>';
       return;
     }
     if (!rows.length) {
@@ -201,50 +260,93 @@
     const shown = rows.slice(0, 2000);
     const html = '<div class="table-wrap" style="max-height:640px">' +
       '<table class="table"><thead><tr>' +
-      '<th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>耗时</th><th>请求标识</th><th style="width:28px"></th>' +
+      '<th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>耗时</th><th style="width:28px"></th>' +
       '</tr></thead><tbody>' + shown.map((r, i) => logRowHTML(r, i)).join('') + '</tbody></table></div>' +
-      (rows.length > 2000 ? '<div class="form-hint" style="margin-top:8px">共 ' + rows.length + ' 条，仅展示前 2000 条，请收窄日期范围或筛选条件。</div>' : '');
+      (rows.length >= 2000 || (store.logs || []).length >= 2000 ? '<div class="form-hint" style="margin-top:8px">已达 2000 条展示上限，请收窄时间范围或筛选条件。</div>' : '');
     wrap.innerHTML = html;
+  }
+
+  // 选项渲染辅助（保持选中态）
+  function optionsHTML(opts, selected) {
+    return opts.map(o =>
+      '<option value="' + o[0] + '"' + (selected === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'
+    ).join('');
   }
 
   function render() {
     const host = $('#page-logs');
     if (!host) return;
-    if (!logsQuery.from) logsQuery.from = todayStr();
-    if (!logsQuery.to) logsQuery.to = todayStr();
-    const statusOpts = STATUS_OPTIONS.map(o =>
-      '<option value="' + o[0] + '"' + (logsFilter.status === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'
-    ).join('');
+    if (!logsQuery.fromDate) logsQuery.fromDate = today();
+    if (!logsQuery.fromTime) logsQuery.fromTime = '00:00';
+    if (!logsQuery.toDate) logsQuery.toDate = today();
+    if (!logsQuery.toTime) logsQuery.toTime = '23:59';
     host.innerHTML =
       '<div class="page-head">' +
-      '<div><div class="page-title">日志</div><div class="page-desc">按天查看访问日志，定位单个请求</div></div>' +
+      '<div><div class="page-title">日志</div><div class="page-desc">按时间范围与路径查看访问日志，定位单个请求</div></div>' +
       '<button class="btn btn-sm" data-act="logs-reload">⟳ 手动刷新</button>' +
       '</div>' +
+      '<div class="card storage-card"><span class="storage-label">存储占用：</span><span id="log-storage">' + storageHTML() + '</span></div>' +
       '<div class="card">' +
       '<div class="log-toolbar">' +
-      '<input type="date" class="input input-sm" id="log-from" value="' + esc(logsQuery.from) + '">' +
-      '<span class="muted">至</span>' +
-      '<input type="date" class="input input-sm" id="log-to" value="' + esc(logsQuery.to) + '">' +
+      '<div class="tool-group"><span class="muted">开始</span>' +
+      '<input type="date" class="input input-sm" id="log-from-date" value="' + esc(logsQuery.fromDate) + '">' +
+      '<input type="time" class="input input-sm" id="log-from-time" value="' + esc(logsQuery.fromTime) + '">' +
+      '</div>' +
+      '<div class="tool-group"><span class="muted">结束</span>' +
+      '<input type="date" class="input input-sm" id="log-to-date" value="' + esc(logsQuery.toDate) + '">' +
+      '<input type="time" class="input input-sm" id="log-to-time" value="' + esc(logsQuery.toTime) + '">' +
+      '</div>' +
       '<button class="btn btn-sm btn-primary" data-act="log-query">查询</button>' +
       '<button class="btn btn-sm" data-act="log-export">导出下载</button>' +
       '<span class="toolbar-divider"></span>' +
-      '<input class="input input-sm log-trace" id="log-trace" placeholder="请求标识过滤（trace_id）" value="' + esc(logsFilter.traceId) + '">' +
-      '<select class="select select-sm" id="log-status">' + statusOpts + '</select>' +
-      '<label class="chk"><input type="checkbox" id="log-only-error"' + (logsFilter.onlyError ? ' checked' : '') + '><span>只看异常（≥4xx）</span></label>' +
+      '<input class="input input-sm log-path" id="log-path" placeholder="路径精确匹配，如 /api/order/1" title="path 精确匹配" value="' + esc(logsQuery.path) + '">' +
+      '<input class="input input-sm log-path" id="log-path-like" placeholder="路径模糊匹配，如 /api/order" title="path 模糊搜索（包含）" value="' + esc(logsQuery.pathLike) + '">' +
       '<button class="btn btn-sm btn-text" data-act="log-reset">重置</button>' +
+      '</div>' +
+      '<div class="log-toolbar log-toolbar-filters">' +
+      '<select class="select select-sm" id="log-status">' + optionsHTML(STATUS_OPTIONS, logsFilter.status) + '</select>' +
+      '<select class="select select-sm" id="log-sort">' + optionsHTML(SORT_OPTIONS, logsFilter.sortBy) + '</select>' +
+      '<label class="chk"><input type="checkbox" id="log-only-error"' + (logsFilter.onlyError ? ' checked' : '') + '><span>只看异常（≥4xx）</span></label>' +
       '</div>' +
       '<div id="log-table-wrap"></div>' +
       '</div>';
     renderTable();
-    // 绑定筛选控件
-    const trace = $('#log-trace');
-    trace.addEventListener('input', debounce(() => {
-      logsFilter.traceId = trace.value.trim();
-      renderTable();
+
+    // 开始/结束日期时间：变更即查询（防抖）
+    const fromDate = $('#log-from-date');
+    const fromTime = $('#log-from-time');
+    const toDate = $('#log-to-date');
+    const toTime = $('#log-to-time');
+    const syncTime = debounce(() => {
+      logsQuery.fromDate = fromDate.value;
+      logsQuery.fromTime = fromTime.value;
+      logsQuery.toDate = toDate.value;
+      logsQuery.toTime = toTime.value;
+      query();
+    }, 300);
+    [fromDate, fromTime, toDate, toTime].forEach(el => el.addEventListener('change', syncTime));
+
+    // path 精确/模糊：即时（防抖）后端查询
+    const pathInput = $('#log-path');
+    pathInput.addEventListener('input', debounce(() => {
+      logsQuery.path = pathInput.value.trim();
+      query();
     }, 300));
+    const pathLikeInput = $('#log-path-like');
+    pathLikeInput.addEventListener('input', debounce(() => {
+      logsQuery.pathLike = pathLikeInput.value.trim();
+      query();
+    }, 300));
+
+    // 状态码 / 耗时排序 / 只看异常：本地筛选
     const stSel = $('#log-status');
     stSel.addEventListener('change', () => {
       logsFilter.status = stSel.value;
+      renderTable();
+    });
+    const sortSel = $('#log-sort');
+    sortSel.addEventListener('change', () => {
+      logsFilter.sortBy = sortSel.value;
       renderTable();
     });
     const onlyErr = $('#log-only-error');
@@ -254,12 +356,14 @@
     });
   }
 
-  // 按日期范围查询（读取工具栏日期输入）
+  // 按时间范围 + path 条件查询（读取工具栏输入）
   async function query() {
-    logsQuery.from = $('#log-from').value || todayStr();
-    logsQuery.to = $('#log-to').value || todayStr();
-    if (logsQuery.from > logsQuery.to) {
-      toast('开始日期不能晚于结束日期', 'error');
+    logsQuery.fromDate = $('#log-from-date').value || today();
+    logsQuery.fromTime = $('#log-from-time').value || '00:00';
+    logsQuery.toDate = $('#log-to-date').value || today();
+    logsQuery.toTime = $('#log-to-time').value || '23:59';
+    if (qFrom() > qTo()) {
+      toast('开始时间不能晚于结束时间', 'error');
       return;
     }
     store.logsLoaded = false;
@@ -271,11 +375,11 @@
   function exportLogs() {
     const rows = filteredLogs();
     if (!rows.length) { toast('没有可导出的日志', 'warning'); return; }
-    const lines = rows.map(r => JSON.stringify(r));
+    const lines = rows.map(r => JSON.stringify(r.extras));
     const blob = new Blob([lines.join('\n')], { type: 'application/x-ndjson;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'access-' + logsQuery.from + '_' + logsQuery.to + '.jsonl';
+    a.download = 'access-' + qFrom().replace(/[:T]/g, '-') + '_' + qTo().replace(/[:T]/g, '-') + '.jsonl';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -283,22 +387,32 @@
     toast('已导出 ' + rows.length + ' 条日志', 'success');
   }
 
-  // 重置筛选条件
+  // 重置筛选与查询条件（时间回当天全天）
   function resetFilter() {
-    logsFilter.traceId = '';
     logsFilter.status = '';
     logsFilter.onlyError = false;
+    logsFilter.sortBy = 'time_desc';
+    logsQuery.fromDate = today();
+    logsQuery.fromTime = '00:00';
+    logsQuery.toDate = today();
+    logsQuery.toTime = '23:59';
+    logsQuery.path = '';
+    logsQuery.pathLike = '';
+    store.logsLoaded = false;
     render();
+    loadPage({ force: true });
   }
 
-  // 行展开 / 收起
-  function toggleExpand(idx) {
-    logsExpanded[idx] = !logsExpanded[idx];
+  // 行展开 / 收起（key = time|trace_id，跟随行不错位）
+  function toggleExpand(key) {
+    if (!key) return;
+    logsExpanded[key] = !logsExpanded[key];
     renderTable();
   }
 
   window.Rock.views.logs = {
     loadPage,
+    loadStorage,
     render,
     renderTable,
     query,

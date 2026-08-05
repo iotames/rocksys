@@ -65,8 +65,13 @@
     { prefix: 'AUTH_',    name: 'auth',    label: '认证' },
     { prefix: 'MQ_',      name: 'mq',      label: '消息' },
     { prefix: 'DB_',      name: 'db',      label: '数据访问' },
-    { prefix: 'SQL_DIR',  name: 'db',      label: '数据访问' },
+    // SQL_DIR 特判归入 db 组（见 groupOf），避免同组重复注册产生重复页签
   ];
+
+  // 枚举值配置项（编辑态渲染下拉而非手填）：key → 可选值数组
+  const ENUM_KEYS = {
+    OBS_STORE: ['file', 'db'],
+  };
 
   // 需重启才生效的配置项
   const RESTART_KEYS = ['ROCKSYS_LISTEN', 'ROCKSYS_ADMIN', 'ROCKSYS_CONFIG'];
@@ -80,8 +85,9 @@
     obs: 'OBS_', copy: 'COPY_', result: 'RESULT_', auth: 'AUTH_', mq: 'MQ_',
   };
 
-  // 配置分组归属
+  // 配置分组归属（SQL_DIR 特判归入数据访问组）
   function groupOf(key) {
+    if (key === 'SQL_DIR') return { prefix: 'DB_', name: 'db', label: '数据访问' };
     for (let i = 0; i < PREFIX_GROUPS.length; i++) {
       if (key.indexOf(PREFIX_GROUPS[i].prefix) === 0) return PREFIX_GROUPS[i];
     }
@@ -134,6 +140,7 @@
     COMPONENT_META,
     COMPONENT_ORDER,
     PREFIX_GROUPS,
+    ENUM_KEYS,
     RESTART_KEYS,
     isSensitiveKey,
     COMPONENT_PREFIX,

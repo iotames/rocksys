@@ -13,7 +13,7 @@
 | 能力 | 说明 |
 |------|------|
 | 反向代理引擎 | 接收全部 HTTP 请求 → 转发 → 回传响应，协议级纯转发 |
-| 转发超时 | 慢后端不挂死代理连接（默认 5s，可配置） |
+| 转发超时 | 慢后端不挂死代理连接（默认 18s，可配置） |
 | 开关机制 | 中间件/组件在线挂载、摘除、原子切换、排空（hotswap） |
 | 三层时间戳 | 防护/业务/总耗时精确分解（`ShieldMs + BizMs ≈ TotalMs`） |
 | trace_id 透传 | 入口生成唯一标识，贯穿全链路 |
@@ -156,7 +156,7 @@ curl http://127.0.0.1:8080/hello
 | `--listen` / `ROCKSYS_LISTEN` | `:8080` | 代理监听地址 |
 | `--upstream` / `ROCKSYS_UPSTREAM` | `http://127.0.0.1:8080` | 默认后端 |
 | `--admin` / `ROCKSYS_ADMIN` | `127.0.0.1:19527` | 管理接口（回环，不对外网） |
-| `--timeout` / `ROCKSYS_TIMEOUT` | `5` | 转发超时（秒） |
+| `--timeout` / `ROCKSYS_TIMEOUT` | `18` | 转发超时（秒） |
 | `--config` / `ROCKSYS_CONFIG` | 空 | `.env` 配置文件路径 |
 | `ROCKSYS_LOG_LEVEL` | `info` | 日志级别（debug/info/warn/error） |
 
@@ -166,7 +166,7 @@ curl http://127.0.0.1:8080/hello
 # ===== 底座 =====
 ROCKSYS_LISTEN = :8080
 ROCKSYS_UPSTREAM = http://127.0.0.1:9000
-ROCKSYS_TIMEOUT = 5
+ROCKSYS_TIMEOUT = 18
 ROCKSYS_ADMIN = 127.0.0.1:19527
 ROCKSYS_LOG_LEVEL = info
 
@@ -194,6 +194,7 @@ DISPATCH_RULES = /api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz;/
 REWRITE_RULES = /api/v1/=uri|/api/;header=X-Proxy-Tag:rewrite
 
 # ===== 观测 obs =====
+OBS_STORE = file              # 访问日志存储后端：file（JSONL）| db（数据库，复用 DB_DRIVER/DB_DSN）
 OBS_LOG_DIR = logs
 OBS_RETENTION_DAYS = 30
 
@@ -337,7 +338,7 @@ sudo systemctl restart rocksys
 
 ### 日志与留存
 
-- obs 启用后：访问日志 `logs/access-YYYY-MM-DD.jsonl`（按天切分，超期自动清理，`OBS_RETENTION_DAYS`）。
+- obs 启用后：访问日志写入当前存储后端（`OBS_STORE=file` → `logs/access-YYYY-MM-DD.jsonl` 按天切分、超期自动清理；`OBS_STORE=db` → `access_log` 表，复用 `DB_DRIVER`/`DB_DSN`）。WebUI「日志」页支持按时间范围（精确到分）+ 路径精确/模糊过滤查询。
 - 指标：`GET /admin/metrics`（1 分钟滑动窗口），WebUI「观测 · 指标」查看趋势。
 - 业务日志与网关日志分离；如需聚合到统一平台，可对接日志采集器消费 `logs/` 目录。
 

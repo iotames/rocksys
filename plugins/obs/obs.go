@@ -2,15 +2,14 @@
 //
 // 挂 chain.Tail 槽位并实现 chain.ResponseHook——OnResponse 是获得"请求完成事件"
 // 的唯一通道：Forward 完成后 Adapter 回调，此时 ctx.RespCode/RespHeader/RespBody
-// 与 ctx.DF 三时间戳均已就绪，据此构造 AccessLog 异步落盘并聚合到 Metrics。
+// 与 ctx.DF 三时间戳均已就绪，据此构造 AccessRecord 异步落盘并聚合到 Metrics。
+//
+// 存储后端可热切换（OBS_STORE=file|db，见 store.go/dim.go）：
+// 默认 file 写 logs/access-YYYY-MM-DD.jsonl；db 复用统一数据访问层 internal/db。
 package obs
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +19,7 @@ import (
 
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
+	"rocksys/internal/db"
 	"rocksys/internal/hotswap"
 
 	"github.com/iotames/easyserver/log"
@@ -29,27 +29,8 @@ import (
 const (
 	defaultLogDir        = "logs"
 	defaultRetentionDays = 30
-
-	// pendingCap 异步落盘队列上限，超出降级丢弃（不阻塞请求）。
-	pendingCap = 4096
+	defaultStore         = "file" // 访问日志存储后端：file | db
 )
-
-// AccessLog 访问日志（§14 关键类型）。
-type AccessLog struct {
-	Time       time.Time `json:"time"`
-	TraceID    string    `json:"trace_id"`
-	TenantID   string    `json:"tenant_id,omitempty"`
-	Path       string    `json:"path"`
-	Method     string    `json:"method"`
-	ClientIP   string    `json:"client_ip"`
-	StatusCode int       `json:"status_code"`
-	Upstream   string    `json:"upstream"`
-	ShieldMs   int64     `json:"shield_ms"`
-	BizMs      int64     `json:"biz_ms"`
-	TotalMs    int64     `json:"total_ms"`
-	ReqBytes   int64     `json:"req_bytes"`
-	RespBytes  int64     `json:"resp_bytes"`
-}
 
 // 指标窗口：1 分钟滑动窗口 × 100 桶（每桶 0.6s）。
 const (
@@ -145,215 +126,16 @@ func percentile(sorted []int64, p float64) int64 {
 	return sorted[idx]
 }
 
-// FileSink 访问日志落盘器：异步写入、按天切分、超期清理（§14 文件管理）。
-// 写盘失败不阻塞请求——队列满或落盘出错时降级丢弃并计数告警。
-type FileSink struct {
-	dir           string
-	retentionDays int
-
-	mu      sync.Mutex // 保护 pending/f/curDate/dir/retentionDays
-	pending []*AccessLog
-	f       *os.File
-	curDate string
-	drop    atomic.Int64 // 丢弃计数（告警用）
-
-	wake   chan struct{}   // 有数据待写信号（cap 1）
-	flush  chan chan error // flush 请求通道
-	closed atomic.Bool
-}
-
-// NewFileSink 创建落盘器并启动异步写入 goroutine。
-func NewFileSink(dir string, retentionDays int) *FileSink {
-	s := &FileSink{
-		dir:           dir,
-		retentionDays: retentionDays,
-		wake:          make(chan struct{}, 1),
-		flush:         make(chan chan error),
-	}
-	go s.run()
-	return s
-}
-
-// Configure 热更配置（Start 调用）：重建目录/留存，并重置关闭态（支持重新启用）。
-func (s *FileSink) Configure(dir string, retentionDays int) {
-	s.mu.Lock()
-	s.dir = dir
-	s.retentionDays = retentionDays
-	s.closed.Store(false)
-	s.mu.Unlock()
-}
-
-// Write 异步入队一条日志；队列满或已关闭时降级丢弃 + 计数告警。
-func (s *FileSink) Write(al *AccessLog) {
-	if s.closed.Load() {
-		s.drop.Add(1)
-		log.Warn("obs: sink 已关闭，丢弃日志", "trace_id", al.TraceID, "drop_count", s.drop.Load())
-		return
-	}
-	s.mu.Lock()
-	if len(s.pending) >= pendingCap {
-		s.mu.Unlock()
-		s.drop.Add(1)
-		log.Warn("obs: 日志队列已满，丢弃该条", "trace_id", al.TraceID, "drop_count", s.drop.Load())
-		return
-	}
-	s.pending = append(s.pending, al)
-	s.mu.Unlock()
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
-}
-
-// Flush 阻塞直到已入队日志全部写盘并关闭文件句柄（§14 Shutdown 语义）。
-// ctx 超时则返回 ctx.Err()（缓冲可能未全部落盘）。
-func (s *FileSink) Flush(ctx context.Context) error {
-	ack := make(chan error, 1)
-	select {
-	case s.flush <- ack:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	select {
-	case err := <-ack:
-		if err == nil {
-			s.closed.Store(true)
-		}
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// DropCount 返回累计丢弃条数（告警观测用）。
-func (s *FileSink) DropCount() int64 { return s.drop.Load() }
-
-// run 异步写入循环：唤醒即落盘，收到 flush 请求则排空缓冲并关文件。
-func (s *FileSink) run() {
-	for {
-		select {
-		case <-s.wake:
-			s.writePending()
-		case ack := <-s.flush:
-			ack <- s.flushAll()
-		}
-	}
-}
-
-// writePending 取走全部 pending 并写盘；失败时整批降级丢弃并告警。
-func (s *FileSink) writePending() {
-	s.mu.Lock()
-	batch := s.pending
-	s.pending = nil
-	s.mu.Unlock()
-	if len(batch) == 0 {
-		return
-	}
-	if err := s.appendBatch(batch); err != nil {
-		s.drop.Add(int64(len(batch)))
-		log.Warn("obs: 访问日志写盘失败，丢弃该批", "err", err, "drop_count", s.drop.Load())
-	}
-}
-
-// flushAll 排空缓冲 → 写盘 → 关闭文件句柄（供 Flush 调用）。
-func (s *FileSink) flushAll() error {
-	s.mu.Lock()
-	batch := s.pending
-	s.pending = nil
-	s.mu.Unlock()
-	var err error
-	if len(batch) > 0 {
-		if err = s.appendBatch(batch); err != nil {
-			s.drop.Add(int64(len(batch)))
-			log.Warn("obs: flush 写盘失败，丢弃该批", "err", err, "drop_count", s.drop.Load())
-		}
-	}
-	if cerr := s.closeFile(); err == nil {
-		err = cerr
-	}
-	return err
-}
-
-// appendBatch 将一批日志写入当天文件；跨天则切分新文件并执行留存清理。
-// 调用方须持 s.mu。
-func (s *FileSink) appendBatch(batch []*AccessLog) error {
-	today := time.Now().Format("2006-01-02")
-	if s.f == nil || s.curDate != today {
-		if s.f != nil {
-			_ = s.f.Close()
-			s.f = nil
-		}
-		if s.dir == "" {
-			s.dir = defaultLogDir
-		}
-		if err := os.MkdirAll(s.dir, 0o755); err != nil {
-			return fmt.Errorf("obs: 创建日志目录 %s: %w", s.dir, err)
-		}
-		path := filepath.Join(s.dir, "access-"+today+".jsonl")
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			return fmt.Errorf("obs: 打开日志文件 %s: %w", path, err)
-		}
-		s.f = f
-		s.curDate = today
-		s.cleanupOld()
-	}
-	for _, al := range batch {
-		line, err := json.Marshal(al)
-		if err != nil {
-			continue // 单条序列化失败单独丢弃
-		}
-		if _, err := s.f.Write(append(line, '\n')); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// closeFile 关闭当前文件句柄（调用方持锁）。
-func (s *FileSink) closeFile() error {
-	if s.f == nil {
-		return nil
-	}
-	err := s.f.Close()
-	s.f = nil
-	s.curDate = ""
-	return err
-}
-
-// cleanupOld 清理超过留存天数的历史日志文件（调用方持锁）。
-func (s *FileSink) cleanupOld() {
-	if s.retentionDays <= 0 {
-		return
-	}
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().AddDate(0, 0, -s.retentionDays)
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasPrefix(name, "access-") || !strings.HasSuffix(name, ".jsonl") {
-			continue
-		}
-		dateStr := strings.TrimSuffix(strings.TrimPrefix(name, "access-"), ".jsonl")
-		d, err := time.Parse("2006-01-02", dateStr)
-		if err != nil {
-			continue
-		}
-		if d.Before(cutoff) {
-			_ = os.Remove(filepath.Join(s.dir, name))
-		}
-	}
-}
-
 // Obs 可观测性中间件：挂 chain.Tail，实现 chain.ResponseHook。
 type Obs struct {
 	cfg           conf.Manager
+	storeCfg      string // *string 注册：OBS_STORE（file|db）
 	logDir        string // *string 注册：OBS_LOG_DIR
 	retentionDays int    // *int 注册：OBS_RETENTION_DAYS
-	sink          *FileSink
-	metrics       *Metrics
+	dataDB        *db.DB // 可选：OBS_STORE=db 时使用（nil 则回退 file）
+
+	sink    atomic.Value // *AsyncStore：当前存储后端（异步写入包装），热切换时原子替换
+	metrics *Metrics
 }
 
 // 编译期断言：Obs 实现 hotswap.MiddlewareLifecycle 与 chain.ResponseHook。
@@ -363,16 +145,21 @@ var (
 )
 
 // New 创建 obs 挂件并注册自身配置项（§14）。
-func New(cfgMgr conf.Manager) *Obs {
+// dataDB 为统一数据访问层（可 nil）：OBS_STORE=db 时作为数据库存储后端，
+// 未就绪则回退 file 并告警。
+func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	o := &Obs{
 		cfg:           cfgMgr,
+		storeCfg:      defaultStore,
 		logDir:        defaultLogDir,
 		retentionDays: defaultRetentionDays,
+		dataDB:        dataDB,
 		metrics:       NewMetrics(),
 	}
+	_ = cfgMgr.Register(&o.storeCfg, "OBS_STORE", defaultStore, "访问日志存储后端（file/db）")
 	_ = cfgMgr.Register(&o.logDir, "OBS_LOG_DIR", defaultLogDir, "访问日志目录")
 	_ = cfgMgr.Register(&o.retentionDays, "OBS_RETENTION_DAYS", strconv.Itoa(defaultRetentionDays), "访问日志保留天数")
-	o.sink = NewFileSink(o.logDir, o.retentionDays)
+	o.sink.Store(NewAsyncStore(o.buildStore()))
 	return o
 }
 
@@ -385,24 +172,55 @@ func (o *Obs) Slot() chain.Slot { return chain.Tail }
 // Handle 占位：响应处理全在 OnResponse，不参与转发前逻辑（§14）。
 func (o *Obs) Handle(ctx *chain.Context) (next bool) { return false }
 
-// Start 用当前配置重建落盘器配置（热更/Enable 时调用）。
+// Start 按当前配置重建存储后端（热更 OBS_STORE/OBS_LOG_DIR/留存天数 / Enable 时调用）。
+// 原子替换 AsyncStore：旧后端排空缓冲后关闭，新请求写入新后端。
 func (o *Obs) Start(cfg any) error {
-	o.sink.Configure(o.logDir, o.retentionDays)
+	o.rebuildStore()
 	return nil
 }
 
 // Stop 桥接 Shutdown（hotswap.MiddlewareLifecycle.Stop 无 context 参数，§14 旁注）。
 func (o *Obs) Stop() error { return o.Shutdown(context.Background()) }
 
-// Shutdown flush 内存缓冲区中未写入的日志，然后关闭文件句柄（进程退出前必须调用）。
-func (o *Obs) Shutdown(ctx context.Context) error { return o.sink.Flush(ctx) }
+// Shutdown flush 内存缓冲区中未写入的日志，然后关闭存储（进程退出前必须调用）。
+func (o *Obs) Shutdown(ctx context.Context) error {
+	return o.sink.Load().(*AsyncStore).Flush(ctx)
+}
 
 // Metrics 返回指标聚合器（供 admin handler 读取）。
 func (o *Obs) Metrics() *Metrics { return o.metrics }
 
-// OnResponse 实现 chain.ResponseHook：构造 AccessLog → 异步落盘 → 聚合指标。
+// Query 按条件查询访问日志（转发当前启用的存储后端）。
+func (o *Obs) Query(q Query) ([]map[string]any, error) {
+	return o.sink.Load().(*AsyncStore).Query(q)
+}
+
+// StorageSize 当前日志存储总占用（字节）：
+// file 为 OBS_LOG_DIR 下所有 access-*.jsonl 合计；db 为 access_log 表 + 索引占用。
+// 两者独立统计并求和（与当前启用后端无关，切换后端后旧数据仍计入）。
+type StorageSize struct {
+	FileBytes  int64 `json:"file_bytes"`  // 文件日志占用
+	DBBytes    int64 `json:"db_bytes"`    // 数据库日志表占用
+	TotalBytes int64 `json:"total_bytes"` // 合计
+}
+
+// StorageSize 统计两类后端的日志存储占用。
+func (o *Obs) StorageSize() StorageSize {
+	var fs, dbs int64
+	if v, err := NewFileStore(o.logDir, 0).SizeBytes(); err == nil {
+		fs = v
+	}
+	if o.dataDB != nil {
+		if v, err := NewDBStore(o.dataDB, accessLogTable).SizeBytes(); err == nil {
+			dbs = v
+		}
+	}
+	return StorageSize{FileBytes: fs, DBBytes: dbs, TotalBytes: fs + dbs}
+}
+
+// OnResponse 实现 chain.ResponseHook：构造 AccessRecord → 异步落盘 → 聚合指标。
 func (o *Obs) OnResponse(ctx *chain.Context) error {
-	al := &AccessLog{
+	al := &AccessRecord{
 		Time:       time.Now(),
 		TraceID:    ctx.DF.TraceID(),
 		TenantID:   ctx.DF.TenantID(),
@@ -417,7 +235,43 @@ func (o *Obs) OnResponse(ctx *chain.Context) error {
 		ReqBytes:   ctx.R.ContentLength,
 		RespBytes:  int64(len(ctx.RespBody)),
 	}
-	o.sink.Write(al)
+	// 负载维度预留点：后期采集纯文本 POST 请求体等扩展字段时，
+	// 先在 dim.go Dims 注册 payload 维度，再在此写 Extras（存储零改动）。
+	o.sink.Load().(*AsyncStore).Write(al)
 	o.metrics.Add(time.Now(), al.TotalMs, al.StatusCode)
 	return nil
+}
+
+// buildStore 按 OBS_STORE 配置构造底层存储后端；非法值/数据层未就绪回退 file。
+func (o *Obs) buildStore() Store {
+	switch strings.ToLower(strings.TrimSpace(o.storeCfg)) {
+	case "db":
+		if o.dataDB == nil {
+			log.Warn("obs: OBS_STORE=db 但数据访问层未就绪，回退 file 存储")
+			return NewFileStore(o.logDir, o.retentionDays)
+		}
+		st := NewDBStore(o.dataDB, accessLogTable)
+		if err := st.EnsureTable(); err != nil {
+			log.Warn("obs: 数据库存储初始化失败，回退 file 存储", "err", err.Error())
+			return NewFileStore(o.logDir, o.retentionDays)
+		}
+		return st
+	case "", "file":
+		return NewFileStore(o.logDir, o.retentionDays)
+	default:
+		log.Warn("obs: 未知存储后端，回退 file 存储", "store", o.storeCfg)
+		return NewFileStore(o.logDir, o.retentionDays)
+	}
+}
+
+// rebuildStore 原子替换存储后端：新建 AsyncStore 挂入，旧后端排空并关闭。
+func (o *Obs) rebuildStore() {
+	newSink := NewAsyncStore(o.buildStore())
+	old := o.sink.Swap(newSink).(*AsyncStore)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := old.Flush(ctx); err != nil {
+		log.Warn("obs: 旧存储排空失败", "err", err.Error())
+	}
+	_ = old.Close()
 }

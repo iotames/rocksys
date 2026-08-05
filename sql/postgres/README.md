@@ -23,5 +23,9 @@
 | mq_insert.sql | 占位符全部改为 `$1, $2, ...` |
 | mq_fetch_pending.sql | `LIMIT ?` → `LIMIT $1` |
 | mq_mark_failed.sql | 占位符全部改为 `$1, $2, $3` |
+| access_log_create_table.sql | `INTEGER PRIMARY KEY AUTOINCREMENT` → `BIGSERIAL PRIMARY KEY` |
+| access_log_create_index.sql | `CREATE INDEX IF NOT EXISTS` 语法一致，可直接复用 |
+| access_log_insert.sql | 占位符全部改为 `$1 ... $14` |
+| access_log_query.sql | 占位符全部改为 `$1 ... $9`；`'%' || ? || '%'` → `'%' || $n || '%'`（`||` 连接符 PostgreSQL 原生支持） |
 
 补充完成后，将 `DB_DRIVER=postgres` 即可启用。

@@ -161,18 +161,11 @@ func buildServer(args []string) (*Server, error) {
 	mgr.RegisterMiddleware(dispatch.New(cfgMgr))      // L2 路由 → chain.Middle
 	mgr.RegisterMiddleware(rewrite.New(cfgMgr))       // L2 转发前改写 → chain.Middle
 	mgr.RegisterMiddleware(script.New(scriptTimeout)) // Lua 策略 → chain.Middle
-	mgr.RegisterMiddleware(obs.New(cfgMgr))           // 访问日志/指标 → chain.Tail(+ResponseHook)
-	mgr.RegisterMiddleware(copy.New(cfgMgr))          // 请求抄送 → chain.Tail(+ResponseHook)
-	mgr.RegisterMiddleware(result.New(cfgMgr))        // L3 结果 → chain.Tail(+ResponseHook)
 
-	// 独立组件（RegisterComponent）：config/registry/object 无条件注册。
-	mgr.RegisterComponent(config.New(cfgMgr))   // KV 配置服务
-	mgr.RegisterComponent(registry.New(cfgMgr)) // 服务注册中心
-	mgr.RegisterComponent(object.New())         // 对象存储
-
-	// 统一数据访问层（§? 数据访问层）：为可插拔组件（mq 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
+	// 统一数据访问层（§? 数据访问层）：为可插拔组件（obs/mq 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
 	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）/ SQL_DIR（默认 sql，外置脚本目录）。
-	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；mq 等依赖方因此不可用。
+	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；obs 的 db 存储与 mq 等依赖方因此不可用。
+	// ★ 必须先于 obs 创建：OBS_STORE=db 时 obs 复用本数据访问层。
 	var dataDB *db.DB
 	var dbDriver, dbDSN, sqlDir string
 	if err := cfgMgr.Register(&dbDriver, "DB_DRIVER", "sqlite", "数据库驱动名（sqlite/mysql/postgres）"); err != nil {
@@ -190,6 +183,15 @@ func buildServer(args []string) (*Server, error) {
 		dataDB = d
 		log.Info("db: 数据访问层已就绪", "driver", dataDB.Driver())
 	}
+
+	mgr.RegisterMiddleware(obs.New(cfgMgr, dataDB))   // 访问日志/指标 → chain.Tail(+ResponseHook)
+	mgr.RegisterMiddleware(copy.New(cfgMgr))          // 请求抄送 → chain.Tail(+ResponseHook)
+	mgr.RegisterMiddleware(result.New(cfgMgr))        // L3 结果 → chain.Tail(+ResponseHook)
+
+	// 独立组件（RegisterComponent）：config/registry/object 无条件注册。
+	mgr.RegisterComponent(config.New(cfgMgr))   // KV 配置服务
+	mgr.RegisterComponent(registry.New(cfgMgr)) // 服务注册中心
+	mgr.RegisterComponent(object.New())         // 对象存储
 
 	// mq 条件装配：仅当 MQ_ENABLED=true 且 MQ_DSN 非空时注册（保持既有语义）。
 	// mq 数据连接独立打开 sqlite(MQ_DSN)；SQL 脚本源优先复用 dataDB（sql/<dbtype>/ 逐级加载），
@@ -252,6 +254,9 @@ func buildServer(args []string) (*Server, error) {
 	}
 	if err := adminSrv.RegisterPlugin("/admin/logs", obsAdmin.Logs); err != nil {
 		return nil, fmt.Errorf("register obs logs: %w", err)
+	}
+	if err := adminSrv.RegisterPlugin("/admin/logs/storage", obsAdmin.Storage); err != nil {
+		return nil, fmt.Errorf("register obs storage: %w", err)
 	}
 
 	// 5b. WebUI 管理控制台静态资源（内嵌单页，根路径 / 打开）。

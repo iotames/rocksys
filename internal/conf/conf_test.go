@@ -39,8 +39,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ConfigFile != "" {
 		t.Errorf("ConfigFile=%q, want empty", cfg.ConfigFile)
 	}
-	if cfg.UpstreamTimeout != 5*time.Second {
-		t.Errorf("UpstreamTimeout=%v, want 5s", cfg.UpstreamTimeout)
+	if cfg.UpstreamTimeout != 18*time.Second {
+		t.Errorf("UpstreamTimeout=%v, want 18s", cfg.UpstreamTimeout)
 	}
 }
 

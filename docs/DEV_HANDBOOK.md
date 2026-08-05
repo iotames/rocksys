@@ -137,7 +137,7 @@ package conf
 type Config struct {
     ListenAddr      string        // 监听地址，默认 ":8080"
     DefaultUpstream string        // 默认后端，默认 "http://127.0.0.1:8080"
-    UpstreamTimeout time.Duration // 转发超时，默认 5s
+    UpstreamTimeout time.Duration // 转发超时，默认 18s
     ConfigFile      string        // .env 配置文件路径，空=极简模式（只用环境变量+命令行）
     AdminAddr       string        // 管理接口监听地址，默认 "127.0.0.1:19527"
     LogLevel        string        // 日志级别，默认 "info"
@@ -238,7 +238,7 @@ func Load(args []string) (*Manager, error) {
     var timeoutSec int
     ec.StringVar(&cfg.ListenAddr, "ROCKSYS_LISTEN", ":8080", "监听地址")
     ec.StringVar(&cfg.DefaultUpstream, "ROCKSYS_UPSTREAM", "http://127.0.0.1:8080", "默认后端")
-    ec.IntVar(&timeoutSec, "ROCKSYS_TIMEOUT", 5, "转发超时(秒)")
+    ec.IntVar(&timeoutSec, "ROCKSYS_TIMEOUT", 18, "转发超时(秒)")
     ec.StringVar(&cfg.ConfigFile, "ROCKSYS_CONFIG", "", "配置文件路径")
     ec.StringVar(&cfg.AdminAddr, "ROCKSYS_ADMIN", "127.0.0.1:19527", "管理接口地址")
     ec.StringVar(&cfg.LogLevel, "ROCKSYS_LOG_LEVEL", "info", "日志级别")
@@ -295,7 +295,7 @@ func parseArgsToMap(args []string) map[string]string
 |---|---|---|---|
 | `--listen` | `ROCKSYS_LISTEN` | 监听地址 | `:8080` |
 | `--upstream` | `ROCKSYS_UPSTREAM` | 默认后端 | `http://127.0.0.1:8080` |
-| `--timeout` | `ROCKSYS_TIMEOUT` | 转发超时(秒) | `5` |
+| `--timeout` | `ROCKSYS_TIMEOUT` | 转发超时(秒) | `18` |
 | `--config` | `ROCKSYS_CONFIG` | .env 配置文件路径 | 空=极简模式 |
 | `--admin` | `ROCKSYS_ADMIN` | 管理接口地址 | `127.0.0.1:19527` |
 | `--log-level` | `ROCKSYS_LOG_LEVEL` | 日志级别 | `info` |
@@ -1580,32 +1580,47 @@ curl http://127.0.0.1:19527/admin/config
 
 ## 第 14 章 plugins/obs（RockObs）
 
-- **职责**：访问日志（三时间戳 + 耗时分解）、指标聚合、查询 API、滚动留存。
-- **依赖**：`internal/chain`、`internal/dataflow`、`internal/hotswap`、`internal/conf`。
+- **职责**：访问日志（三时间戳 + 耗时分解，存储后端可切换）、指标聚合、查询 API、滚动留存。
+- **依赖**：`internal/chain`、`internal/dataflow`、`internal/hotswap`、`internal/conf`、`internal/db`（`OBS_STORE=db` 时）。
 - **Slot 挂载位置**：`chain.Tail`，且实现 `chain.ResponseHook`——**这是 obs 获得"请求完成事件"的唯一通道**：
-  `OnResponse(ctx)` 在 Forward 完成后被调用，此时 `ctx.RespCode/RespHeader/RespBody` 与 `ctx.DF` 三时间戳均已就绪，obs 据此构造 `AccessLog` 异步落盘。
+  `OnResponse(ctx)` 在 Forward 完成后被调用，此时 `ctx.RespCode/RespHeader/RespBody` 与 `ctx.DF` 三时间戳均已就绪，obs 据此构造 `AccessRecord` 异步落盘。
   其 `chain.Middleware.Handle` 返回 false 占位（不参与转发前逻辑）。
-  注册方式：`mgr.RegisterMiddleware(obs.New(cfgMgr))`（§7.1 步骤 5），装配顺序**先于** result（§4.4 执行顺序说明）。
+  注册方式：`mgr.RegisterMiddleware(obs.New(cfgMgr, dataDB))`（§7.1 步骤 5，dataDB 可 nil），装配顺序**先于** result（§4.4 执行顺序说明）。
 
 ### 关键类型
 
 ```go
 package obs
 
-type AccessLog struct {
-    Time       time.Time `json:"time"`
-    TraceID    string    `json:"trace_id"`
-    TenantID   string    `json:"tenant_id,omitempty"`
-    Path       string    `json:"path"`
-    Method     string    `json:"method"`
-    ClientIP   string    `json:"client_ip"`
-    StatusCode int       `json:"status_code"`
-    Upstream   string    `json:"upstream"`
-    ShieldMs   int64     `json:"shield_ms"`
-    BizMs      int64     `json:"biz_ms"`
-    TotalMs    int64     `json:"total_ms"`
-    ReqBytes   int64     `json:"req_bytes"`
-    RespBytes  int64     `json:"resp_bytes"`
+// 维度注册表（dim.go）：每条访问记录的字段清单，新增字段先登记再实现。
+// 索引维度（indexed）：固定列，支持过滤/排序；负载维度（payload）：Extras map，仅记录/展示。
+type DimSpec struct { Name string; Type DimType; Kind DimKind; Desc string }
+
+// 一条 HTTP 访问记录：13 个索引维度固定字段 + 负载维度 Extras（可扩展 map）。
+type AccessRecord struct {
+    Time       time.Time // 请求完成时间
+    TraceID    string    // 链路标识
+    TenantID   string    // 租户（可空）
+    Path       string    // 请求路径
+    Method     string    // HTTP 方法
+    ClientIP   string    // 客户端地址
+    StatusCode int       // 响应状态码
+    Upstream   string    // 最终转发目标
+    ShieldMs   int64     // 防护耗时(ms)
+    BizMs      int64     // 业务/转发耗时(ms)
+    TotalMs    int64     // 总耗时(ms)
+    ReqBytes   int64     // 请求流量(字节)
+    RespBytes  int64     // 响应流量(字节)
+    Extras     map[string]any // 负载维度（如 request_body），序列化平铺进 JSON
+}
+
+// 存储后端接口（store.go）：file / db 两个实现，OBS_STORE 热切换。
+type Store interface {
+    Name() string
+    Write(batch []*AccessRecord) error
+    Query(q Query) ([]map[string]any, error)
+    Flush(ctx context.Context) error
+    Close() error
 }
 
 type Metrics struct {
@@ -1616,21 +1631,29 @@ type Metrics struct {
 
 ### 核心流程
 
-请求结束 → 从 `dataflow.DataFlow` 提取 `AccessLog` → 异步写入 `FileSink`（JSON 每行一条）→ 聚合到 `Metrics`。
+请求结束 → 从 `dataflow.DataFlow` 提取 `AccessRecord` → `AsyncStore.Write`（有界异步队列）→ worker 批量写当前底层 `Store`（`FileStore` 写 JSONL / `DBStore` 写 `access_log` 表）→ 聚合到 `Metrics`。
+
+### 存储后端与热切换
+
+- 配置项 `OBS_STORE`（默认 `file`）：`file` = JSONL 文件（`OBS_LOG_DIR`，默认 logs）；`db` = 数据库（复用统一数据访问层 `internal/db`，`DB_DRIVER`/`DB_DSN` 默认 sqlite `rocksys.db`）。
+- 切换语义：配置热更 → hotswap 对 enabled 的 obs 调 `Start(nil)` → 按当前配置重建底层 Store 并原子替换 `AsyncStore`（旧后端排空缓冲后关闭）。
+- 查询只读当前启用的后端；旧 file 数据保留在磁盘，切回 `file` 即可再看。
+- `OBS_STORE=db` 但 dataDB 未就绪 / 建表失败：回退 `file` 并告警，不阻断底座。
+- DB 表 `access_log`：14 个索引列 + `extra` JSON 列（负载维度），SQL 全部外置 `sql/<dbtype>/`（外置优先、嵌入兜底，遵循 SQL 铁律）。
 
 ### Shutdown
 
 ```go
-// Shutdown flush 内存缓冲区中未写入的日志，然后关闭文件句柄
+// Shutdown flush 内存缓冲区中未写入的日志，然后关闭存储后端
 func (o *Obs) Shutdown(ctx context.Context) error
 ```
 进程退出前必须调用 `Shutdown`，防止丢失还在内存缓冲区的日志。
 
 > ★ **与 MiddlewareLifecycle.Stop() 桥接**：`hotswap.MiddlewareLifecycle.Stop() error` 不接收 context，而 `Shutdown` 需要超时控制（flush 缓冲）。obs 应额外暴露 `Stop() error` 方法，内部调用 `Shutdown(context.Background())`。hotswap Disable 流程通过 `MiddlewareLifecycle.Stop()` 优雅 flush（阻塞至 flush 完成）；若需超时，在 obs 内部 `Shutdown` 中自行设置 deadline。
 
-### 文件管理
+### 文件管理（file 后端）
 
-- 按天切分：`logs/access-2024-01-01.jsonl`
+- 按天切分：`logs/access-2024-01-01.jsonl`（每行一个平铺维度 JSON）
 - 保留 30 天，超期自动 `os.Remove`。
 - 写盘失败不阻塞请求（降级丢弃 + 计数告警）。
 
@@ -1639,7 +1662,11 @@ func (o *Obs) Shutdown(ctx context.Context) error
 > 以下端点经 `adminapi.RegisterPlugin` 注册（§8.1 插件端点注册机制），由 obs 包提供 handler。
 
 - `GET /admin/metrics` → `{"qps":123.4,"p95_ms":45,"error_rate":0.01}`
-- `GET /admin/logs?from=2024-01-01&to=2024-01-02` → 返回 JSONL
+- `GET /admin/logs` → 按条件查询访问日志，返回 JSONL（每行一个平铺维度对象）：
+  - `from` / `to`：时间范围，`YYYY-MM-DD`（当日全天）或 `YYYY-MM-DDTHH:MM`（精确到分），缺省当天全天
+  - `path`：路径精确匹配；`path_like`：路径模糊匹配（包含）
+  - `trace_id`：链路标识模糊匹配（API 层保留，WebUI 已移除输入框）
+- `GET /admin/logs/storage` → 日志存储总占用（file 文件合计 + db 表占用，字节），WebUI 日志页顶部展示
 
 ### 验收
 
@@ -1649,6 +1676,9 @@ curl http://127.0.0.1:19527/admin/metrics
 
 ls logs/
 # → access-2024-*.jsonl 存在
+
+curl "http://127.0.0.1:19527/admin/logs?from=2024-01-01T10:00&to=2024-01-01T11:30&path_like=/api/order"
+# → 返回该时段内路径包含 /api/order 的访问日志（JSONL）
 ```
 
 ---

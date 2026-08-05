@@ -88,8 +88,13 @@
       else if (orderMap[g.name]) orderMap[g.name].items.push(item);
     });
     const groups = [];
+    const pushed = {}; // 防御：同名分组（如 db 的 DB_/SQL_DIR）只 push 一次
     PREFIX_GROUPS.forEach(g => {
-      if (orderMap[g.name] && orderMap[g.name].items.length) groups.push(orderMap[g.name]);
+      const grp = orderMap[g.name];
+      if (grp && grp.items.length && !pushed[g.name]) {
+        groups.push(grp);
+        pushed[g.name] = true;
+      }
     });
     if (other.items.length) groups.push(other);
     // 网关组补齐底座项（GET /admin/config 提供）
@@ -99,7 +104,7 @@
     const synth = [
       { key: 'ROCKSYS_LISTEN', title: '监听地址', defval: ':8080', current: b.listen || '', example: ':8080' },
       { key: 'ROCKSYS_UPSTREAM', title: '默认后端', defval: '', current: b.upstream || '', example: 'http://127.0.0.1:9000' },
-      { key: 'ROCKSYS_TIMEOUT', title: '转发超时（秒）', defval: '5', current: b.timeout != null ? String(b.timeout) : '', example: '5' },
+      { key: 'ROCKSYS_TIMEOUT', title: '转发超时（秒）', defval: '18', current: b.timeout != null ? String(b.timeout) : '', example: '18' },
       { key: 'ROCKSYS_ADMIN', title: '管理接口地址', defval: '127.0.0.1:19527', current: b.admin || '', example: '127.0.0.1:19527' },
       { key: 'ROCKSYS_CONFIG', title: '配置文件路径', defval: '.env', current: b.config_file || '', example: '.env' },
       { key: 'ROCKSYS_LOG_LEVEL', title: '日志级别', defval: 'info', current: b.log_level || '', example: 'info' },
@@ -179,9 +184,21 @@
     let display = current;
     if (sensitive && showMask) display = maskText(current);
     else if (display === '') display = '（空）';
-    const valueCell = editing
-      ? '<input class="input input-sm cfg-edit-input" data-k="' + esc(key) + '" value="' + esc(configEditing.value) + '">'
-      : '<span class="cfg-current" title="' + esc(current) + '">' + esc(display) + '</span>';
+    const enumOptions = Rock.state.ENUM_KEYS[key];
+    let valueCell;
+    if (editing) {
+      if (enumOptions && enumOptions.length) {
+        // 枚举值：下拉选择，不允许手填
+        valueCell = '<select class="select select-sm cfg-edit-input" data-k="' + esc(key) + '">' +
+          enumOptions.map(o =>
+            '<option value="' + esc(o) + '"' + (String(configEditing.value) === o ? ' selected' : '') + '>' + esc(o) + '</option>'
+          ).join('') + '</select>';
+      } else {
+        valueCell = '<input class="input input-sm cfg-edit-input" data-k="' + esc(key) + '" value="' + esc(configEditing.value) + '">';
+      }
+    } else {
+      valueCell = '<span class="cfg-current" title="' + esc(current) + '">' + esc(display) + '</span>';
+    }
     let actions = '';
     if (!restart) {
       if (editing) {
@@ -222,7 +239,11 @@
     container.innerHTML = '<div class="config-table">' + items.map(configRowHTML).join('') + '</div>';
     const inp = container.querySelector('.cfg-edit-input');
     if (inp) {
-      inp.addEventListener('input', () => { configEditing.value = inp.value; });
+      if (inp.tagName === 'SELECT') {
+        inp.addEventListener('change', () => { configEditing.value = inp.value; });
+      } else {
+        inp.addEventListener('input', () => { configEditing.value = inp.value; });
+      }
       inp.addEventListener('keydown', e => {
         if (e.key === 'Enter') saveEdit(configEditing.key);
         if (e.key === 'Escape') cancelEdit();
@@ -255,6 +276,9 @@
 
   async function saveEdit(key) {
     if (configEditing.key !== key) return;
+    // 从当前编辑控件（input / select）取最新值：键盘 Enter 保存时 change 事件可能未触发
+    const inp = document.querySelector('.cfg-edit-input');
+    if (inp && inp.value !== undefined) configEditing.value = inp.value;
     const val = configEditing.value;
     try {
       const res = await api.put('/admin/config')({ [key]: val });

@@ -22,5 +22,9 @@
 | mq_create_table.sql | `INTEGER PRIMARY KEY AUTOINCREMENT` → `BIGINT AUTO_INCREMENT` |
 | mq_fetch_pending.sql | `LIMIT ?` 语法一致，可直接复用 |
 | mq_mark_failed.sql | `retry_count + 1 >= ?` 条件表达式各数据库均支持 |
+| access_log_create_table.sql | `INTEGER PRIMARY KEY AUTOINCREMENT` → `BIGINT AUTO_INCREMENT`；`extra TEXT NOT NULL DEFAULT '{}'` → `extra TEXT NOT NULL`（MySQL 8 无默认文本常量） |
+| access_log_create_index.sql | MySQL `CREATE INDEX` 不支持 `IF NOT EXISTS`，重复执行报 "Duplicate key name"——obs 组件对索引创建做幂等容错（该错误忽略） |
+| access_log_insert.sql | 占位符 `?` 语法一致，可直接复用 |
+| access_log_query.sql | 模糊匹配 `'%' || ? || '%'` → `CONCAT('%', ?, '%')`（MySQL 的 `||` 默认是 OR 语义） |
 
 补充完成后，将 `DB_DRIVER=mysql` 即可启用。

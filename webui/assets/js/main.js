@@ -147,6 +147,39 @@
     refreshPage(currentRoute(), { manual: true });
   });
 
+  // ======== 全局 tooltip 委托（[data-tip]：跟随鼠标、视口内自动翻转，防溢出） ========
+  let tipEl = null;
+  document.addEventListener('mouseover', function (e) {
+    const el = e.target.closest('[data-tip]');
+    if (!el) { hideTip(); return; }
+    const txt = el.getAttribute('data-tip');
+    if (!txt) { hideTip(); return; }
+    if (!tipEl) {
+      tipEl = document.createElement('div');
+      tipEl.className = 'tip-popup';
+      document.body.appendChild(tipEl);
+    }
+    tipEl.textContent = txt;
+    tipEl.style.display = 'block';
+    const rect = el.getBoundingClientRect();
+    tipEl.style.left = '0px';
+    tipEl.style.top = '0px';
+    const pad = 12;
+    let x = rect.left + rect.width / 2 - tipEl.offsetWidth / 2;
+    x = Math.min(Math.max(x, pad), window.innerWidth - tipEl.offsetWidth - pad);
+    let y = rect.top - tipEl.offsetHeight - 10;
+    if (y < pad) y = rect.bottom + 10; // 上方放不下则下方
+    if (y + tipEl.offsetHeight > window.innerHeight - pad) y = Math.max(pad, window.innerHeight - tipEl.offsetHeight - pad);
+    tipEl.style.left = x + 'px';
+    tipEl.style.top = y + 'px';
+  });
+  document.addEventListener('mouseout', function (e) {
+    if (!e.target.closest('[data-tip]')) hideTip();
+  });
+  document.addEventListener('scroll', hideTip, true);
+  window.addEventListener('resize', Rock.util.debounce(hideTip, 150));
+  function hideTip() { if (tipEl) tipEl.style.display = 'none'; }
+
   // ======== 全局点击委托 ========
   document.addEventListener('click', function (e) {
     const el = e.target.closest('[data-act]');
@@ -242,8 +275,9 @@
         views.logs.resetFilter();
         break;
       case 'log-expand': {
-        const idx = Number(el.getAttribute('data-idx'));
-        views.logs.toggleExpand(idx);
+        // data-idx 为行展开键（time|trace_id 字符串），不再是数字索引，勿转 Number
+        const key = el.getAttribute('data-idx') || '';
+        views.logs.toggleExpand(key);
         break;
       }
       default:

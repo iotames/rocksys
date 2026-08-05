@@ -216,14 +216,14 @@ func (e *Engine) forwardWebSocket(w http.ResponseWriter, r *http.Request, target
 	return nil
 }
 
-// upstreamTimeout 返回转发超时配置；conf 未装配时回退默认 5s。
+// upstreamTimeout 返回转发超时配置；conf 未装配时回退默认 18s。
 func (e *Engine) upstreamTimeout() time.Duration {
 	if e.conf != nil {
 		if c := e.conf.Current(); c != nil && c.UpstreamTimeout > 0 {
 			return c.UpstreamTimeout
 		}
 	}
-	return 5 * time.Second
+	return 18 * time.Second
 }
 
 func now() time.Time {
