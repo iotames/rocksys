@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/iotames/easyconf v1.1.3
 	github.com/iotames/easydb v0.0.0
-	github.com/iotames/easyserver v0.0.0
+	github.com/iotames/easyserver v1.5.0
 	github.com/yuin/gopher-lua v1.1.2
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.55.0

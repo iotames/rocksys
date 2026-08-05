@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +17,10 @@ import (
 
 	"github.com/iotames/easyserver"
 )
+
+// upstreamDialTimeout WebSocket 分支直连后端的建连/握手超时（握手后为长连接，不再设超时）。
+// var 而非 const：便于测试注入较短值验证握手超时路径。
+var upstreamDialTimeout = 30 * time.Second
 
 // Engine 反向代理引擎，封装 *easyserver.Server（即 *httpsvr.EasyServer）。
 // 无任何业务逻辑，负责 HTTP 转发与生命周期管理。
@@ -31,6 +37,7 @@ type Engine struct {
 func New(cfgMgr conf.Manager, c *chain.Chain) *Engine {
 	cfg := cfgMgr.Current()
 	srv := easyserver.NewServer(cfg.ListenAddr)
+	srv.SetQuiet(true) // 主引擎为纯反向代理（easyserver 层无路由），静默横幅与空路由警告
 	e := &Engine{server: srv, chain: c, conf: cfgMgr, pool: newUpstreamPool()}
 	e.adapter = chain.NewAdapter(c, cfg.DefaultUpstream, e.Forward)
 	srv.AddMiddleHead(e.adapter)
@@ -72,9 +79,10 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 func (e *Engine) Forward(tw http.ResponseWriter, r *http.Request, target string, df *dataflow.DataFlow) error {
 	w := tw
 
-	// WebSocket Upgrade 请求不支持代理 → 501 Not Implemented
-	if isWebSocketUpgrade(r) {
-		return writeError(w, http.StatusNotImplemented, "websocket upgrade not supported")
+	// WebSocket Upgrade 请求：走独立隧道分支（握手后双向字节对拷，见 forwardWebSocket）。
+	// 判断复用 chain.IsWebSocketUpgrade（Adapter 据此绕过响应缓冲）。
+	if chain.IsWebSocketUpgrade(r) {
+		return e.forwardWebSocket(w, r, target, df)
 	}
 
 	// 解析目标 URL（格式：http://host:port）
@@ -121,6 +129,93 @@ func (e *Engine) Forward(tw http.ResponseWriter, r *http.Request, target string,
 	return nil
 }
 
+// forwardWebSocket 代理 WebSocket：将 Upgrade 请求原样转发到后端，后端回 101 后
+// 劫持客户端底层连接，与后端 TCP 双向字节对拷（不再解析 HTTP，ws 帧原样透传）。
+// 非 101 响应（后端拒绝升级）按普通响应透传给客户端。
+// 失败契约与 Forward 一致：先写完整错误响应，再返回 error。
+func (e *Engine) forwardWebSocket(w http.ResponseWriter, r *http.Request, target string, df *dataflow.DataFlow) error {
+	// 解析目标 URL（格式：http://host:port）
+	dst, err := url.Parse(target)
+	if err != nil || dst.Host == "" {
+		df.SetDoneBizAt(now())
+		return writeError(w, http.StatusBadGateway, "invalid upstream target")
+	}
+
+	// 构造上游请求（与普通转发一致：保留 method/header，改写 Host，追加链路头）
+	outReq := r.Clone(r.Context())
+	outReq.URL.Scheme = "http"
+	outReq.URL.Host = dst.Host
+	outReq.RequestURI = ""
+	outReq.Host = dst.Host
+	appendForwardedFor(outReq.Header, clientIP(r))
+	outReq.Header.Set("X-Trace-Id", df.TraceID())
+
+	// 直连后端 TCP（ws 需要原始连接，不走 http.Transport 连接池）
+	backend, err := net.DialTimeout("tcp", dst.Host, upstreamDialTimeout)
+	if err != nil {
+		df.SetDoneBizAt(now())
+		return writeError(w, http.StatusBadGateway, "upstream error: "+err.Error())
+	}
+	defer backend.Close()
+
+	// 握手阶段设 deadline：防后端接受连接后挂起不回，导致握手永久阻塞
+	//（拖住 Adapter activeCount，进而阻塞 hotswap 排空与优雅停机）。
+	_ = backend.SetDeadline(time.Now().Add(upstreamDialTimeout))
+
+	// 原样写入 Upgrade 请求（含 Upgrade/Connection/Sec-WebSocket-* 头）
+	if err := outReq.Write(backend); err != nil {
+		df.SetDoneBizAt(now())
+		return writeError(w, http.StatusBadGateway, "upstream error: "+err.Error())
+	}
+
+	// 读后端响应（101 Switching Protocols 或拒绝）
+	br := bufio.NewReader(backend)
+	resp, err := http.ReadResponse(br, outReq)
+	if err != nil {
+		df.SetDoneBizAt(now())
+		return writeError(w, http.StatusBadGateway, "upstream error: "+err.Error())
+	}
+	defer resp.Body.Close()
+
+	// 后端拒绝升级：按普通响应透传（状态码/头/体）
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		df.SetDoneBizAt(now())
+		copyRespHeader(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+		return nil
+	}
+
+	// 101：清除握手 deadline（隧道为长连接，不受超时限制），劫持客户端连接
+	_ = backend.SetDeadline(time.Time{})
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		df.SetDoneBizAt(now())
+		return writeError(w, http.StatusInternalServerError, "hijack not supported")
+	}
+	clientConn, clientBuf, err := hj.Hijack()
+	if err != nil {
+		df.SetDoneBizAt(now())
+		return writeError(w, http.StatusBadGateway, "hijack failed: "+err.Error())
+	}
+	defer clientConn.Close()
+
+	// 把 101 响应写回客户端（此后连接不再作为 HTTP 处理）
+	if err := resp.Write(clientConn); err != nil {
+		df.SetDoneBizAt(now())
+		return err
+	}
+	df.SetDoneBizAt(now())
+
+	// 双向对拷：backend ↔ clientConn。
+	// clientBuf/br 分别带走「握手后已到达」的客户端/后端字节，避免数据滞留缓冲。
+	errCh := make(chan error, 2)
+	go func() { _, err := io.Copy(backend, clientBuf); errCh <- err }() // 客户端 → 后端
+	go func() { _, err := io.Copy(clientConn, br); errCh <- err }()    // 后端 → 客户端
+	<-errCh                                                          // 任一端关闭即结束（对端副本随连接关闭退出）
+	return nil
+}
+
 // upstreamTimeout 返回转发超时配置；conf 未装配时回退默认 5s。
 func (e *Engine) upstreamTimeout() time.Duration {
 	if e.conf != nil {
@@ -133,17 +228,6 @@ func (e *Engine) upstreamTimeout() time.Duration {
 
 func now() time.Time {
 	return time.Now()
-}
-
-// isWebSocketUpgrade 判断请求是否为 WebSocket Upgrade 请求。
-func isWebSocketUpgrade(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
-		return false
-	}
-	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 }
 
 // appendForwardedFor 追加 X-Forwarded-For：取客户端 IP 追加到已有值末尾。

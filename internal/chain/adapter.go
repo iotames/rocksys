@@ -2,6 +2,7 @@ package chain
 
 import (
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -80,13 +81,20 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 
 	// 7. 执行转发；DoneBizAt 由 Forward 内部取点，Adapter 不负责
 	var bufW *respBufferWriter
-	if a.chain.HasResponseHook(Tail) {
-		// 7a. 存在响应处理中间件 → 缓冲上游响应，供 Tail 阶段读取/改写
+	if IsWebSocketUpgrade(r) {
+		// 7a. WebSocket 隧道：respBufferWriter 不支持 Hijack，必须直写底层连接。
+		//     forward 成功（隧道建立或后端拒绝升级后按普通响应透传）时 Tail 按 101 记录；
+		//     转发失败（502/500，forward 已写错误响应）时不伪装 101，RespCode 保持零值供日志反映异常。
+		if err := a.forward(w, r, target, df); err == nil {
+			ctx.RespCode = http.StatusSwitchingProtocols
+		}
+	} else if a.chain.HasResponseHook(Tail) {
+		// 7b. 存在响应处理中间件 → 缓冲上游响应，供 Tail 阶段读取/改写
 		bufW = newRespBufferWriter(w)
 		_ = a.forward(bufW, r, target, df) // err 忽略：forward 内部已写入 502/504 错误响应
 		ctx.RespCode, ctx.RespHeader, ctx.RespBody = bufW.Status(), bufW.Header(), bufW.Body()
 	} else {
-		// 7b. 无响应处理中间件 → 直接流式写回客户端
+		// 7c. 无响应处理中间件 → 直接流式写回客户端
 		_ = a.forward(w, r, target, df)
 	}
 
@@ -106,6 +114,18 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 
 	// 10. 始终返回 false — 转发已完成，easyserver 后续链不再执行
 	return false
+}
+
+// IsWebSocketUpgrade 判断请求是否为 WebSocket Upgrade 请求。
+// 唯一权威实现：engine 的 Forward 据此走隧道分支；Adapter 据此绕过响应缓冲（支持 Hijack）。
+func IsWebSocketUpgrade(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
+		return false
+	}
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 }
 
 // hookName 获取 hook 的中间件名称，断言失败回退 "unknown"。

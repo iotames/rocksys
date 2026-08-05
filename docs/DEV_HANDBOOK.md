@@ -399,7 +399,7 @@ func (e *Engine) Forward(w http.ResponseWriter, r *http.Request, target string, 
 - 超时时返回 `504 Gateway Timeout`。
 - 上游不可达返回 `502 Bad Gateway`。
 - 转发超时使用 `conf.UpstreamTimeout`，通过 `context.WithTimeout` 控制。
-- WebSocket Upgrade 请求返回 `501 Not Implemented`。
+- WebSocket Upgrade 请求：走 `forwardWebSocket` 隧道分支（直连后端、原样转发握手；101 后劫持客户端连接双向字节对拷）。非 101 响应（后端拒绝升级）按普通响应透传。**w 必须支持 `http.Hijacker`**——ws 请求由 Adapter 绕过缓冲路径直写底层连接。
 - **w 参数说明**：通常为客户端 ResponseWriter。当存在响应处理中间件（Tail 槽位实现 `chain.ResponseHook`）时，Adapter 会传入缓冲 Writer（§4.4 步骤 7a），Forward 无需感知、按普通 writer 写入即可；缓冲与回写由 Adapter 统一处理。
 - 响应体默认不缓存、不解析、不修改（直接流式回传）；仅当 L3 result 等 `ResponseHook` 挂件开启时才进入缓冲路径（§4.6）。
 
@@ -413,9 +413,9 @@ go run ./cmd/rocksys --upstream http://127.0.0.1:9000
 curl -v http://localhost:8080/api/test
 # → 200, 响应体与上游一致
 
-# 测试 WebSocket 拒绝
-curl -H "Upgrade: websocket" -H "Connection: Upgrade" http://localhost:8080/
-# → 501 Not Implemented
+# 测试 WebSocket 隧道（需真实 ws 后端；示例为手动 101 的 echo 服务）
+# 客户端 Upgrade 握手 → 101 → 双向字节透传（ws 帧原样）
+# 后端拒绝升级（如返回 400）时，客户端收到透传的 400
 
 # 测试超时（模拟 10s 慢上游）
 # → 504 Gateway Timeout（5s 内返回）
@@ -633,7 +633,7 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 > - **Write(data []byte)**：2 阶段——
 >   1. 缓冲区未满（≤ 4MB）：追加到内部 buffer。
 >   2. 缓冲区满：**停止缓冲**，后续数据直写底层 `http.ResponseWriter`（不再追加到 buffer），同时设置截断标记（`ctx.RespBody` 将被标记为截断状态）。
-> - **可选接口**：不实现 `http.Hijacker`、`http.Flusher`（代理场景下无长连接/流式需求，Forward 已排除 WebSocket）。
+> - **可选接口**：不实现 `http.Hijacker`、`http.Flusher`（缓冲路径仅服务普通 HTTP 转发；WebSocket 隧道请求由 Adapter 绕过缓冲、直写底层连接以支持 Hijack）。
 > - **Status() / Header() / Body()**：供 Adapter 在 Forward 完成后读取缓冲结果。
 >
 > **Forward 失败时的缓冲状态契约**：
@@ -1870,7 +1870,7 @@ curl -X POST http://127.0.0.1:19527/admin/switch/on -d '{"name":"broken_componen
 
 - [ ] 第 1 章：`go build ./...` 通过
 - [ ] 第 2 章：命令行/环境变量/配置文件热更三类加载均生效
-- [ ] 第 3 章：裸代理可用，WebSocket 返回 501，超时返回 504
+- [ ] 第 3 章：裸代理可用，WebSocket 隧道穿透（101 后双向字节对拷），超时返回 504
 - [ ] 第 4 章：中间件挂载/摘除不影响在途请求
 - [ ] 第 5 章：三时间戳精度 < 1ms
 - [ ] 第 6 章：`rockctl switch off` 后请求直通，`switch on` 后恢复
