@@ -129,6 +129,8 @@
     bindToolbar();
     initRoute();
     restartAutoRefresh();
+    // 主题切换：同步下拉框并绑定切换事件
+    if (Rock.theme) Rock.theme.bind();
     // 认证引导：检测管理接口状态，未登录/未初始化时显示认证视图
     if (Rock.auth) {
       Rock.auth.bind();

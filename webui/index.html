@@ -4,6 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RockSys 控制台</title>
+  <!-- 主题初始化（防闪烁）：读取本地保存的主题，未保存时默认浅色 -->
+  <script>
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('rocksys.theme'); } catch (e) {}
+      document.documentElement.setAttribute('data-theme', (t === 'dark' || t === 'green') ? t : 'light');
+    })();
+  </script>
   <!-- 纯静态资源，全部本地相对路径，无任何外部依赖 -->
   <link rel="stylesheet" href="./assets/style.css">
 </head>
@@ -96,6 +104,13 @@
     </div>
     <div class="topbar-actions">
       <button class="btn" id="btn-token" title="设置访问凭证（Token）">访问凭证</button>
+      <label class="topbar-label">主题
+        <select id="theme-select" class="select select-sm">
+          <option value="light">浅色</option>
+          <option value="dark">深色</option>
+          <option value="green">护眼绿</option>
+        </select>
+      </label>
       <label class="topbar-label">自动刷新
         <select id="auto-refresh" class="select select-sm">
           <option value="0">关</option>
@@ -196,6 +211,7 @@
 
 <!-- 全部逻辑：原生 JavaScript 模块（按依赖顺序加载，无任何第三方库） -->
 <script src="./assets/js/util.js"></script>
+<script src="./assets/js/theme.js"></script>
 <script src="./assets/js/ui.js"></script>
 <script src="./assets/js/api.js"></script>
 <script src="./assets/js/state.js"></script>
