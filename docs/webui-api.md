@@ -13,10 +13,10 @@
 | 协议 | HTTP，仅回环监听 |
 | 请求体 | `Content-Type: application/json`（GET 无请求体） |
 | 响应体 | 均为 JSON（日志接口除外，见 §3.8） |
-| 鉴权 | 可选 Bearer Token：网关设置了 `ROCKSYS_ADMIN_TOKEN` 时，请求必须带请求头 `Authorization: Bearer <token>`；未设置时不校验 |
-| 鉴权失败 | `401`，响应体文本 `unauthorized` |
+| 鉴权 | 三级：① 回环地址（127.0.0.1）且未配置静态 token → 免登录；② 配置了 `ROCKSYS_ADMIN_TOKEN` → 请求头 `Authorization: Bearer <token>`；③ 已初始化 → 登录签发的 JWT（`Authorization: Bearer <token>`） |
+| 鉴权失败 | `401`，响应体 JSON `{"ok":false,"error":"<原因>"}`（认证端点）或文本 `unauthorized`（其余端点） |
 | 写操作响应 | 统一 `{"ok":true}` 或 `{"ok":false,"error":"<原因>"}` |
-| 前端访问凭证 | 用户输入 token 后存浏览器本地；每次请求带 `Authorization` 头；收到 401 时提示重新输入 |
+| 前端访问凭证 | 登录成功后 JWT 存浏览器本地；每次请求带 `Authorization` 头；收到 401 时跳转登录视图 |
 
 ---
 
@@ -35,6 +35,10 @@
 | 9 | GET | `/admin/script/list` | 脚本列表与版本历史 |
 | 10 | GET | `/admin/metrics` | 运行指标快照 |
 | 11 | GET | `/admin/logs` | 按日期查询访问日志 |
+| 12 | GET | `/admin/auth/status` | 认证状态（登录/注册/重置引导） |
+| 13 | POST | `/admin/auth/register` | 首次注册超级管理员 |
+| 14 | POST | `/admin/auth/login` | 登录，签发 JWT |
+| 15 | POST | `/admin/auth/reset` | 重置管理员凭证（忘记密码） |
 
 ---
 
@@ -326,6 +330,47 @@
 **失败 `503`**：观测组件未注册。
 
 > 前端按行解析（`split('\n')` + 每行 `JSON.parse`，跳过坏行）。某天无日志文件时后端自动跳过；整段为空时提示"所选日期无访问日志"。
+
+### 3.12 GET /admin/auth/status — 认证状态
+
+返回管理接口认证状态，WebUI 启动时据此决定显示登录/注册/重置面板还是直接进入控制台。
+
+**响应：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `auth_required` | bool | 是否需要登录（绑定非回环地址或有静态 token） |
+| `has_user` | bool | 是否已注册超级管理员 |
+| `username` | string | 已有管理员用户名（未注册时为空） |
+| `setup_mode` | bool | 是否处于重置模式（`ADMIN_INITIALIZED=false` 且已有用户） |
+
+**前端引导逻辑：** `auth_required=false` → 直接进入控制台；`has_user=false` → 注册页；`setup_mode=true` → 重置页；否则 → 有 token 进控制台，无 token 显示登录页。
+
+### 3.13 POST /admin/auth/register — 首次注册超级管理员
+
+**请求：** `{"username":"admin","password":"Admin@12345"}`（密码至少 8 位）
+
+**成功 `200`：** `{"ok":true}`，同时置 `ADMIN_INITIALIZED=true`。
+**失败 `403`：** 系统已初始化，禁止重复注册（超管仅一个）。
+**失败 `400`：** 参数非法（用户名空或密码不足 8 位）。
+
+### 3.14 POST /admin/auth/login — 登录
+
+**请求：** `{"username":"admin","password":"Admin@12345"}`
+
+**成功 `200`：** `{"ok":true,"token":"<jwt>","expires_in":43200}`，前端将 token 存本地，后续请求带 `Authorization: Bearer <token>`。
+**失败 `401`：** 用户名或密码错误。
+**失败 `429`：** 登录尝试过于频繁（5 分钟窗口失败 5 次锁定 5 分钟）。
+
+### 3.15 POST /admin/auth/reset — 重置管理员凭证（忘记密码）
+
+**前置条件：** 运维已将 `.env` 中 `ADMIN_INITIALIZED` 改为 `false`（进入重置模式）。
+
+**请求：** `{"username":"admin","password":"NewPass@67890"}`
+
+**成功 `200`：** `{"ok":true}`，同时恢复 `ADMIN_INITIALIZED=true`。
+**失败 `403`：** 未处于重置模式（需先改 `.env`）。
+**失败 `400`：** 参数非法。
 
 ---
 

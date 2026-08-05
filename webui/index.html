@@ -10,6 +10,73 @@
 <body>
 <div id="app">
 
+  <!-- ============ 认证视图（登录/注册/重置，全屏覆盖） ============ -->
+  <div id="auth-view" class="auth-view hidden">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/>
+          <path d="M8.5 12l2.5 2.5 4.5-4.5"/>
+        </svg>
+        <span class="brand-name">RockSys 控制台</span>
+      </div>
+
+      <!-- 登录面板 -->
+      <div class="auth-panel" id="auth-panel-login">
+        <h2 class="auth-title">登录</h2>
+        <div class="form-row">
+          <label class="form-label">用户名</label>
+          <input class="input" id="auth-login-user" autocomplete="username" placeholder="请输入用户名">
+        </div>
+        <div class="form-row">
+          <label class="form-label">密码</label>
+          <input class="input" type="password" id="auth-login-pass" autocomplete="current-password" placeholder="请输入密码">
+        </div>
+        <button class="btn btn-primary btn-block" id="auth-login-btn">登录</button>
+      </div>
+
+      <!-- 注册面板（全新系统初始化） -->
+      <div class="auth-panel hidden" id="auth-panel-register">
+        <h2 class="auth-title">初始化管理员</h2>
+        <p class="auth-hint">系统尚未初始化，请设置超级管理员账号（仅一个）。</p>
+        <div class="form-row">
+          <label class="form-label">用户名</label>
+          <input class="input" id="auth-reg-user" autocomplete="username" placeholder="请输入用户名">
+        </div>
+        <div class="form-row">
+          <label class="form-label">密码（至少 8 位）</label>
+          <input class="input" type="password" id="auth-reg-pass" autocomplete="new-password" placeholder="请输入密码">
+        </div>
+        <div class="form-row">
+          <label class="form-label">确认密码</label>
+          <input class="input" type="password" id="auth-reg-pass2" autocomplete="new-password" placeholder="请再次输入密码">
+        </div>
+        <button class="btn btn-primary btn-block" id="auth-reg-btn">注册并进入</button>
+      </div>
+
+      <!-- 重置面板（忘记密码，运维已改 ADMIN_INITIALIZED=false） -->
+      <div class="auth-panel hidden" id="auth-panel-reset">
+        <h2 class="auth-title">重置管理员凭证</h2>
+        <p class="auth-hint">检测到已有管理员 <b id="auth-reset-user"></b>。忘记密码？请重设用户名与密码。</p>
+        <div class="form-row">
+          <label class="form-label">用户名</label>
+          <input class="input" id="auth-reset-user-input" autocomplete="username" placeholder="请输入用户名">
+        </div>
+        <div class="form-row">
+          <label class="form-label">新密码（至少 8 位）</label>
+          <input class="input" type="password" id="auth-reset-pass" autocomplete="new-password" placeholder="请输入新密码">
+        </div>
+        <div class="form-row">
+          <label class="form-label">确认新密码</label>
+          <input class="input" type="password" id="auth-reset-pass2" autocomplete="new-password" placeholder="请再次输入新密码">
+        </div>
+        <button class="btn btn-primary btn-block" id="auth-reset-btn">重置并登录</button>
+      </div>
+
+      <div class="auth-error hidden" id="auth-error"></div>
+    </div>
+  </div>
+
   <!-- ============ 顶部工具条 ============ -->
   <header class="topbar">
     <div class="brand">
@@ -138,6 +205,7 @@
 <script src="./assets/js/views/scripts.js"></script>
 <script src="./assets/js/views/metrics.js"></script>
 <script src="./assets/js/views/logs.js"></script>
+<script src="./assets/js/views/auth.js"></script>
 <script src="./assets/js/main.js"></script>
 </body>
 </html>

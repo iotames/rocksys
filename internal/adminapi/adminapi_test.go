@@ -66,7 +66,7 @@ func decode(t *testing.T, ctx httpsvr.Context) map[string]any {
 }
 
 func TestNew(t *testing.T) {
-	a := New("127.0.0.1:19527", nil, nil)
+	a := New("127.0.0.1:19527", nil, nil, nil)
 	if a == nil || a.srv == nil {
 		t.Fatal("New 未创建 AdminServer")
 	}
@@ -74,7 +74,7 @@ func TestNew(t *testing.T) {
 
 func TestHandleSwitchOn(t *testing.T) {
 	_, mgr, _ := setup(t)
-	s := New("127.0.0.1:19527", nil, mgr)
+	s := New("127.0.0.1:19527", nil, mgr, nil)
 	ctx := newCtx(http.MethodPost, PathSwitchOn, `{"name":"shield"}`)
 	s.handleSwitchOn(ctx)
 	out := decode(t, ctx)
@@ -88,7 +88,7 @@ func TestHandleSwitchOn(t *testing.T) {
 
 func TestHandleSwitchOff(t *testing.T) {
 	_, mgr, _ := setup(t)
-	s := New("127.0.0.1:19527", nil, mgr)
+	s := New("127.0.0.1:19527", nil, mgr, nil)
 	_ = s.hotswapMgr.Enable("shield")
 	ctx := newCtx(http.MethodPost, PathSwitchOff, `{"name":"shield"}`)
 	s.handleSwitchOff(ctx)
@@ -103,7 +103,7 @@ func TestHandleSwitchOff(t *testing.T) {
 
 func TestHandleSwitchNotFound(t *testing.T) {
 	_, mgr, _ := setup(t)
-	s := New("127.0.0.1:19527", nil, mgr)
+	s := New("127.0.0.1:19527", nil, mgr, nil)
 	ctx := newCtx(http.MethodPost, PathSwitchOn, `{"name":"nope"}`)
 	s.handleSwitchOn(ctx)
 	out := decode(t, ctx)
@@ -115,7 +115,7 @@ func TestHandleSwitchNotFound(t *testing.T) {
 func TestHandleSwitchList(t *testing.T) {
 	_, mgr, _ := setup(t)
 	_ = mgr.Enable("shield")
-	s := New("127.0.0.1:19527", nil, mgr)
+	s := New("127.0.0.1:19527", nil, mgr, nil)
 	ctx := newCtx(http.MethodGet, PathSwitchList, "")
 	s.handleSwitchList(ctx)
 	rec := ctx.Writer.(*httptest.ResponseRecorder)
@@ -136,7 +136,7 @@ func TestHandleSwitchList(t *testing.T) {
 
 func TestHandleConfigGet(t *testing.T) {
 	cfgMgr, _, _ := setup(t)
-	s := New("127.0.0.1:19527", cfgMgr, nil)
+	s := New("127.0.0.1:19527", cfgMgr, nil, nil)
 	ctx := newCtx(http.MethodGet, PathConfig, "")
 	s.handleConfigGet(ctx)
 	out := decode(t, ctx)
@@ -154,7 +154,7 @@ func TestHandleConfigGet(t *testing.T) {
 func TestHandleConfigPut(t *testing.T) {
 	cfgMgr, _, _ := setup(t)
 	before := cfgMgr.Current().DefaultUpstream
-	s := New("127.0.0.1:19527", cfgMgr, nil)
+	s := New("127.0.0.1:19527", cfgMgr, nil, nil)
 	ctx := newCtx(http.MethodPut, PathConfig, `{"ROCKSYS_UPSTREAM":"http://127.0.0.1:9999"}`)
 	s.handleConfigPut(ctx)
 	out := decode(t, ctx)
@@ -168,7 +168,7 @@ func TestHandleConfigPut(t *testing.T) {
 }
 
 func TestRegisterPlugin(t *testing.T) {
-	s := New("127.0.0.1:19527", nil, nil)
+	s := New("127.0.0.1:19527", nil, nil, nil)
 	if err := s.RegisterPlugin("/admin/custom", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}); err != nil {
@@ -182,7 +182,7 @@ func TestRegisterPlugin(t *testing.T) {
 // TestHandleConfigList 验证全量配置清单端点（WebUI 配置页数据源）。
 func TestHandleConfigList(t *testing.T) {
 	cfgMgr, _, _ := setup(t)
-	s := New("127.0.0.1:19527", cfgMgr, nil)
+	s := New("127.0.0.1:19527", cfgMgr, nil, nil)
 	ctx := newCtx(http.MethodGet, PathConfigList, "")
 	s.handleConfigList(ctx)
 	rec := ctx.Writer.(*httptest.ResponseRecorder)
@@ -217,7 +217,7 @@ func TestRegisterWebUI(t *testing.T) {
 		"assets/style.css":  {Data: []byte("body{}")},
 		"assets/js/main.js": {Data: []byte("console.log('ok')")},
 	}
-	s := New("127.0.0.1:19527", nil, nil)
+	s := New("127.0.0.1:19527", nil, nil, nil)
 	if err := s.RegisterWebUI(fsys); err != nil {
 		t.Fatalf("RegisterWebUI: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestContentTypeByExt(t *testing.T) {
 // TestRequireAuth 验证鉴权包装器行为（§8.3）。
 func TestRequireAuth(t *testing.T) {
 	// 无 token：任何请求放行（回环信任）
-	s := New("127.0.0.1:19527", nil, nil)
+	s := New("127.0.0.1:19527", nil, nil, nil)
 	require := s.requireAuth()
 	called := false
 	h := require(func(httpsvr.Context) { called = true })
@@ -261,7 +261,7 @@ func TestRequireAuth(t *testing.T) {
 	// 设置 token：无 Authorization → 401
 	defer os.Unsetenv(envAdminToken)
 	os.Setenv(envAdminToken, "secret")
-	s2 := New("127.0.0.1:19527", nil, nil)
+	s2 := New("127.0.0.1:19527", nil, nil, nil)
 	require2 := s2.requireAuth()
 	called = false
 	h2 := require2(func(httpsvr.Context) { called = true })

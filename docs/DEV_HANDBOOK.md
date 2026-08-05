@@ -1124,11 +1124,46 @@ rockctl script rollback     → POST /admin/script/rollback
 
 ### 8.3 鉴权
 
-- 默认：仅监听 `127.0.0.1`，本机信任（本地进程调用）。
-- 可选：`ROCKSYS_ADMIN_TOKEN` 环境变量 → 请求头 `Authorization: Bearer <token>` 校验。
-- `ROCKSYS_ADMIN_TOKEN` 由 adminapi 包直接 `os.Getenv` 读取，**不注册进 easyconf**（无需持久化）。
+管理接口鉴权由 `adminapi.adminAuth` 统一完成，策略优先级从高到低：
 
-### 8.4 验收
+1. **回环信任**：绑定 `127.0.0.1`/`localhost` 且未配置静态 token 时，本机免登录放行。
+2. **公开路径**：`/admin/auth/status|login|register|reset` 免鉴权（前置条件由各 handler 校验）。
+3. **静态预共享 token**：`ROCKSYS_ADMIN_TOKEN` 环境变量 → 请求头 `Authorization: Bearer <token>` 校验（供 rockctl/脚本使用，双轨兼容）。
+4. **登录 JWT**：已初始化（存在管理员）时校验登录签发的 JWT；未初始化时拒绝（仅注册引导可用）。
+
+> `ROCKSYS_ADMIN_TOKEN` 由 adminapi 包直接 `os.Getenv` 读取，**不注册进 easyconf**（无需持久化）。
+
+### 8.4 认证端点（登录/注册/重置）
+
+管理接口支持账号密码登录，超级管理员仅一个，密码只存 PBKDF2 哈希（标准库 `crypto/pbkdf2`，随机盐 + 100k 迭代），.env 中永不出现明文密码。
+
+| 端点 | 方法 | 说明 |
+| --- | --- | --- |
+| `/admin/auth/status` | GET | 返回 `auth_required`/`has_user`/`username`/`setup_mode`，供 WebUI 启动引导 |
+| `/admin/auth/register` | POST | 首次注册（仅未初始化时开放），成功后置 `ADMIN_INITIALIZED=true` |
+| `/admin/auth/login` | POST | 校验用户名+密码，成功签发登录 JWT（有效期 12h） |
+| `/admin/auth/reset` | POST | 重置凭证（忘记密码，需处于重置模式） |
+
+**三种场景流程：**
+
+- **首次初始化**（全新系统，无用户）：`ADMIN_INITIALIZED=false` → WebUI 显示注册引导页 → 注册成功 → 置 `true`。
+- **正常使用**：登录页输入账号密码 → 签发 JWT → 前端存 localStorage，后续请求带 `Authorization: Bearer <token>`。
+- **忘记密码**：运维把 `.env` 中 `ADMIN_INITIALIZED` 改为 `false`（热更生效）→ 系统进入重置模式 → WebUI 显示重置页 → 重设用户名与密码 → 恢复 `true`。
+
+**安全约束：**
+
+- 注册仅在无用户时开放，已初始化后无条件拒绝（超管只能一个）。
+- 重置仅在 `setup_mode`（`ADMIN_INITIALIZED=false` 且已有用户）时开放，需服务器文件权限触发，攻击者无法自行进入。
+- 登录接口按 IP 限流：5 分钟窗口内失败 5 次锁定 5 分钟（`loginLimiter`）。
+
+**配置项：**
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `ADMIN_INITIALIZED` | `false` | 是否已初始化超级管理员；忘记密码时运维手动改 `false` 触发重置 |
+| `ADMIN_JWT_SECRET` | 空 | 登录 JWT 签名密钥；为空时进程内随机（重启后需重新登录），可配置固定值保证跨重启有效 |
+
+### 8.5 验收
 
 ```bash
 go run ./cmd/rocksys --upstream http://127.0.0.1:9000 &
@@ -2024,7 +2059,9 @@ ec.IntListVar(pval *[]int, name string, defval []int, title)  // []int 逗号分
 | `DB_DSN` | `rocksys.db` | 连接串（sqlite 为文件路径） |
 | `SQL_DIR` | `sql` | 外置 SQL 脚本目录（优先加载，嵌入兜底） |
 
-### C.2 SQL 脚本目录约定
+### C.2 SQL 脚本目录约定（数据库铁律）
+
+> **铁律**：① SQL 必须落盘 `sql/<dbtype>/`，禁止 Go 代码内联；② 换库只改 `.env`（`DB_DRIVER`/`DB_DSN`）；③ 纯 SQL 参数化，不用 ORM/对象模型；④ sqlite/mysql/postgres 三方言齐平，缺脚本即报错。
 
 - 目录：`sql/<dbtype>/`（如 `sql/sqlite/`、`sql/mysql/`、`sql/postgres/`）。
 - 占位符：参数化查询用 `?`（sqlite/mysql）或 `$1`（postgres）；动态表名等标识符用 `{xxx}`（运行时由组件替换，禁止来自用户输入）。

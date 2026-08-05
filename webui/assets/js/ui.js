@@ -142,10 +142,16 @@
     if (b) b.textContent = fmtDateTime(new Date());
   }
 
-  // 401：提示并弹出访问凭证设置
+  // 401：凭证失效 → 跳转登录视图（已在认证页则不重复弹）
   function onUnauthorized() {
-    if (tokenDialogOpen) return;
-    openTokenDialog('访问凭证无效或已过期，请重新输入。');
+    if (document.body.classList.contains('auth-mode')) return;
+    if (Rock.auth) {
+      Rock.auth.showAuth();
+      Rock.auth.showPanel('login');
+      Rock.auth.setError('访问凭证无效或已过期，请重新登录');
+    } else if (!tokenDialogOpen) {
+      openTokenDialog('访问凭证无效或已过期，请重新输入。');
+    }
   }
 
   // 访问凭证设置弹窗（保存/清除后调用 tokenSavedHandler 刷新当前页）

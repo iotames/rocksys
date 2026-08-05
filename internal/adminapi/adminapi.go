@@ -11,9 +11,9 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
-	"os"
 	"strings"
 
+	"github.com/iotames/easydb"
 	"github.com/iotames/easyserver"
 	"github.com/iotames/easyserver/httpsvr"
 
@@ -28,6 +28,14 @@ const (
 	PathSwitchList = "/admin/switch/list"
 	PathConfig     = "/admin/config"
 	PathConfigList = "/admin/config/list"
+)
+
+// 认证端点路径（§8.4）：登录/注册/重置/状态，均免鉴权（前置条件由 handler 校验）。
+const (
+	PathAuthStatus = "/admin/auth/status"
+	PathLogin      = "/admin/auth/login"
+	PathRegister   = "/admin/auth/register"
+	PathReset      = "/admin/auth/reset"
 )
 
 const (
@@ -46,15 +54,41 @@ type AdminServer struct {
 	srv        *easyserver.Server // 独立 easyserver 实例（回环地址）
 	confMgr    conf.Manager       // ★ 用于内建 PUT /admin/config（调用 conf.Manager.Set）
 	hotswapMgr *hotswap.Manager   // ★ 用于内建 /admin/switch/on|off|list
+	initialized *bool             // ADMIN_INITIALIZED 配置指针（热更可读）
+	jwtSecret   *string           // ADMIN_JWT_SECRET 配置指针（登录 JWT 签名密钥）
+	users       *userStore        // 超级管理员用户存储（edb 为 nil 时不可用）
+	auth        *adminAuth        // 管理接口鉴权器
+	loginLimiter *loginLimiter    // 登录失败限流器（按 IP）
 }
 
-// New 创建独立的管理接口服务器并注册 5 个内建端点（§8.1）。
-func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager) *AdminServer {
+// New 创建独立的管理接口服务器并注册全部内建端点（§8.1/§8.4）。
+// edb 为统一数据访问层底层连接（sqlite），用于用户存储；为 nil 时用户认证不可用，
+// 管理接口降级为「静态 token / 回环信任」模式（既有行为）。
+func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *easydb.EasyDb) *AdminServer {
 	s := &AdminServer{
-		srv:        easyserver.NewServer(addr),
-		confMgr:    confMgr,
-		hotswapMgr: hotswapMgr,
+		srv:          easyserver.NewServer(addr),
+		confMgr:      confMgr,
+		hotswapMgr:   hotswapMgr,
+		loginLimiter: newLoginLimiter(),
 	}
+
+	// 注册管理接口专属配置项：初始化标记 + 登录 JWT 签名密钥。
+	if confMgr != nil {
+		var initialized bool
+		if err := confMgr.Register(&initialized, "ADMIN_INITIALIZED", "false", "是否已初始化超级管理员"); err == nil {
+			s.initialized = &initialized
+		}
+		var jwtSecret string
+		if err := confMgr.Register(&jwtSecret, "ADMIN_JWT_SECRET", "", "管理接口登录 JWT 签名密钥（为空时进程内随机，重启后需重新登录）"); err == nil {
+			s.jwtSecret = &jwtSecret
+		}
+	}
+	if edb != nil {
+		if users, err := newUserStore(edb); err == nil {
+			s.users = users
+		}
+	}
+	s.auth = newAdminAuth(confMgr, s.initialized, s.jwtSecret, s.users, addr)
 	s.registerBuiltin()
 	return s
 }
@@ -71,18 +105,24 @@ func (s *AdminServer) Shutdown(ctx context.Context) error {
 
 // RegisterPlugin 注册挂件端点（§8.1）。
 // 把 func(w, r) 包装为 func(ctx httpsvr.Context)，并为同一 path 注册 GET 与 POST 两个方法
-// （挂件 handler 自行判断方法）。返回 error 表示注册失败。
+// （挂件 handler 自行判断方法）。外层统一套鉴权检查。返回 error 表示注册失败。
 func (s *AdminServer) RegisterPlugin(path string, h func(http.ResponseWriter, *http.Request)) error {
 	if path == "" || h == nil {
 		return errNilHandler
 	}
-	wrapped := func(ctx httpsvr.Context) { h(ctx.Writer, ctx.Request) }
+	wrapped := func(ctx httpsvr.Context) {
+		if !s.auth.check(ctx) {
+			return
+		}
+		h(ctx.Writer, ctx.Request)
+	}
 	s.srv.AddHandler(http.MethodGet, path, wrapped)
 	s.srv.AddHandler(http.MethodPost, path, wrapped)
 	return nil
 }
 
-// registerBuiltin 注册内建端点，外层统一套一层鉴权检查（§8.3）。
+// registerBuiltin 注册内建端点，外层统一套一层鉴权检查（§8.3/§8.4）。
+// 认证端点（auth/status|login|register|reset）在 auth.check 中豁免鉴权。
 func (s *AdminServer) registerBuiltin() {
 	check := s.requireAuth()
 	s.srv.AddHandler(http.MethodPost, PathSwitchOn, check(s.handleSwitchOn))
@@ -91,6 +131,10 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodGet, PathConfig, check(s.handleConfigGet))
 	s.srv.AddHandler(http.MethodPut, PathConfig, check(s.handleConfigPut))
 	s.srv.AddHandler(http.MethodGet, PathConfigList, check(s.handleConfigList))
+	s.srv.AddHandler(http.MethodGet, PathAuthStatus, check(s.handleAuthStatus))
+	s.srv.AddHandler(http.MethodPost, PathLogin, check(s.handleLogin))
+	s.srv.AddHandler(http.MethodPost, PathRegister, check(s.handleRegister))
+	s.srv.AddHandler(http.MethodPost, PathReset, check(s.handleReset))
 }
 
 // RegisterWebUI 注册内嵌 WebUI 静态资源（管理控制台）。
@@ -148,15 +192,12 @@ func contentTypeByExt(path string) string {
 	}
 }
 
-// requireAuth 返回构造时的鉴权包装器：可选 ROCKSYS_ADMIN_TOKEN 校验。
-// 若设置了 token 且请求头 Authorization != "Bearer <token>" → 401；
-// 未设置 token 时不校验（默认仅回环信任）。
+// requireAuth 返回构造时的鉴权包装器（§8.3/§8.4）。
+// 委托 adminAuth.check 完成：回环信任 → 公开路径豁免 → 静态 token → 登录 JWT。
 func (s *AdminServer) requireAuth() func(func(httpsvr.Context)) func(httpsvr.Context) {
-	token := os.Getenv(envAdminToken)
 	return func(next func(httpsvr.Context)) func(httpsvr.Context) {
 		return func(ctx httpsvr.Context) {
-			if token != "" && ctx.Request.Header.Get(authorizationHeader) != bearerPrefix+token {
-				_ = ctx.Text("unauthorized", http.StatusUnauthorized)
+			if !s.auth.check(ctx) {
 				return
 			}
 			next(ctx)

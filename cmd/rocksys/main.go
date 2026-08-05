@@ -20,6 +20,8 @@ import (
 	"rocksys/internal/engine"
 	"rocksys/internal/hotswap"
 
+	"github.com/iotames/easydb"
+
 	"rocksys/plugins/auth"
 	"rocksys/plugins/config"
 	"rocksys/plugins/copy"
@@ -211,7 +213,12 @@ func buildServer(args []string) (*Server, error) {
 	mgr.SetDrainCheck(eng.ActiveCount)
 
 	// 5a. admin API + 挂件端点注入（§8.1；挂件 handler 经 RegisterPlugin 注入）。
-	adminSrv := adminapi.New(cfgMgr.Current().AdminAddr, cfgMgr, mgr)
+	// 管理接口用户认证复用统一数据访问层（dataDB），dataDB 未就绪时降级为静态 token/回环信任。
+	var adminEDB *easydb.EasyDb
+	if dataDB != nil {
+		adminEDB = dataDB.EasyDB()
+	}
+	adminSrv := adminapi.New(cfgMgr.Current().AdminAddr, cfgMgr, mgr, adminEDB)
 	scriptAdmin := script.NewAdminHandler(mgr)
 	if err := adminSrv.RegisterPlugin(script.PathPublish, scriptAdmin.Publish); err != nil {
 		return nil, fmt.Errorf("register script publish: %w", err)

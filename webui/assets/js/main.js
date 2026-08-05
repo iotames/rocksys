@@ -129,6 +129,11 @@
     bindToolbar();
     initRoute();
     restartAutoRefresh();
+    // 认证引导：检测管理接口状态，未登录/未初始化时显示认证视图
+    if (Rock.auth) {
+      Rock.auth.bind();
+      Rock.auth.init();
+    }
     // 窗口尺寸变化时重绘图表
     window.addEventListener('resize', Rock.util.debounce(function () {
       if (currentRoute() === 'metrics') views.metrics.drawChart();

@@ -1,5 +1,7 @@
 # sql/mysql — MySQL 方言 SQL 脚本目录
 
+> **铁律**：① SQL 必须落盘 `sql/<dbtype>/`，禁止 Go 代码内联；② 换库只改 `.env`（`DB_DRIVER`/`DB_DSN`）；③ 纯 SQL 参数化，不用 ORM/对象模型；④ 本目录与 `sql/sqlite/`、`sql/postgres/` 三方言齐平，缺脚本即报错。
+
 本目录存放 MySQL 方言的数据库查询脚本。加载规则（见 `internal/hotswap/script.go`）：
 
 1. 运行时优先加载外置目录（`SQL_DIR`，默认 `sql/`）中对应的脚本文件，可热修改无需重新编译；

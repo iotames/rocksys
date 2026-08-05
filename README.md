@@ -361,6 +361,13 @@ sudo systemctl restart rocksys
 - **SQL 脚本外置目录**（默认 `sql/`）：数据访问层脚本优先加载外置目录，改 SQL 无需重新编译。
 - **数据库零配置**：默认 SQLite 本地文件 `rocksys.db`，可经 `DB_DRIVER` / `DB_DSN` 切换 MySQL / PostgreSQL（缺方言脚本即报错）。
 
+### 数据库铁律
+
+1. **SQL 落盘**：所有数据库操作写成独立 `.sql` 文件，放 `sql/<dbtype>/`（`sql/sqlite/`、`sql/mysql/`、`sql/postgres/`），禁止 Go 代码内联 SQL。
+2. **换库只改 .env**：切换数据库仅改 `DB_DRIVER` / `DB_DSN`（`SQL_DIR` 默认 `sql`），不改代码、不重编译。
+3. **纯 SQL 原生**：不用对象模型 / ORM，参数化占位符 `?`（sqlite/mysql）或 `$1`（postgres）；动态标识符 `{xxx}` 禁止来自外部输入。
+4. **方言齐平**：SQL 变更须同步 sqlite/mysql/postgres 三份方言脚本；缺脚本即运行时报错（`internal/db.SQL()` 强制校验），不悄悄降级。
+
 ---
 
 ## 架构概览
