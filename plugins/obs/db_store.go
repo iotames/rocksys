@@ -59,13 +59,9 @@ func (s *DBStore) EnsureTable() error {
 	if err != nil {
 		return err
 	}
-	// 索引脚本含多条语句，逐条执行；"已存在"类错误幂等忽略
-	// （MySQL 的 CREATE INDEX 不支持 IF NOT EXISTS）。
-	for _, stmt := range strings.Split(idx, "\n") {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" {
-			continue
-		}
+	// 多语句脚本逐条执行 + 幂等容错："已存在"类错误忽略
+	// （MySQL 的 CREATE INDEX 不支持 IF NOT EXISTS，重复执行报 "Duplicate key name"）。
+	for _, stmt := range db.SplitSQLStatements(idx) {
 		if _, err := s.edb.Exec(stmt); err != nil {
 			msg := err.Error()
 			if strings.Contains(msg, "already exists") || strings.Contains(msg, "Duplicate key name") || strings.Contains(msg, "duplicate key") {
@@ -89,7 +85,7 @@ func (s *DBStore) Write(batch []*AccessRecord) error {
 			continue // 单条扩展字段序列化失败单独丢弃
 		}
 		if _, err := s.edb.Exec(ins,
-			r.Time.Format(time.RFC3339),
+			r.Time.UTC().Format(time.RFC3339),
 			r.TraceID, r.TenantID, r.Path, r.Method, r.ClientIP, r.StatusCode,
 			r.Upstream, r.ShieldMs, r.BizMs, r.TotalMs, r.ReqBytes, r.RespBytes,
 			extra,
@@ -111,7 +107,7 @@ func (s *DBStore) Query(q Query) ([]map[string]any, error) {
 		limit = defaultQueryLimit
 	}
 	args := []any{
-		q.From.Format(time.RFC3339), q.To.Format(time.RFC3339),
+		q.From.UTC().Format(time.RFC3339), q.To.UTC().Format(time.RFC3339),
 		q.Path, q.Path, q.PathLike, q.PathLike, q.TraceID, q.TraceID,
 		limit,
 	}
@@ -121,8 +117,48 @@ func (s *DBStore) Query(q Query) ([]map[string]any, error) {
 	}
 	for _, row := range rows {
 		mergeExtras(row)
+		normalizeRowTypes(row)
 	}
 	return rows, nil
+}
+
+// normalizeRowTypes 将 DB 查询返回的行按维度注册表（dimIndex）归一化类型：
+// DimInt → int64；DimString/DimDatetime → string。
+// 修复底层 easydb.decodeAny 把"纯数字字符串列"（如 trace_id="123"）误转成数值，
+// 导致 map 查询结果类型漂移的问题；未注册的 key（extra 平铺的未知负载维度）保持原样。
+func normalizeRowTypes(row map[string]any) {
+	for k, v := range row {
+		spec, ok := dimIndex[k]
+		if !ok {
+			continue
+		}
+		switch spec.Type {
+		case DimInt:
+			row[k] = toInt64(v)
+		case DimString, DimDatetime:
+			row[k] = toString(v)
+		}
+	}
+}
+
+// toString 将数据库标量（[]byte/string/int64/float64/bool 等）归一为 string。
+func toString(v any) string {
+	switch s := v.(type) {
+	case string:
+		return s
+	case []byte:
+		return string(s)
+	case int64:
+		return strconv.FormatInt(s, 10)
+	case int:
+		return strconv.Itoa(s)
+	case float64:
+		return strconv.FormatFloat(s, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(s)
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 // SizeBytes 返回访问日志表 + 索引的总字节数（sql/mysql/postgres 三方言各一脚本）。

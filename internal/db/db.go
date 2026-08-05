@@ -12,6 +12,8 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/iotames/easydb"
@@ -54,15 +56,22 @@ func Open(driver, dsn, sqlDir string) (*DB, error) {
 		return nil, fmt.Errorf("db: 数据库驱动名不能为空")
 	}
 
+	if strings.TrimSpace(sqlDir) == "" {
+		sqlDir = defaultExternalDir
+	}
+
 	sub, err := fs.Sub(sqlfiles.FS, "sql")
 	if err != nil {
 		return nil, fmt.Errorf("db: 读取内嵌 sql/ 目录失败: %w", err)
 	}
-	// 校验内嵌目录存在 sql/<driver>/；缺失即拒绝（至少支持 1 种数据库由 sql/sqlite 保证）
+	// 校验方言脚本目录：内嵌 sql/<driver>/ 缺失时，若外置目录提供 sql/<driver>/ 则放行
+	// （运行时 SQL() 优先读外置），否则拒绝。至少支持 1 种数据库由 sql/sqlite 保证。
 	if _, err := fs.ReadDir(sub, driver); err != nil {
-		return nil, fmt.Errorf(
-			"db: 内嵌 SQL 脚本缺少 sql/%s/ 目录，无法支持驱动 %s（可补全脚本后重新编译，或在 SQL_DIR 外置目录中提供）: %w",
-			driver, driver, err)
+		if _, serr := os.Stat(filepath.Join(sqlDir, driver)); serr != nil {
+			return nil, fmt.Errorf(
+				"db: 内嵌 SQL 脚本缺少 sql/%s/ 目录，且外置目录 %s 亦未提供 sql/%s/，无法支持驱动 %s（请补全脚本后重新编译，或在 SQL_DIR 外置目录中提供 sql/%s/）: %w",
+				driver, sqlDir, driver, driver, driver, err)
+		}
 	}
 
 	sqldb, err := sql.Open(driver, dsn)
@@ -74,9 +83,6 @@ func Open(driver, dsn, sqlDir string) (*DB, error) {
 		return nil, fmt.Errorf("db: 连接 %s 失败: %w", driver, err)
 	}
 
-	if strings.TrimSpace(sqlDir) == "" {
-		sqlDir = defaultExternalDir
-	}
 	return &DB{
 		edb:     easydb.NewEasyDbBySqlDB(sqldb),
 		scripts: hotswap.NewScriptDir(sub, sqlDir),
@@ -144,4 +150,20 @@ func (d *DB) Close() error {
 		return nil
 	}
 	return d.edb.CloseDb()
+}
+
+// SplitSQLStatements 按行拆分多语句 SQL 脚本（约定：每行一条完整语句，允许空行与
+// "--" 单行注释行）。用于索引等多语句脚本逐条执行：sqlite（modernc）对多语句
+// Exec 报错、MySQL 默认 multiStatements=false、lib/pq 亦不支持多语句，
+// 因此建表/建索引脚本必须逐条执行。
+func SplitSQLStatements(txt string) []string {
+	var out []string
+	for _, line := range strings.Split(txt, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "--") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
 }

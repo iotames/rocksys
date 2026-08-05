@@ -16,8 +16,10 @@ import (
 	"github.com/iotames/easydb"
 	"github.com/iotames/easyserver"
 	"github.com/iotames/easyserver/httpsvr"
+	"github.com/iotames/easyserver/log"
 
 	"rocksys/internal/conf"
+	"rocksys/internal/db"
 	"rocksys/internal/hotswap"
 )
 
@@ -56,7 +58,9 @@ type AdminServer struct {
 	hotswapMgr *hotswap.Manager   // ★ 用于内建 /admin/switch/on|off|list
 	initialized *bool             // ADMIN_INITIALIZED 配置指针（热更可读）
 	jwtSecret   *string           // ADMIN_JWT_SECRET 配置指针（登录 JWT 签名密钥）
-	users       *userStore        // 超级管理员用户存储（edb 为 nil 时不可用）
+	edb        *easydb.EasyDb     // 用户存储数据库连接（dataDB.EasyDB()，可 nil）
+	sqls       db.SQLSource       // 用户存储 SQL 脚本源（dataDB，可 nil）
+	users       *userStore        // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
 	auth        *adminAuth        // 管理接口鉴权器
 	loginLimiter *loginLimiter    // 登录失败限流器（按 IP）
 }
@@ -64,11 +68,14 @@ type AdminServer struct {
 // New 创建独立的管理接口服务器并注册全部内建端点（§8.1/§8.4）。
 // edb 为统一数据访问层底层连接（sqlite），用于用户存储；为 nil 时用户认证不可用，
 // 管理接口降级为「静态 token / 回环信任」模式（既有行为）。
+// 用户存储的 SQL 脚本源由 SetSQLSource 注入（装配时传入 dataDB）；在注入前
+// 用户认证同样不可用（auth 自动降级）。
 func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *easydb.EasyDb) *AdminServer {
 	s := &AdminServer{
 		srv:          easyserver.NewServer(addr),
 		confMgr:      confMgr,
 		hotswapMgr:   hotswapMgr,
+		edb:          edb,
 		loginLimiter: newLoginLimiter(),
 	}
 
@@ -83,14 +90,34 @@ func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *ea
 			s.jwtSecret = &jwtSecret
 		}
 	}
-	if edb != nil {
-		if users, err := newUserStore(edb); err == nil {
-			s.users = users
-		}
-	}
+	s.initUsers()
 	s.auth = newAdminAuth(confMgr, s.initialized, s.jwtSecret, s.users, addr)
 	s.registerBuiltin()
 	return s
+}
+
+// SetSQLSource 注入用户存储 SQL 脚本源（通常为 internal/db 数据访问层）。
+// 需在 New 之后、认证功能使用前调用；edb 与 sqls 均就绪时创建用户存储。
+// 无脚本源时用户认证不可用（auth 降级为静态 token / 回环信任），但管理接口其余功能不受影响。
+func (s *AdminServer) SetSQLSource(src db.SQLSource) {
+	s.sqls = src
+	s.initUsers()
+}
+
+// initUsers 在 edb 与 sqls 均就绪时创建用户存储（幂等，失败仅记录）。
+// 注意：auth 在 New 时已用当时的 users（可能为 nil）构造，创建成功须同步回填 auth.users。
+func (s *AdminServer) initUsers() {
+	if s.users == nil && s.edb != nil && s.sqls != nil {
+		if users, err := newUserStore(s.edb, s.sqls); err == nil {
+			s.users = users
+			if s.auth != nil {
+				s.auth.users = users
+			}
+		} else {
+			// 建表/读脚本失败：认证降级为静态 token / 回环信任，但需留痕便于运维排查。
+			log.Warn("adminapi: 用户存储初始化失败，认证降级为静态 token / 回环信任", "err", err.Error())
+		}
+	}
 }
 
 // ListenAndServe 启动监听（委托内部 *easyserver.Server）。

@@ -561,6 +561,52 @@ func TestDBStoreWriteQuery(t *testing.T) {
 }
 
 // OBS_STORE 热切换：file → db，切换后新日志写入新后端，查询只读当前后端。
+// TestDBStoreTypeNormalize 字符串列内容为纯数字时（如 trace_id="123"）不得被底层
+// decodeAny 强转成数值：查询返回的类型必须与维度注册表一致（DimString→string、DimInt→int64）。
+func TestDBStoreTypeNormalize(t *testing.T) {
+	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs_type.db"), "")
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+	st := NewDBStore(d, "")
+	if err := st.EnsureTable(); err != nil {
+		t.Fatalf("EnsureTable: %v", err)
+	}
+	base := time.Now()
+	if err := st.Write([]*AccessRecord{{
+		Time: base, TraceID: "123", TenantID: "42", Path: "/123",
+		Method: "200", ClientIP: "9", Upstream: "8",
+		StatusCode: 200, ShieldMs: 1, BizMs: 2, TotalMs: 3, ReqBytes: 4, RespBytes: 5,
+	}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	rows, err := st.Query(Query{From: base.Add(-time.Hour), To: base.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("应有 1 条，实际 %d", len(rows))
+	}
+	row := rows[0]
+	// 字符串列保持 string（即使内容是纯数字）
+	for _, k := range []string{DimTraceID, DimTenantID, DimPath, DimMethod, DimClientIP, DimUpstream} {
+		if _, ok := row[k].(string); !ok {
+			t.Errorf("%s 应为 string，got %T(%v)", k, row[k], row[k])
+		}
+	}
+	// 数值列保持 int64
+	for _, k := range []string{DimStatusCode, DimShieldMs, DimBizMs, DimTotalMs, DimReqBytes, DimRespBytes} {
+		if _, ok := row[k].(int64); !ok {
+			t.Errorf("%s 应为 int64，got %T(%v)", k, row[k], row[k])
+		}
+	}
+	// 时间列保持 string（RFC3339）
+	if _, ok := row[DimTime].(string); !ok {
+		t.Errorf("time 应为 string，got %T(%v)", row[DimTime], row[DimTime])
+	}
+}
+
 func TestStoreHotSwitch(t *testing.T) {	o, dataDB := newTestObsDB(t)
 	defer dataDB.Close()
 

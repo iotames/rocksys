@@ -15,17 +15,24 @@
 
 ## 脚本清单
 
-当前默认仅保证 SQLite（`sql/sqlite/`）脚本完整。PostgreSQL 脚本可参考 SQLite 对应文件改写：
+三方言文件集完全一致（`internal/db/db_test.go` 的 `TestScriptParity` 强制校验，缺脚本即报错）：
 
-| SQLite 文件 | 改写要点 |
-|---|---|
-| mq_create_table.sql | `INTEGER PRIMARY KEY AUTOINCREMENT` → `BIGSERIAL PRIMARY KEY`；`?` → `$1` |
-| mq_insert.sql | 占位符全部改为 `$1, $2, ...` |
-| mq_fetch_pending.sql | `LIMIT ?` → `LIMIT $1` |
-| mq_mark_failed.sql | 占位符全部改为 `$1, $2, $3` |
-| access_log_create_table.sql | `INTEGER PRIMARY KEY AUTOINCREMENT` → `BIGSERIAL PRIMARY KEY` |
-| access_log_create_index.sql | `CREATE INDEX IF NOT EXISTS` 语法一致，可直接复用 |
-| access_log_insert.sql | 占位符全部改为 `$1 ... $14` |
-| access_log_query.sql | 占位符全部改为 `$1 ... $9`；`'%' || ? || '%'` → `'%' || $n || '%'`（`||` 连接符 PostgreSQL 原生支持） |
+| 脚本 | 说明 | 与 SQLite 方言差异 |
+|---|---|---|
+| mq_create_table.sql | outbox 建表 | `BIGSERIAL PRIMARY KEY`；`?` → `$1` |
+| mq_create_index.sql | outbox status 索引 | `CREATE INDEX IF NOT EXISTS` 语法一致 |
+| mq_insert.sql | 插入 pending 消息 | 占位符 `$1, $2, $3` |
+| mq_insert_returning_id.sql | 自增 id 回读 | `INSERT ... RETURNING id`——lib/pq 不支持 `Result.LastInsertId`，`OutboxStore.Insert` 对本方言专用此脚本 |
+| mq_fetch_pending.sql | 取待投递消息 | `LIMIT $1` |
+| mq_mark_done/failed/dead.sql | 标记投递结果 | 占位符 `$n`；`CASE WHEN` 语法一致 |
+| mq_get_retry_count.sql | 查询重试次数 | 占位符 `$1` |
+| access_log_create_table.sql | 访问日志建表 | `BIGSERIAL PRIMARY KEY`；`TEXT` 列 |
+| access_log_create_index.sql | 访问日志索引 | `CREATE INDEX IF NOT EXISTS` 语法一致 |
+| access_log_insert.sql | 插入访问日志 | 占位符 `$1 ... $14` |
+| access_log_query.sql | 查询访问日志 | 占位符 `$1 ... $9`；`'%' || $n || '%'`（`||` 连接符 PostgreSQL 原生支持） |
+| access_log_size.sql | 表+索引占用字节 | `pg_total_relation_size`（含 TOAST） |
+| admin_users_create_table.sql | 管理接口超管表 | `BIGSERIAL PRIMARY KEY` |
+| admin_users_count/get/get_by_username/update/insert.sql | 超管增删改查 | 占位符 `$n` |
 
-补充完成后，将 `DB_DRIVER=postgres` 即可启用。
+> PostgreSQL 方言已用真实实例验证（`internal/db/pg_integration_test.go`，`PG_TEST_DSN` 环境变量触发）。
+> 在 `.env` 中设置 `DB_DRIVER=postgres` 与 `DB_DSN` 即可启用（`cmd/rocksys` 已注册 lib/pq）。

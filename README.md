@@ -211,9 +211,8 @@ AUTH_JWT_SECRET = change-me
 AUTH_JWT_ISSUER = rocksys
 AUTH_JWT_TTL = 3600
 
-# ===== 消息 mq（条件装配：两者同时满足才注册）=====
+# ===== 消息 mq（outbox 表建于下方数据访问层业务库，DB_DRIVER/DB_DSN）=====
 MQ_ENABLED = false
-MQ_DSN = mq.db
 
 # ===== 数据访问层 =====
 DB_DRIVER = sqlite

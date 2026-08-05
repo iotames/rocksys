@@ -3,15 +3,18 @@ module rocksys
 go 1.25.0
 
 require (
+	github.com/go-sql-driver/mysql v1.10.0
 	github.com/iotames/easyconf v1.1.3
 	github.com/iotames/easydb v0.0.0
 	github.com/iotames/easyserver v1.5.0
+	github.com/lib/pq v1.12.3
 	github.com/yuin/gopher-lua v1.1.2
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.55.0
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/iotames/miniutils v1.0.11 // indirect

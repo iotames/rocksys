@@ -12,6 +12,9 @@ import (
 
 	"github.com/iotames/easydb"
 	"github.com/iotames/easyserver/httpsvr"
+
+	"rocksys/internal/db"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -24,7 +27,13 @@ func setupAuthServer(t *testing.T) *AdminServer {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = sqldb.Close() })
-	return New("0.0.0.0:19527", nil, nil, easydb.NewEasyDbBySqlDB(sqldb))
+	src, err := db.EmbeddedSQLSource("sqlite")
+	if err != nil {
+		t.Fatalf("EmbeddedSQLSource(sqlite): %v", err)
+	}
+	s := New("0.0.0.0:19527", nil, nil, easydb.NewEasyDbBySqlDB(sqldb))
+	s.SetSQLSource(src)
+	return s
 }
 
 // jsonBody 解析 JSON 响应为 map。

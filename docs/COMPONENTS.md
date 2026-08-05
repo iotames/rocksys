@@ -247,7 +247,9 @@ COPY_TARGETS="http://shadow-a:9100;http://shadow-b:9100"
 
 ### 3.13 mq — RockMQ（独立组件）
 
-**作用**：异步消息解耦（Outbox 模式），依赖数据访问层（`MQ_ENABLED` + `MQ_DSN` 同时满足才装配）。
+**作用**：异步消息解耦（Outbox 模式）。`MQ_ENABLED=true` 且数据访问层就绪时装配；
+outbox 表建于统一数据访问层业务库（`DB_DRIVER`/`DB_DSN`），与业务数据同库，支持本地事务同提交。
+数据访问层未就绪时跳过注册（组件降级，不阻断底座）。
 
 ---
 

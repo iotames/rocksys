@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
@@ -41,6 +40,8 @@ import (
 
 	"github.com/iotames/easyserver/log"
 
+	_ "github.com/go-sql-driver/mysql" // 注册 mysql 驱动（DB_DRIVER=mysql）
+	_ "github.com/lib/pq"              // 注册 postgres 驱动（DB_DRIVER=postgres）
 	_ "modernc.org/sqlite"
 )
 
@@ -65,8 +66,7 @@ type Server struct {
 	eng      *engine.Engine
 	mgr      *hotswap.Manager
 	adminSrv *adminapi.AdminServer
-	mqDB     *sql.DB // 条件装配（MQ_ENABLED && MQ_DSN）时打开，停机关闭
-	dataDB   *db.DB  // 统一数据访问层（DB_DRIVER/DB_DSN），mq 等插件复用；nil 表示未启用
+	dataDB   *db.DB // 统一数据访问层（DB_DRIVER/DB_DSN），mq 等插件复用；nil 表示未启用
 }
 
 func main() {
@@ -118,11 +118,8 @@ func main() {
 	// 8b. 关闭挂件（逆序：先停 obs flush 日志，再停 hotswap 排空组件，最后停配置热更）
 	_ = srv.mgr.Shutdown(ctx)
 	_ = srv.cfgMgr.Shutdown(ctx)
-	if srv.mqDB != nil && srv.dataDB != nil && srv.mqDB != srv.dataDB.EasyDB().GetSqlDB() {
-		_ = srv.mqDB.Close()
-	}
 	if srv.dataDB != nil {
-		_ = srv.dataDB.Close()
+		_ = srv.dataDB.Close() // mq/obs/admin 均复用 dataDB 连接，一并关闭
 	}
 }
 
@@ -193,39 +190,24 @@ func buildServer(args []string) (*Server, error) {
 	mgr.RegisterComponent(registry.New(cfgMgr)) // 服务注册中心
 	mgr.RegisterComponent(object.New())         // 对象存储
 
-	// mq 条件装配：仅当 MQ_ENABLED=true 且 MQ_DSN 非空时注册（保持既有语义）。
-	// mq 数据连接独立打开 sqlite(MQ_DSN)；SQL 脚本源优先复用 dataDB（sql/<dbtype>/ 逐级加载），
-	// dataDB 未就绪时回退到编译期内嵌的 sqlite 脚本（EmbeddedSQLSource），保证 mq 独立可用。
-	var mqDB *sql.DB
+	// mq 条件装配：MQ_ENABLED=true 时注册；outbox 表建于统一数据访问层业务库（DB_DRIVER/DB_DSN），
+	// 与架构一致（outbox 与业务数据同库，支持 stbiz 本地事务同提交）。
+	// dataDB 未就绪时跳过注册（组件降级，不阻断底座）。
 	var mqEnabled bool
-	var mqDSN string
-	if err := cfgMgr.Register(&mqEnabled, "MQ_ENABLED", "false", "是否启用 mq 异步消息组件"); err != nil {
+	if err := cfgMgr.Register(&mqEnabled, "MQ_ENABLED", "false", "是否启用 mq 异步消息组件（outbox 表建于统一数据访问层业务库，DB_DRIVER/DB_DSN）"); err != nil {
 		return nil, fmt.Errorf("register MQ_ENABLED: %w", err)
 	}
-	if err := cfgMgr.Register(&mqDSN, "MQ_DSN", "", "mq sqlite 数据库 DSN"); err != nil {
-		return nil, fmt.Errorf("register MQ_DSN: %w", err)
-	}
-	if mqEnabled && mqDSN != "" {
-		sqldb, err := sql.Open("sqlite", mqDSN)
-		if err != nil {
-			return nil, fmt.Errorf("mq: 打开 sqlite(%s) 失败: %w", mqDSN, err)
+	if mqEnabled {
+		if dataDB == nil {
+			log.Warn("mq: 数据访问层未就绪（DB_DRIVER/DB_DSN），mq 组件未注册")
+		} else {
+			// 复用 dataDB 连接与 SQL 脚本源：同一方言（sql/<dbtype>/ 逐级加载），
+			// mq.OutboxStore 已按方言兼容 LastInsertId（postgres 走 RETURNING）。
+			mqComp := mq.New(dataDB.EasyDB().GetSqlDB(), "outbox")
+			mqComp.SetSQLSource(dataDB)
+			mgr.RegisterComponent(mqComp)
+			log.Info("mq component registered", "driver", dataDB.Driver())
 		}
-		mqDB = sqldb
-
-		var mqSQLSrc db.SQLSource = dataDB
-		if mqSQLSrc == nil {
-			// dataDB 未就绪：回退内嵌 sqlite 脚本（mq 固定 sqlite 驱动）
-			src, srcErr := db.EmbeddedSQLSource("sqlite")
-			if srcErr != nil {
-				return nil, fmt.Errorf("mq: 内嵌 sqlite 脚本不可用: %w", srcErr)
-			}
-			mqSQLSrc = src
-			log.Warn("mq: 数据访问层未就绪，SQL 脚本回退到编译期内嵌 sqlite")
-		}
-		mqComp := mq.New(mqDB, "outbox")
-		mqComp.SetSQLSource(mqSQLSrc)
-		mgr.RegisterComponent(mqComp)
-		log.Info("mq component registered", "dsn", mqDSN)
 	}
 
 	// 排空判定注入（§6.3）：Adapter.ActiveCount。
@@ -238,6 +220,9 @@ func buildServer(args []string) (*Server, error) {
 		adminEDB = dataDB.EasyDB()
 	}
 	adminSrv := adminapi.New(cfgMgr.Current().AdminAddr, cfgMgr, mgr, adminEDB)
+	if dataDB != nil {
+		adminSrv.SetSQLSource(dataDB) // 用户存储 SQL 脚本源（sql/<dbtype>/admin_users_*.sql）
+	}
 	scriptAdmin := script.NewAdminHandler(mgr)
 	if err := adminSrv.RegisterPlugin(script.PathPublish, scriptAdmin.Publish); err != nil {
 		return nil, fmt.Errorf("register script publish: %w", err)
@@ -270,7 +255,6 @@ func buildServer(args []string) (*Server, error) {
 		eng:      eng,
 		mgr:      mgr,
 		adminSrv: adminSrv,
-		mqDB:     mqDB,
 		dataDB:   dataDB,
 	}, nil
 }

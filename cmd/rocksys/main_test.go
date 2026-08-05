@@ -85,7 +85,6 @@ func TestPrintVersion(t *testing.T) {
 func TestBuildServer(t *testing.T) {
 	cleanupEnvFiles(t)
 	t.Setenv("MQ_ENABLED", "false")
-	t.Setenv("MQ_DSN", "")
 
 	srv, err := buildServer([]string{
 		"--upstream", "http://127.0.0.1:9000",
@@ -93,9 +92,6 @@ func TestBuildServer(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
-	}
-	if srv.mqDB != nil {
-		t.Fatal("默认配置不应打开 mqDB")
 	}
 
 	got := namesOf(srv.mgr.List())
@@ -126,41 +122,56 @@ func TestBuildServer(t *testing.T) {
 	}
 }
 
-// TestBuildServerMQEnabled MQ_ENABLED=true 且 MQ_DSN 非空时注册 mq 组件并打开 sqlite。
+// TestBuildServerMQEnabled MQ_ENABLED=true 时注册 mq 组件，复用 dataDB 业务库连接：
+// outbox 表应建在 dataDB（sqlite）中，脚本源与连接同方言。
 func TestBuildServerMQEnabled(t *testing.T) {
 	cleanupEnvFiles(t)
 	t.Setenv("MQ_ENABLED", "true")
-	t.Setenv("MQ_DSN", ":memory:")
 
 	srv, err := buildServer(nil)
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
 	}
-	if srv.mqDB == nil {
-		t.Fatal("MQ_ENABLED=true 时应打开 sqlite 并持有 db")
+	if srv.dataDB == nil {
+		t.Fatal("MQ 复用 dataDB，dataDB 应已就绪")
 	}
 	got := namesOf(srv.mgr.List())
 	if got["mq"] != "component" {
 		t.Errorf("mq 组件未注册，got=%v", got)
 	}
-	_ = srv.mqDB.Close()
+	// 启用 mq：outbox 表应建在 dataDB 业务库（同一 *sql.DB 连接）。
+	if err := srv.mgr.Enable("mq"); err != nil {
+		t.Fatalf("Enable mq: %v", err)
+	}
+	var n int
+	if err := srv.dataDB.EasyDB().GetSqlDB().
+		QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='outbox'").Scan(&n); err != nil {
+		t.Fatalf("查询 outbox 表失败: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("outbox 表应建在 dataDB 中，got count=%d", n)
+	}
+	if err := srv.mgr.Disable("mq"); err != nil {
+		t.Fatalf("Disable mq: %v", err)
+	}
 }
 
-// TestBuildServerMQDisabled MQ_ENABLED=true 但 DSN 为空（或缺省）时跳过 mq 注册，避免无 DSN 崩溃。
-func TestBuildServerMQDisabled(t *testing.T) {
+// TestBuildServerMQDataDBMissing MQ_ENABLED=true 但数据访问层未就绪（DB_DSN 无效）时，
+// 跳过 mq 注册（组件降级），底座照常启动。
+func TestBuildServerMQDataDBMissing(t *testing.T) {
 	cleanupEnvFiles(t)
 	t.Setenv("MQ_ENABLED", "true")
-	t.Setenv("MQ_DSN", "")
+	t.Setenv("DB_DSN", "/nonexistent-dir-mqtest/rocksys.db") // 使 db.Open 失败 → dataDB=nil
 
 	srv, err := buildServer(nil)
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)
 	}
-	if srv.mqDB != nil {
-		t.Fatal("DSN 为空时不应打开 sqlite")
+	if srv.dataDB != nil {
+		t.Fatal("DB_DSN 无效时 dataDB 应为 nil")
 	}
 	if _, ok := namesOf(srv.mgr.List())["mq"]; ok {
-		t.Error("DSN 为空时不应注册 mq 组件")
+		t.Error("数据访问层未就绪时不应注册 mq 组件")
 	}
 }
 
@@ -195,7 +206,6 @@ func waitReady(t *testing.T, addr string) {
 func TestSmokeProxy(t *testing.T) {
 	cleanupEnvFiles(t)
 	t.Setenv("MQ_ENABLED", "false")
-	t.Setenv("MQ_DSN", "")
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

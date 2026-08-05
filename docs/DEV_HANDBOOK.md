@@ -2103,7 +2103,7 @@ ec.IntListVar(pval *[]int, name string, defval []int, title)  // []int 逗号分
 ```go
 // 装配（cmd/rocksys）
 dataDB, err := db.Open(dbDriver, dbDSN, sqlDir)   // 失败不阻断底座，仅 Warn
-mqComp := mq.New(mqDB, "outbox")
+mqComp := mq.New(dataDB.EasyDB().GetSqlDB(), "outbox") // 复用 dataDB 连接（同库同方言）
 mqComp.SetSQLSource(dataDB)                        // 组件经 SQLSource 读脚本
 
 // 脚本读取

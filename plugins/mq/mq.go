@@ -116,17 +116,41 @@ func (s *OutboxStore) EnsureTable() error {
 	if err != nil {
 		return err
 	}
-	_, err = s.edb.Exec(idx)
-	return err
+	// 多语句脚本逐条执行 + 幂等容错：MySQL 的 CREATE INDEX 不支持 IF NOT EXISTS，
+	// 重复执行报 "Duplicate key name"——该错误忽略（与 obs 组件索引逻辑一致）。
+	for _, stmt := range db.SplitSQLStatements(idx) {
+		if _, err := s.edb.Exec(stmt); err != nil {
+			msg := err.Error()
+			if strings.Contains(msg, "already exists") || strings.Contains(msg, "Duplicate key name") || strings.Contains(msg, "duplicate key") {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // Insert 写入一条 pending 消息；返回新行自增 id。
+// PostgreSQL 驱动（lib/pq）不支持 Result.LastInsertId，故方言判断后走
+// mq_insert_returning_id.sql（RETURNING id）取自增 id；其余方言用普通 INSERT + LastInsertId。
 func (s *OutboxStore) Insert(topic, payload string) (int64, error) {
+	created := time.Now().UTC().Format(time.RFC3339)
+	if da, ok := s.sqls.(interface{ Driver() string }); ok && da.Driver() == "postgres" {
+		ret, err := s.sqlText("mq_insert_returning_id.sql")
+		if err != nil {
+			return 0, err
+		}
+		var id int64
+		if err := s.edb.QueryRow(ret, topic, payload, created).Scan(&id); err != nil {
+			return 0, fmt.Errorf("mq: 插入消息失败（RETURNING id）: %w", err)
+		}
+		return id, nil
+	}
 	stmt, err := s.sqlText("mq_insert.sql")
 	if err != nil {
 		return 0, err
 	}
-	res, err := s.edb.Exec(stmt, topic, payload, time.Now().UTC().Format(time.RFC3339))
+	res, err := s.edb.Exec(stmt, topic, payload, created)
 	if err != nil {
 		return 0, err
 	}
