@@ -53,14 +53,18 @@
 **环境要求**：Go 1.25+（Linux / macOS / Windows 均可，产物为 Linux 目标时可直接交叉编译）。
 
 ```bash
-# 同步依赖地基库（easyconf/easyserver/easydb，自动 git pull）并构建
+# 同步依赖地基库（easyconf/easyserver/easydb）并构建
 make build                        # 产物 bin/rocksys
 
-# 或跳过 make deps，直接构建
+# 查看版本（版本号 = 当前 git 最新 tag）
+./bin/rocksys --version
+
+# 或跳过 make deps，直接构建（不注入版本，--version 显示 dev）
 go build -o bin/rocksys ./cmd/rocksys
 
 # 交叉编译生产产物（纯 Go 无 CGO，可直接产出目标平台二进制）
-make cross-build                  # 产物 bin/rocksys-linux-amd64、bin/rocksys-linux-arm64
+# 产物 bin/rocksys-linux-amd64、bin/rocksys-linux-arm64
+make cross-build
 ```
 
 > 构建产物为**单个可执行文件**，WebUI 管理控制台已 `go:embed` 内嵌在二进制中，零额外前端文件。

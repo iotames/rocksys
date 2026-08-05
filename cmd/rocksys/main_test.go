@@ -55,6 +55,32 @@ func TestSlogLevel(t *testing.T) {
 	}
 }
 
+// TestPrintVersion 验证 --version 输出：Version/BuildTime 为注入值，GoVersion 为编译时版本。
+func TestPrintVersion(t *testing.T) {
+	oldV, oldB, oldG := Version, BuildTime, GoVersion
+	Version, BuildTime = "v9.9.9", "2026-01-02T03:04:05+08:00"
+	GoVersion = "go1.26.5"
+	defer func() { Version, BuildTime, GoVersion = oldV, oldB, oldG }()
+
+	// 捕获 stdout
+	oldOut := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	printVersion()
+	_ = w.Close()
+	os.Stdout = oldOut
+	out, _ := io.ReadAll(r)
+	_ = r.Close()
+
+	want := "Version: v9.9.9\nBuildTime: 2026-01-02T03:04:05+08:00\nGoVersion: go1.26.5\n"
+	if string(out) != want {
+		t.Fatalf("printVersion 输出不匹配:\n got %q\nwant %q", out, want)
+	}
+}
+
 // TestBuildServer 装配全部挂件：7 个链中间件 + config/registry/object 3 个独立组件，默认不注册 mq。
 func TestBuildServer(t *testing.T) {
 	cleanupEnvFiles(t)

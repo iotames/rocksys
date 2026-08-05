@@ -20,10 +20,20 @@
 REPOS  := easyconf easyserver easydb
 GITHUB := https://github.com/iotames
 
-# 版本号：权威来源为 easyserver 子仓库根目录 version.txt（编译期经 -ldflags 注入，
-# 覆盖 httpsvr.MAIN_VERSION 默认值）。改动版本只需编辑该文件。
-VERSION := $(shell cat easyserver/version.txt 2>/dev/null)
-VERSION_LDFLAGS := -X github.com/iotames/easyserver/httpsvr.MAIN_VERSION=$(VERSION)
+# 主项目版本号：取当前 git 最新 tag（git describe --tags --abbrev=0）。
+#   - 无任何 tag          → dev
+#   - 当前提交恰为 tag     → 该 tag（如 v1.5.0）
+#   - tag 之后有提交       → tag-dev（如 v1.5.0-dev）
+# 注入 rocksys/cmd/rocksys.Version/BuildTime，供 ./rocksys --version 展示。
+VERSION ?= $(shell \
+  tag=$$(git describe --tags --abbrev=0 2>/dev/null); \
+  if [ -z "$$tag" ]; then echo "dev"; \
+  elif git describe --tags --exact-match 2>/dev/null > /dev/null 2>&1; then echo "$$tag"; \
+  else echo "$$tag-dev"; fi \
+)
+BUILD_TIME ?= $(shell date -u '+%Y-%m-%dT%H:%M:%S+08:00' -d '+8 hours')
+# 主包符号挂载在 main 下（命令行构建模式），-X 用 main.Version/main.BuildTime。
+LD_FLAGS := -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)
 
 # 交叉编译目标（GOOS/GOARCH，纯 Go 无 CGO 可直接编译；modernc sqlite 为纯 Go 实现）
 # windows 目标产物自动追加 .exe 后缀
@@ -44,7 +54,7 @@ deps:
 	done
 
 build: deps
-	go build -ldflags "$(VERSION_LDFLAGS)" -v -o bin/rocksys ./cmd/rocksys
+	go build -ldflags "$(LD_FLAGS)" -v -o bin/rocksys ./cmd/rocksys
 
 # 交叉编译：产物带平台后缀 bin/rocksys-<os>-<arch>，可拷贝到目标服务器直接运行。
 cross-build: deps
@@ -54,7 +64,7 @@ cross-build: deps
 		ext=""; \
 		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
 		echo "==> cross-build $$os/$$arch"; \
-		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $(VERSION_LDFLAGS)" -o bin/rocksys-$$os-$$arch$$ext ./cmd/rocksys; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w $(LD_FLAGS)" -o bin/rocksys-$$os-$$arch$$ext ./cmd/rocksys; \
 	done
 	@echo "==> 交叉编译产物:"; ls -lh bin/rocksys-*
 

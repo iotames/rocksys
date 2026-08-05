@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -49,6 +50,14 @@ const shutdownTimeout = 30 * time.Second
 // scriptTimeout Lua 脚本执行超时（§15）。
 const scriptTimeout = 100 * time.Millisecond
 
+// 构建时经 -ldflags 注入：Version 为当前项目 git 最新 tag（无 tag 时回退 dev），
+// BuildTime 为构建时间；GoVersion 取编译时 runtime。由 --version/-version 命令展示。
+var (
+	Version   = "dev"
+	BuildTime = "unknown"
+	GoVersion = runtime.Version()
+)
+
 // Server 已装配的运行单元（engine + admin + mgr），供 main 与测试复用。
 type Server struct {
 	cfgMgr   conf.Manager
@@ -61,6 +70,14 @@ type Server struct {
 }
 
 func main() {
+	// --version / -version：打印版本信息后退出，不启动服务。
+	if len(os.Args) > 1 {
+		if arg := os.Args[1]; arg == "--version" || arg == "-version" {
+			printVersion()
+			return
+		}
+	}
+
 	srv, err := buildServer(os.Args[1:])
 	if err != nil {
 		log.Error("rocksys assemble failed", "err", err)
@@ -265,4 +282,11 @@ func slogLevel(s string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// printVersion 打印版本信息到标准输出（--version/-version 命令）。
+func printVersion() {
+	fmt.Printf("Version: %s\n", Version)
+	fmt.Printf("BuildTime: %s\n", BuildTime)
+	fmt.Printf("GoVersion: %s\n", GoVersion)
 }
