@@ -270,12 +270,19 @@ func (m *confManager) Register(pval any, name, defval, title string, usage ...st
 	return nil
 }
 
-// Set 运行期按注册名全名设值并广播
+// Set 运行期按注册名全名设值并广播。
+// ★ 工程化第一原则「热更即持久化」：热更立即生效后，同步写回配置源文件
+// （--config 指定时写 configFile，否则写 .env），保证重启后状态保留。
+// 持久化失败返回 error（此时热更已生效，调用方需知晓持久化未落盘）。
 func (m *confManager) Set(name, value string) error {
 	if err := m.ec.SetItemValue(name, value); err != nil {
 		return err
 	}
 	m.publish()
+	files := m.watchFiles()
+	if err := m.ec.UpdateFile(files[len(files)-1]); err != nil {
+		return fmt.Errorf("set %s: 热更已生效，但持久化到配置文件失败: %w", name, err)
+	}
 	return nil
 }
 

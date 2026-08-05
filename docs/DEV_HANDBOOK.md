@@ -199,7 +199,8 @@ func (m *Manager) Shutdown(ctx context.Context) error
 //   避免"重建 Config + Duration 换算"代码在两处散落。
 func (m *Manager) Register(pval any, name, defval, title string, usage ...string) error
 
-// Set 运行期按注册名全名设值并广播：写 easyconf → 重建 Config → atomic.Value.Store → 广播 watchers。
+// Set 运行期按注册名全名设值并广播：写 easyconf → 重建 Config → atomic.Value.Store → 广播 watchers → 写回配置文件（UpdateFile）。
+// ★ 第一原则「热更即持久化」：Set 必须「立即生效 + 持久化」——写回配置源文件（--config 存在时写 configFile，否则 .env），重启后保留；持久化失败返回 error（此时热更已生效，调用方需知晓持久化未落盘）。
 // 供 PUT /admin/config（§8.1）与 registry→dispatch 联动（§17）使用。
 func (m *Manager) Set(name, value string) error
 ```

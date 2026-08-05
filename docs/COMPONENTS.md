@@ -64,7 +64,7 @@ type MiddlewareLifecycle interface {
 
 ### 2.5 `internal/conf` — 底座配置
 
-- **作用**：统一配置源（命令行 > 环境变量 > `.env` 文件），支持热更回调。
+- **作用**：统一配置源（命令行 > 环境变量 > `.env` 文件），支持热更回调。**第一原则「热更即持久化」**：运行期 `Set` 热改立即生效并同步写回配置文件（`--config` 存在时写 configFile，否则 `.env`），重启后保留。
 - **使用**：挂件在 `New()` 里调用 `cfgMgr.Register(&field, "ENV_NAME", defval, title)` 注册配置项，easyconf 自动写入字段；配置变更时 hotswap 对已启用实体调用 `Start(nil)` 重建快照。
 
 ### 2.6 `internal/adminapi` — 管理 API

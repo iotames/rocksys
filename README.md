@@ -1,4 +1,4 @@
-# RockSys 磐石
+# RockSys 磐石系统
 
 **极简增强式反向代理底座**：默认一台 HTTP 反向代理（等同极简 NGINX `proxy_pass`），能力按需挂载、全部可热开关。任何组件掉链子，紧急关闭，转发依旧。
 
@@ -143,7 +143,7 @@ curl http://127.0.0.1:8080/hello
 
 ## 配置
 
-所有配置支持三种来源（优先级从高到低）：**命令行参数 > 环境变量 > `.env` 配置文件**。配置文件热更（修改后约 3s 自动生效，无需重启）。
+所有配置支持三种来源（优先级从高到低）：**命令行参数 > 环境变量 > `.env` 配置文件**。配置文件热更（修改后约 3s 自动生效，无需重启）。**第一原则「热更即持久化」**：运行时热改（`PUT /admin/config`、WebUI「配置」页、RockConfig）一律立即生效并同步写回配置文件，重启后保留。
 
 ### 底座配置
 
@@ -392,7 +392,7 @@ sudo systemctl restart rocksys
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构 | 设计底座：转发链、三层时间戳、降级链、红线 |
 | [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) | 开发者 | 目录结构、模块关系、热运维引擎 |
 | [docs/DEV_HANDBOOK.md](docs/DEV_HANDBOOK.md) | AI/实现 | 详细技术规格，供对照实现 |
-| [docs/WORK_PROGRESS.md](docs/WORK_PROGRESS.md) | 维护 | 工作进度与批次日志 |
+| [docs/log-system.md](docs/log-system.md) | 方案 | 极简增强式日志系统设计：ERROR 基座 + 可选增强热插拔 |
 
 ---
 

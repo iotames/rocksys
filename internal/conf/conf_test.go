@@ -3,6 +3,7 @@ package conf
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,5 +141,54 @@ func TestRegisterKeepsEnvPriority(t *testing.T) {
 	}
 	if got := mgr.Current().DefaultUpstream; got != "http://127.0.0.1:9001" {
 		t.Errorf("Register 后 upstream=%q, want 9001（环境变量应覆盖 .env）", got)
+	}
+}
+
+// TestSetPersistsToEnvFile 热更即持久化（第一原则）：Set 立即生效并写回 .env，重启后保留。
+func TestSetPersistsToEnvFile(t *testing.T) {
+	cleanup(t)
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	if err := mgr.Set("ROCKSYS_LOG_LEVEL", "debug"); err != nil {
+		t.Fatalf("Set err: %v", err)
+	}
+	if got := mgr.Current().LogLevel; got != "debug" {
+		t.Errorf("Current().LogLevel=%q, want debug", got)
+	}
+	data, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	if s := string(data); !strings.Contains(s, "ROCKSYS_LOG_LEVEL") || !strings.Contains(s, "debug") {
+		t.Errorf(".env 未持久化 ROCKSYS_LOG_LEVEL=debug:\n%s", s)
+	}
+}
+
+// TestSetPersistsToConfigFile --config 场景：Set 写回 configFile（而非 .env），重启后保留。
+func TestSetPersistsToConfigFile(t *testing.T) {
+	cleanup(t)
+	cfgPath := filepath.Join(t.TempDir(), "app.env")
+	content := "ROCKSYS_UPSTREAM = \"http://127.0.0.1:8080\"\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := Load([]string{"--config", cfgPath})
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	if err := mgr.Set("ROCKSYS_LISTEN", ":9090"); err != nil {
+		t.Fatalf("Set err: %v", err)
+	}
+	if got := mgr.Current().ListenAddr; got != ":9090" {
+		t.Errorf("Current().ListenAddr=%q, want :9090", got)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read configFile: %v", err)
+	}
+	if !strings.Contains(string(data), ":9090") {
+		t.Errorf("configFile 未持久化 ROCKSYS_LISTEN=:9090:\n%s", data)
 	}
 }
