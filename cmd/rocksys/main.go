@@ -161,8 +161,8 @@ func buildServer(args []string) (*Server, error) {
 
 	// 统一数据访问层（§? 数据访问层）：为可插拔组件（obs/mq 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
 	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）/ SQL_DIR（默认 sql，外置脚本目录）。
-	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；obs 的 db 存储与 mq 等依赖方因此不可用。
-	// ★ 必须先于 obs 创建：OBS_STORE=db 时 obs 复用本数据访问层。
+	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；obs 的默认 db 存储与 mq 等依赖方因此不可用。
+	// ★ 必须先于 obs 创建：默认 OBS_STORE=db，obs 复用本数据访问层；未就绪时回退 file 并告警（file 已弃用）。
 	var dataDB *db.DB
 	var dbDriver, dbDSN, sqlDir string
 	if err := cfgMgr.Register(&dbDriver, "DB_DRIVER", "sqlite", "数据库驱动名（sqlite/mysql/postgres）"); err != nil {

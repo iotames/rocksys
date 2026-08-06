@@ -330,7 +330,7 @@
 | resp_bytes | int | 响应流量（字节） |
 | （扩展维度） | 不定 | 负载维度（如 `request_body`），由 obs 维度注册表定义，平铺输出 |
 
-**数据来源**：当前启用的 obs 存储后端（`OBS_STORE=file` 读 `logs/access-YYYY-MM-DD.jsonl`；`OBS_STORE=db` 查 `access_log` 表），切换后端后只查当前后端。**返回按完成时间倒序（最新在前），最多 `2000` 条**；耗时排序由 WebUI 端对已加载数据本地排序。
+**数据来源**：当前启用的 obs 存储后端（默认 `OBS_STORE=db` 查 `access_log` 表；`OBS_STORE=file` 读 `logs/access-YYYY-MM-DD.jsonl`，已弃用），切换后端后只查当前后端。**返回按完成时间倒序（最新在前），最多 `2000` 条**；耗时排序由 WebUI 端对已加载数据本地排序。
 
 **失败 `400`**：时间格式非法（应为 `YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`）/ `from` 晚于 `to`，响应体文本为错误原因。
 **失败 `503`**：观测组件未注册。
@@ -347,11 +347,11 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| file_bytes | int | 文件日志占用（`OBS_LOG_DIR` 下所有 `access-*.jsonl` 合计，file 后端） |
+| file_bytes | int | 文件日志占用（`OBS_LOG_DIR` 下所有 `access-*.jsonl` 合计，file 后端；file 已弃用，为遗留数据） |
 | db_bytes | int | 数据库日志表占用（`access_log` 表 + 索引，db 后端；`dataDB` 未就绪时为 0） |
 | total_bytes | int | 合计 = file_bytes + db_bytes |
 
-> 与当前启用后端无关：切换 `OBS_STORE` 后旧数据仍计入（file 数据保留在磁盘、db 表保留在库）。
+> 与当前启用后端无关：切换 `OBS_STORE` 后旧数据仍计入（db 表保留在库、file 数据保留在磁盘）。默认后端为 `db`；`OBS_STORE=file` 已弃用，将不再被支持。
 > WebUI 日志页顶部展示该统计。
 
 ### 3.12 GET /admin/auth/status — 认证状态

@@ -41,7 +41,8 @@ func (f *fakeConfMgr) Register(pval any, name, defval, title string, usage ...st
 func (f *fakeConfMgr) Set(name, value string) error { return nil }
 func (f *fakeConfMgr) List() []conf.ConfigItem      { return nil }
 
-// newTestObs 构造写往 t.TempDir() 的 Obs（file 存储）。
+// newTestObs 构造写往 t.TempDir() 的 Obs：dataDB=nil，默认 db 后端不可用，
+// buildStore 回退 file（过渡兜底），测试读写日志文件。
 func newTestObs(t *testing.T) (*Obs, *fakeConfMgr) {
 	t.Helper()
 	f := newFakeConf()
@@ -560,7 +561,7 @@ func TestDBStoreWriteQuery(t *testing.T) {
 	}
 }
 
-// OBS_STORE 热切换：file → db，切换后新日志写入新后端，查询只读当前后端。
+// OBS_STORE 热切换：db → file，切换后新日志写入新后端，查询只读当前后端。
 // TestDBStoreTypeNormalize 字符串列内容为纯数字时（如 trace_id="123"）不得被底层
 // decodeAny 强转成数值：查询返回的类型必须与维度注册表一致（DimString→string、DimInt→int64）。
 func TestDBStoreTypeNormalize(t *testing.T) {
@@ -610,22 +611,22 @@ func TestDBStoreTypeNormalize(t *testing.T) {
 func TestStoreHotSwitch(t *testing.T) {	o, dataDB := newTestObsDB(t)
 	defer dataDB.Close()
 
-	// 初始 file 写一条
+	// 默认存储为 db（默认后端）
 	r := httptest.NewRequest(http.MethodGet, "/api/one", nil)
 	if err := o.OnResponse(newCtx(r, 200, []byte("ok"), 1, 1)); err != nil {
 		t.Fatal(err)
 	}
-	if o.sink.Load().(*AsyncStore).Name() != "file" {
-		t.Fatalf("默认存储应为 file，实际 %s", o.sink.Load().(*AsyncStore).Name())
+	if o.sink.Load().(*AsyncStore).Name() != "db" {
+		t.Fatalf("默认存储应为 db，实际 %s", o.sink.Load().(*AsyncStore).Name())
 	}
 
-	// 热切换到 db
-	o.storeCfg = "db"
+	// 热切换到 file（已弃用，过渡保留）
+	o.storeCfg = "file"
 	if err := o.Start(nil); err != nil {
 		t.Fatalf("Start 切换存储: %v", err)
 	}
-	if got := o.sink.Load().(*AsyncStore).Name(); got != "db" {
-		t.Fatalf("切换后存储应为 db，实际 %s", got)
+	if got := o.sink.Load().(*AsyncStore).Name(); got != "file" {
+		t.Fatalf("切换后存储应为 file，实际 %s", got)
 	}
 	r2 := httptest.NewRequest(http.MethodGet, "/api/two", nil)
 	ctx2 := newCtx(r2, 200, []byte("ok"), 1, 1)
@@ -636,19 +637,26 @@ func TestStoreHotSwitch(t *testing.T) {	o, dataDB := newTestObsDB(t)
 		t.Fatal(err)
 	}
 
-	// 查询只读当前 provider（db）：仅含切换后写入的一条
+	// 查询只读当前后端（file）：仅含切换后写入的一条
 	now := time.Now()
 	rows, err := o.Query(Query{From: now.Add(-time.Hour), To: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || rows[0][DimPath] != "/api/two" {
-		t.Errorf("db 后端应只有切换后的一条 /api/two，实际 %v", rows)
+		t.Errorf("file 后端应只有切换后的一条 /api/two，实际 %v", rows)
 	}
-	// 旧 file 数据仍在磁盘，可切回查看
-	filePath := filepath.Join(o.logDir, "access-"+time.Now().Format("2006-01-02")+".jsonl")
-	if data, err := os.ReadFile(filePath); err != nil || len(data) == 0 {
-		t.Errorf("旧 file 日志应保留在磁盘: %v", err)
+	// 旧 db 数据保留在库中，可切回查看
+	o.storeCfg = "db"
+	if err := o.Start(nil); err != nil {
+		t.Fatalf("Start 切回 db: %v", err)
+	}
+	rows, err = o.Query(Query{From: now.Add(-time.Hour), To: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0][DimPath] != "/api/one" {
+		t.Errorf("db 后端应保留切换前的 /api/one，实际 %v", rows)
 	}
 }
 

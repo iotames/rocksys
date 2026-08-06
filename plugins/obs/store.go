@@ -1,6 +1,6 @@
 // 访问日志存储抽象：Store 接口 + 通用异步写入包装 AsyncStore。
 //
-// 存储后端可热切换（OBS_STORE=file|db）：Obs 持有当前 AsyncStore 的原子引用，
+// 存储后端可热切换（OBS_STORE=db|file，默认 db）：Obs 持有当前 AsyncStore 的原子引用，
 // 配置热更时重建底层 Store 并替换（见 obs.go rebuildStore）。
 // 异步排队是通用能力（file/db 都受益于批量写入），故与具体后端解耦：
 //   - AsyncStore：pending 队列 + worker 批量落盘 + 队列满降级丢弃（不阻塞请求）

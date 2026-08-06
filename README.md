@@ -194,8 +194,8 @@ DISPATCH_RULES = /api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz;/
 REWRITE_RULES = /api/v1/=uri|/api/;header=X-Proxy-Tag:rewrite
 
 # ===== 观测 obs =====
-OBS_STORE = file              # 访问日志存储后端：file（JSONL）| db（数据库，复用 DB_DRIVER/DB_DSN）
-OBS_LOG_DIR = logs
+OBS_STORE = db               # 访问日志存储后端（默认）：db（数据库，复用 DB_DRIVER/DB_DSN）| file（JSONL，已弃用，将不再被支持）
+OBS_LOG_DIR = logs           # 仅 file 后端使用（遗留）
 OBS_RETENTION_DAYS = 30
 
 # ===== 抄送 copy =====
@@ -337,7 +337,7 @@ sudo systemctl restart rocksys
 
 ### 日志与留存
 
-- obs 启用后：访问日志写入当前存储后端（`OBS_STORE=file` → `logs/access-YYYY-MM-DD.jsonl` 按天切分、超期自动清理；`OBS_STORE=db` → `access_log` 表，复用 `DB_DRIVER`/`DB_DSN`）。WebUI「日志」页支持按时间范围（精确到分）+ 路径精确/模糊过滤查询。
+- obs 启用后：访问日志默认写入 `access_log` 表（`OBS_STORE=db`，复用 `DB_DRIVER`/`DB_DSN`；数据库不可用时回退 JSONL 文件并告警）。`OBS_STORE=file` 已弃用，将不再被支持。WebUI「日志」页支持按时间范围（精确到分）+ 路径精确/模糊过滤查询。
 - 指标：`GET /admin/metrics`（1 分钟滑动窗口），WebUI「观测 · 指标」查看趋势。
 - 业务日志与网关日志分离；如需聚合到统一平台，可对接日志采集器消费 `logs/` 目录。
 
@@ -397,6 +397,7 @@ sudo systemctl restart rocksys
 | 文档 | 面向 | 内容 |
 |------|------|------|
 | [README.md](README.md) | 终端用户 | 本页：功能、构建、部署、使用 |
+| [docs/HTTP_DATAFLOW.md](docs/HTTP_DATAFLOW.md)|开发者/终端用户| 网络数据流转过程解析 |
 | [docs/COMPONENTS.md](docs/COMPONENTS.md) | 开发者 | 各组件/子组件作用与使用方法、配置项详解 |
 | [docs/webui.md](docs/webui.md) | 产品 | 管理控制台产品设计（页面/交互/视觉规范） |
 | [docs/webui-api.md](docs/webui-api.md) | 前端 | 管理接口契约（WebUI 对接唯一权威，无需读源码） |

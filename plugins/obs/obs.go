@@ -4,8 +4,9 @@
 // 的唯一通道：Forward 完成后 Adapter 回调，此时 ctx.RespCode/RespHeader/RespBody
 // 与 ctx.DF 三时间戳均已就绪，据此构造 AccessRecord 异步落盘并聚合到 Metrics。
 //
-// 存储后端可热切换（OBS_STORE=file|db，见 store.go/dim.go）：
-// 默认 file 写 logs/access-YYYY-MM-DD.jsonl；db 复用统一数据访问层 internal/db。
+// 存储后端可热切换（OBS_STORE=db|file，见 store.go/dim.go）：
+// 默认 db 复用统一数据访问层 internal/db 写 access_log 表；file（OBS_STORE=file）
+// 已弃用，将不再被支持（仅显式配置时启用，启动打弃用告警）。
 package obs
 
 import (
@@ -29,7 +30,7 @@ import (
 const (
 	defaultLogDir        = "logs"
 	defaultRetentionDays = 30
-	defaultStore         = "file" // 访问日志存储后端：file | db
+	defaultStore         = "db" // 访问日志存储后端（默认）：db | file（已弃用）
 )
 
 // 指标窗口：1 分钟滑动窗口 × 100 桶（每桶 0.6s）。
@@ -129,10 +130,10 @@ func percentile(sorted []int64, p float64) int64 {
 // Obs 可观测性中间件：挂 chain.Tail，实现 chain.ResponseHook。
 type Obs struct {
 	cfg           conf.Manager
-	storeCfg      string // *string 注册：OBS_STORE（file|db）
+	storeCfg      string // *string 注册：OBS_STORE（db|file，默认 db；file 已弃用）
 	logDir        string // *string 注册：OBS_LOG_DIR
 	retentionDays int    // *int 注册：OBS_RETENTION_DAYS
-	dataDB        *db.DB // 可选：OBS_STORE=db 时使用（nil 则回退 file）
+	dataDB        *db.DB // 统一数据访问层：默认 db 后端依赖（nil 时回退 file 并告警）
 
 	sink    atomic.Value // *AsyncStore：当前存储后端（异步写入包装），热切换时原子替换
 	metrics *Metrics
@@ -145,8 +146,8 @@ var (
 )
 
 // New 创建 obs 挂件并注册自身配置项（§14）。
-// dataDB 为统一数据访问层（可 nil）：OBS_STORE=db 时作为数据库存储后端，
-// 未就绪则回退 file 并告警。
+// dataDB 为统一数据访问层（可 nil）：默认 db 存储后端依赖它（DB_DRIVER/DB_DSN），
+// 未就绪则回退 file 并告警（file 已弃用，仅作过渡保留）。
 func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	o := &Obs{
 		cfg:           cfgMgr,
@@ -156,7 +157,7 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 		dataDB:        dataDB,
 		metrics:       NewMetrics(),
 	}
-	_ = cfgMgr.Register(&o.storeCfg, "OBS_STORE", defaultStore, "访问日志存储后端（file/db）")
+	_ = cfgMgr.Register(&o.storeCfg, "OBS_STORE", defaultStore, "访问日志存储后端（默认 db；file 已弃用，将不再被支持）")
 	_ = cfgMgr.Register(&o.logDir, "OBS_LOG_DIR", defaultLogDir, "访问日志目录")
 	_ = cfgMgr.Register(&o.retentionDays, "OBS_RETENTION_DAYS", strconv.Itoa(defaultRetentionDays), "访问日志保留天数")
 	o.sink.Store(NewAsyncStore(o.buildStore()))
@@ -196,8 +197,9 @@ func (o *Obs) Query(q Query) ([]map[string]any, error) {
 }
 
 // StorageSize 当前日志存储总占用（字节）：
-// file 为 OBS_LOG_DIR 下所有 access-*.jsonl 合计；db 为 access_log 表 + 索引占用。
-// 两者独立统计并求和（与当前启用后端无关，切换后端后旧数据仍计入）。
+// file 为 OBS_LOG_DIR 下所有 access-*.jsonl 合计（遗留数据，file 已弃用）；
+// db 为 access_log 表 + 索引占用。两者独立统计并求和（与当前启用后端无关，
+// 切换后端后旧数据仍计入）。
 type StorageSize struct {
 	FileBytes  int64 `json:"file_bytes"`  // 文件日志占用
 	DBBytes    int64 `json:"db_bytes"`    // 数据库日志表占用
@@ -242,26 +244,31 @@ func (o *Obs) OnResponse(ctx *chain.Context) error {
 	return nil
 }
 
-// buildStore 按 OBS_STORE 配置构造底层存储后端；非法值/数据层未就绪回退 file。
+// buildStore 按 OBS_STORE 配置构造底层存储后端。
+// 默认（含空值）与非法值均走 db；file 仅显式配置时启用并打弃用告警
+// （file 将不再被支持）；db 因数据访问层未就绪/初始化失败时回退 file 并告警
+// （过渡保留，避免日志静默丢失）。
 func (o *Obs) buildStore() Store {
-	switch strings.ToLower(strings.TrimSpace(o.storeCfg)) {
-	case "db":
-		if o.dataDB == nil {
-			log.Warn("obs: OBS_STORE=db 但数据访问层未就绪，回退 file 存储")
-			return NewFileStore(o.logDir, o.retentionDays)
-		}
-		st := NewDBStore(o.dataDB, accessLogTable)
-		if err := st.EnsureTable(); err != nil {
-			log.Warn("obs: 数据库存储初始化失败，回退 file 存储", "err", err.Error())
-			return NewFileStore(o.logDir, o.retentionDays)
-		}
-		return st
-	case "", "file":
+	store := strings.ToLower(strings.TrimSpace(o.storeCfg))
+	switch store {
+	case "file":
+		log.Warn("obs: OBS_STORE=file 已弃用，将不再被支持，请改用 db 存储")
 		return NewFileStore(o.logDir, o.retentionDays)
+	case "db", "":
+		// 默认 db
 	default:
-		log.Warn("obs: 未知存储后端，回退 file 存储", "store", o.storeCfg)
+		log.Warn("obs: 未知存储后端，回退默认 db 存储", "store", o.storeCfg)
+	}
+	if o.dataDB == nil {
+		log.Warn("obs: OBS_STORE=db 但数据访问层未就绪，回退 file 存储（file 已弃用，请配置 DB_DRIVER/DB_DSN）")
 		return NewFileStore(o.logDir, o.retentionDays)
 	}
+	st := NewDBStore(o.dataDB, accessLogTable)
+	if err := st.EnsureTable(); err != nil {
+		log.Warn("obs: 数据库存储初始化失败，回退 file 存储（file 已弃用）", "err", err.Error())
+		return NewFileStore(o.logDir, o.retentionDays)
+	}
+	return st
 }
 
 // rebuildStore 原子替换存储后端：新建 AsyncStore 挂入，旧后端排空并关闭。

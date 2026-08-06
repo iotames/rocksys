@@ -1581,7 +1581,7 @@ curl http://127.0.0.1:19527/admin/config
 ## 第 14 章 plugins/obs（RockObs）
 
 - **职责**：访问日志（三时间戳 + 耗时分解，存储后端可切换）、指标聚合、查询 API、滚动留存。
-- **依赖**：`internal/chain`、`internal/dataflow`、`internal/hotswap`、`internal/conf`、`internal/db`（`OBS_STORE=db` 时）。
+- **依赖**：`internal/chain`、`internal/dataflow`、`internal/hotswap`、`internal/conf`、`internal/db`（默认 db 存储后端依赖）。
 - **Slot 挂载位置**：`chain.Tail`，且实现 `chain.ResponseHook`——**这是 obs 获得"请求完成事件"的唯一通道**：
   `OnResponse(ctx)` 在 Forward 完成后被调用，此时 `ctx.RespCode/RespHeader/RespBody` 与 `ctx.DF` 三时间戳均已就绪，obs 据此构造 `AccessRecord` 异步落盘。
   其 `chain.Middleware.Handle` 返回 false 占位（不参与转发前逻辑）。
@@ -1614,7 +1614,7 @@ type AccessRecord struct {
     Extras     map[string]any // 负载维度（如 request_body），序列化平铺进 JSON
 }
 
-// 存储后端接口（store.go）：file / db 两个实现，OBS_STORE 热切换。
+// 存储后端接口（store.go）：file / db 两个实现，OBS_STORE 热切换（默认 db，file 已弃用）。
 type Store interface {
     Name() string
     Write(batch []*AccessRecord) error
@@ -1635,10 +1635,10 @@ type Metrics struct {
 
 ### 存储后端与热切换
 
-- 配置项 `OBS_STORE`（默认 `file`）：`file` = JSONL 文件（`OBS_LOG_DIR`，默认 logs）；`db` = 数据库（复用统一数据访问层 `internal/db`，`DB_DRIVER`/`DB_DSN` 默认 sqlite `rocksys.db`）。
+- 配置项 `OBS_STORE`（默认 `db`）：`db` = 数据库（复用统一数据访问层 `internal/db`，`DB_DRIVER`/`DB_DSN` 默认 sqlite `rocksys.db`），写 `access_log` 表；`file` = JSONL 文件（`OBS_LOG_DIR`，默认 logs）——**已弃用，将不再被支持**：显式配置 `OBS_STORE=file` 时打弃用告警，仅过渡保留。
 - 切换语义：配置热更 → hotswap 对 enabled 的 obs 调 `Start(nil)` → 按当前配置重建底层 Store 并原子替换 `AsyncStore`（旧后端排空缓冲后关闭）。
-- 查询只读当前启用的后端；旧 file 数据保留在磁盘，切回 `file` 即可再看。
-- `OBS_STORE=db` 但 dataDB 未就绪 / 建表失败：回退 `file` 并告警，不阻断底座。
+- 查询只读当前启用的后端；旧数据保留（db 表保留在库、file 文件保留在磁盘，切回即可再看）。
+- db 后端因 dataDB 未就绪（`DB_DRIVER`/`DB_DSN` 无效）或建表失败：回退 `file` 并告警（过渡兜底，避免日志静默丢失），不阻断底座。
 - DB 表 `access_log`：14 个索引列 + `extra` JSON 列（负载维度），SQL 全部外置 `sql/<dbtype>/`（外置优先、嵌入兜底，遵循 SQL 铁律）。
 
 ### Shutdown
@@ -1651,11 +1651,12 @@ func (o *Obs) Shutdown(ctx context.Context) error
 
 > ★ **与 MiddlewareLifecycle.Stop() 桥接**：`hotswap.MiddlewareLifecycle.Stop() error` 不接收 context，而 `Shutdown` 需要超时控制（flush 缓冲）。obs 应额外暴露 `Stop() error` 方法，内部调用 `Shutdown(context.Background())`。hotswap Disable 流程通过 `MiddlewareLifecycle.Stop()` 优雅 flush（阻塞至 flush 完成）；若需超时，在 obs 内部 `Shutdown` 中自行设置 deadline。
 
-### 文件管理（file 后端）
+### 文件管理（file 后端，已弃用）
 
 - 按天切分：`logs/access-2024-01-01.jsonl`（每行一个平铺维度 JSON）
 - 保留 30 天，超期自动 `os.Remove`。
 - 写盘失败不阻塞请求（降级丢弃 + 计数告警）。
+- 仅显式配置 `OBS_STORE=file` 或 db 不可用（回退兜底）时启用，将不再被支持。
 
 ### Admin API
 
@@ -1674,8 +1675,9 @@ func (o *Obs) Shutdown(ctx context.Context) error
 curl http://127.0.0.1:19527/admin/metrics
 # → 返回 QPS 和耗时分位
 
-ls logs/
-# → access-2024-*.jsonl 存在
+# 默认 db 后端：access_log 表落库（sqlite rocksys.db，DB_DRIVER/DB_DSN）
+sqlite3 rocksys.db "select count(*), min(path) from access_log;"
+# → 应有访问日志记录（或直接经 /admin/logs 查询验证）
 
 curl "http://127.0.0.1:19527/admin/logs?from=2024-01-01T10:00&to=2024-01-01T11:30&path_like=/api/order"
 # → 返回该时段内路径包含 /api/order 的访问日志（JSONL）

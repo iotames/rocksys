@@ -1,4 +1,5 @@
-// FileStore 访问日志文件存储后端（OBS_STORE=file，默认）：
+// FileStore 访问日志文件存储后端（OBS_STORE=file，已弃用，将不再被支持）：
+// 仅显式配置 OBS_STORE=file 或 db 不可用（数据访问层未就绪）时作为过渡兜底使用；
 // 同步批量追加写 logs/access-YYYY-MM-DD.jsonl（每行一个平铺维度 JSON），
 // 按天切分、超期清理；Query 跨天读文件逐行解析并按条件过滤。
 // 异步排队由 AsyncStore 承担，本实现只做同步 IO。
