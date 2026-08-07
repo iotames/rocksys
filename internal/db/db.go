@@ -12,8 +12,10 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/iotames/easydb"
@@ -31,6 +33,44 @@ type SQLSource interface {
 
 // defaultExternalDir 外置 SQL 目录默认值（相对工作目录，与项目根 sql/ 结构一致）。
 const defaultExternalDir = "sql"
+
+// sqlite DSN 自动补全参数（modernc.org/sqlite 驱动 DSN 参数，见其源码 sqlite.go dsnPick）。
+const (
+	sqliteBusyTimeout = 5000 // ms，PRAGMA busy_timeout（每连接生效）
+	sqliteJournalMode = "WAL" // PRAGMA journal_mode
+)
+
+// sqlitePragmaParams 自动补全的完整参数字段（常量拼装，禁止魔数散落多处）。
+var sqlitePragmaParams = "_busy_timeout=" + strconv.Itoa(sqliteBusyTimeout) + "&_journal_mode=" + sqliteJournalMode
+
+// ensureSQLitePragma 对 sqlite DSN 自动补全 busy_timeout 与 WAL 参数。
+// 仅 driver=="sqlite" 时由 Open 调用；DSN 已含任一 _ 前缀参数（modernc 驱动所有 DSN
+// 参数均以 _ 开头：_busy_timeout/_journal_mode/_pragma/_timeout/_journal/_sync/_fk/
+// _vacuum/_auto_vacuum 等）则原样返回（尊重显式配置，用户自行管理 pragma）。
+// 拼接：裸路径用 "?" 连接；已有 "?" 参数用 "&" 连接；追加 sqlitePragmaParams。
+// 边界：空串、":memory:"/"file::memory:" 前缀原样返回（内存库无文件锁竞争，补参无意义）。
+func ensureSQLitePragma(dsn string) string {
+	if dsn == "" {
+		return ""
+	}
+	if strings.HasPrefix(dsn, ":memory:") || strings.HasPrefix(dsn, "file::memory:") {
+		return dsn
+	}
+	_, query, hasQuery := strings.Cut(dsn, "?")
+	if !hasQuery {
+		return dsn + "?" + sqlitePragmaParams
+	}
+	// 已有参数段：仅当显式配置了 pragma 类参数（_ 前缀）时尊重原样；
+	// 否则用 & 追加。ParseQuery 错误仅影响参数存在性判定，不因非法转义拒绝 DSN。
+	if vals, err := url.ParseQuery(query); err == nil {
+		for k := range vals {
+			if strings.HasPrefix(k, "_") {
+				return dsn
+			}
+		}
+	}
+	return dsn + "&" + sqlitePragmaParams
+}
 
 // DB 统一数据访问层：easydb 数据操作 + ScriptDir 脚本逐级加载。
 type DB struct {
@@ -72,6 +112,11 @@ func Open(driver, dsn, sqlDir string) (*DB, error) {
 				"db: 内嵌 SQL 脚本缺少 sql/%s/ 目录，且外置目录 %s 亦未提供 sql/%s/，无法支持驱动 %s（请补全脚本后重新编译，或在 SQL_DIR 外置目录中提供 sql/%s/）: %w",
 				driver, sqlDir, driver, driver, driver, err)
 		}
+	}
+
+	// sqlite 自动补全 busy_timeout + WAL（消除 SQLITE_BUSY 根源）；mysql/postgres 原样透传。
+	if driver == "sqlite" {
+		dsn = ensureSQLitePragma(dsn)
 	}
 
 	sqldb, err := sql.Open(driver, dsn)

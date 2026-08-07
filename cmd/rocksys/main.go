@@ -211,7 +211,7 @@ func buildServer(args []string) (*Server, error) {
 	if err := cfgMgr.Register(&dbDriver, "DB_DRIVER", "sqlite", "数据库驱动名（sqlite/mysql/postgres）"); err != nil {
 		return nil, fmt.Errorf("register DB_DRIVER: %w", err)
 	}
-	if err := cfgMgr.Register(&dbDSN, "DB_DSN", "rocksys.db", "数据库连接串（sqlite 为文件路径）"); err != nil {
+	if err := cfgMgr.Register(&dbDSN, "DB_DSN", "rocksys.db?_busy_timeout=5000&_journal_mode=WAL", "数据库连接串（sqlite 为文件路径；默认已含 busy_timeout=5000 与 WAL，可显式覆盖）"); err != nil {
 		return nil, fmt.Errorf("register DB_DSN: %w", err)
 	}
 	if err := cfgMgr.Register(&sqlDir, "SQL_DIR", "sql", "外置 SQL 脚本目录（优先加载，嵌入文件兜底）"); err != nil {

@@ -2088,7 +2088,7 @@ ec.IntListVar(pval *[]int, name string, defval []int, title)  // []int 逗号分
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `DB_DRIVER` | `sqlite` | 数据库驱动名（sqlite/mysql/postgres） |
-| `DB_DSN` | `rocksys.db` | 连接串（sqlite 为文件路径） |
+| `DB_DSN` | `rocksys.db?_busy_timeout=5000&_journal_mode=WAL` | 连接串（sqlite 为文件路径；默认已含 busy_timeout=5000 与 WAL，可显式覆盖） |
 | `SQL_DIR` | `sql` | 外置 SQL 脚本目录（优先加载，嵌入兜底） |
 
 ### C.2 SQL 脚本目录约定（数据库铁律）
@@ -2099,6 +2099,13 @@ ec.IntListVar(pval *[]int, name string, defval []int, title)  // []int 逗号分
 - 占位符：参数化查询用 `?`（sqlite/mysql）或 `$1`（postgres）；动态表名等标识符用 `{xxx}`（运行时由组件替换，禁止来自用户输入）。
 - 加载：`internal/hotswap/script.go` 的 `ScriptDir`——外置 `SQL_DIR` 优先，找不到回退编译期 embed。
 - 缺脚本即报错：切换 `DB_DRIVER` 后若 `sql/<dbtype>/` 缺某条查询脚本，`SQL()` 直接返回错误。
+
+**DSN 参数约定（P1：sqlite 自动补参）**：
+- sqlite DSN 默认自动补 `_busy_timeout=5000&_journal_mode=WAL`（`internal/db` `Open` 层 `ensureSQLitePragma` 自动补全 + 默认值带参双保险），消除并发写互锁导致的 `SQLITE_BUSY`（`database is locked (5)`）。
+- 已显式含 pragma 类参数（modernc 驱动所有 DSN 参数均以 `_` 前缀：`_busy_timeout`/`_journal_mode`/`_pragma`/`_timeout`/`_journal`/`_sync`/`_fk` 等）则尊重显式配置，原样透传不覆盖；普通参数（如 `cache=shared`）正常追加。
+- `:memory:`/`file::memory:` 内存库跳过补参（无文件锁竞争）；mysql/postgres 不受影响。
+- **WAL 依赖本地文件系统**：网络盘/NFS 部署不可靠，需评估或显式跳过 WAL 只留 busy_timeout。
+- 老部署 `.env` 中显式裸值（如 `DB_DSN=rocksys.db`）由 Open 层自动补参覆盖，无需改 `.env`。
 
 ### C.3 数据操作
 

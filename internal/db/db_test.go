@@ -233,3 +233,92 @@ func diffScripts(a, b []string) (missing, extra []string) {
 	}
 	return missing, extra
 }
+
+// ---- ensureSQLitePragma 单测（P1） ----
+
+const wantPragmaSuffix = "?_busy_timeout=5000&_journal_mode=WAL"
+
+// TestEnsureSQLitePragmaBarePath 裸路径 → 用 ? 连接追加。
+func TestEnsureSQLitePragmaBarePath(t *testing.T) {
+	got := ensureSQLitePragma("/tmp/x.db")
+	want := "/tmp/x.db" + wantPragmaSuffix
+	if got != want {
+		t.Errorf("ensureSQLitePragma(/tmp/x.db)=%q want %q", got, want)
+	}
+}
+
+// TestEnsureSQLitePragmaWithParams 已有 ? 参数（非 _ 前缀）→ 用 & 追加。
+func TestEnsureSQLitePragmaWithParams(t *testing.T) {
+	got := ensureSQLitePragma("/tmp/x.db?cache=shared")
+	want := "/tmp/x.db?cache=shared&_busy_timeout=5000&_journal_mode=WAL"
+	if got != want {
+		t.Errorf("ensureSQLitePragma 带普通参数=%q want %q", got, want)
+	}
+}
+
+// TestEnsureSQLitePragmaAlreadySet 已含 _ 前缀 pragma 参数 → 原样返回（尊重显式配置）。
+func TestEnsureSQLitePragmaAlreadySet(t *testing.T) {
+	for _, dsn := range []string{
+		"/tmp/x.db?_busy_timeout=1000",
+		"/tmp/x.db?_journal_mode=MEMORY",
+		"/tmp/x.db?_pragma=busy_timeout(3000)",
+		"/tmp/x.db?_timeout=2000",
+		"/tmp/x.db?_fk=1",
+	} {
+		if got := ensureSQLitePragma(dsn); got != dsn {
+			t.Errorf("ensureSQLitePragma(%q)=%q，已显式配置应原样返回", dsn, got)
+		}
+	}
+}
+
+// TestEnsureSQLitePragmaMemory 内存库 → 原样返回（补参无意义）。
+func TestEnsureSQLitePragmaMemory(t *testing.T) {
+	for _, dsn := range []string{":memory:", "file::memory:?cache=shared"} {
+		if got := ensureSQLitePragma(dsn); got != dsn {
+			t.Errorf("ensureSQLitePragma(%q)=%q，内存库应原样返回", dsn, got)
+		}
+	}
+}
+
+// TestEnsureSQLitePragmaPathWithEqAmp 文件名含 = 与 &（无 ? 分隔）→ 路径原样保留、用 ? 连接。
+func TestEnsureSQLitePragmaPathWithEqAmp(t *testing.T) {
+	dsn := "/tmp/x=y&z.db"
+	got := ensureSQLitePragma(dsn)
+	want := dsn + wantPragmaSuffix
+	if got != want {
+		t.Errorf("ensureSQLitePragma(%q)=%q want %q（路径不得交给 query 解析器）", dsn, got, want)
+	}
+}
+
+// TestEnsureSQLitePragmaEmpty 空串 → 原样返回。
+func TestEnsureSQLitePragmaEmpty(t *testing.T) {
+	if got := ensureSQLitePragma(""); got != "" {
+		t.Errorf("ensureSQLitePragma(\"\")=%q，空串应原样返回", got)
+	}
+}
+
+// TestOpenSQLiteAutoPragma 集成：Open 后 PRAGMA journal_mode=wal、busy_timeout=5000。
+func TestOpenSQLiteAutoPragma(t *testing.T) {
+	d, err := Open("sqlite", filepath.Join(t.TempDir(), "x.db"), "sql")
+	if err != nil {
+		t.Fatalf("Open err: %v", err)
+	}
+	defer d.Close()
+
+	query := func(pragma string, dest any) {
+		t.Helper()
+		if err := d.EasyDB().GetSqlDB().QueryRow("PRAGMA " + pragma).Scan(dest); err != nil {
+			t.Fatalf("PRAGMA %s 查询失败: %v", pragma, err)
+		}
+	}
+	var mode string
+	query("journal_mode", &mode)
+	if mode != "wal" {
+		t.Errorf("journal_mode=%q，want wal（默认 DSN 已自动补参）", mode)
+	}
+	var bt int
+	query("busy_timeout", &bt)
+	if bt != sqliteBusyTimeout {
+		t.Errorf("busy_timeout=%d，want %d", bt, sqliteBusyTimeout)
+	}
+}
