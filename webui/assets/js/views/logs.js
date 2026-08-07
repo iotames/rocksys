@@ -237,24 +237,30 @@
       return;
     }
     if (store.logsError === 'obs') {
-      wrap.innerHTML = '<div class="card"><div class="empty">观测组件未开启，无法查询日志。<button class="btn btn-sm btn-primary" data-act="go-obs">去组件页开启观测</button></div></div>';
+      wrap.innerHTML = '<div class="card">' + Rock.comp.empty.message({
+        text: '观测组件未开启，无法查询日志。',
+        action: '<button class="btn btn-sm btn-primary" data-act="go-obs">去组件页开启观测</button>',
+      }) + '</div>';
       return;
     }
     if (store.logsError === 'bad-params') {
-      wrap.innerHTML = '<div class="card"><div class="empty">时间参数不合法，请检查后重试。</div></div>';
+      wrap.innerHTML = '<div class="card">' + Rock.comp.empty.message({ text: '时间参数不合法，请检查后重试。' }) + '</div>';
       return;
     }
     if (store.logsError) {
-      wrap.innerHTML = '<div class="card"><div class="empty">日志加载失败：' + esc(store.logsError) +
-        '<br><button class="btn btn-sm btn-primary" data-act="logs-reload">重试</button></div></div>';
+      wrap.innerHTML = '<div class="card">' + Rock.comp.empty.message({
+        text: '日志加载失败：' + store.logsError,
+        action: '<button class="btn btn-sm btn-primary" data-act="logs-reload">重试</button>',
+        br: true,
+      }) + '</div>';
       return;
     }
     if (!store.logs.length) {
-      wrap.innerHTML = '<div class="card"><div class="empty">所选时间范围无访问日志</div></div>';
+      wrap.innerHTML = '<div class="card">' + Rock.comp.empty.message({ text: '所选时间范围无访问日志' }) + '</div>';
       return;
     }
     if (!rows.length) {
-      wrap.innerHTML = '<div class="card"><div class="empty">没有符合筛选条件的日志</div></div>';
+      wrap.innerHTML = '<div class="card">' + Rock.comp.empty.message({ text: '没有符合筛选条件的日志' }) + '</div>';
       return;
     }
     const shown = rows.slice(0, 2000);
@@ -266,13 +272,6 @@
     wrap.innerHTML = html;
   }
 
-  // 选项渲染辅助（保持选中态）
-  function optionsHTML(opts, selected) {
-    return opts.map(o =>
-      '<option value="' + o[0] + '"' + (selected === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'
-    ).join('');
-  }
-
   function render() {
     const host = $('#page-logs');
     if (!host) return;
@@ -281,10 +280,11 @@
     if (!logsQuery.toDate) logsQuery.toDate = today();
     if (!logsQuery.toTime) logsQuery.toTime = '23:59';
     host.innerHTML =
-      '<div class="page-head">' +
-      '<div><div class="page-title">访问日志</div><div class="page-desc">按时间范围与路径查看 HTTP 数据请求日志，定位单个请求（与系统运行日志分开）</div></div>' +
-      '<button class="btn btn-sm" data-act="logs-reload">⟳ 手动刷新</button>' +
-      '</div>' +
+      Rock.comp.head.headHTML({
+        title: '访问日志',
+        desc: '按时间范围与路径查看 HTTP 数据请求日志，定位单个请求（与系统运行日志分开）',
+        actions: '<button class="btn btn-sm" data-act="logs-reload">⟳ 手动刷新</button>',
+      }) +
       '<div class="card storage-card"><span class="storage-label">存储占用：</span><span id="log-storage">' + storageHTML() + '</span></div>' +
       '<div class="card">' +
       '<div class="log-toolbar">' +
@@ -304,8 +304,8 @@
       '<button class="btn btn-sm btn-text" data-act="log-reset">重置</button>' +
       '</div>' +
       '<div class="log-toolbar log-toolbar-filters">' +
-      '<select class="select select-sm" id="log-status">' + optionsHTML(STATUS_OPTIONS, logsFilter.status) + '</select>' +
-      '<select class="select select-sm" id="log-sort">' + optionsHTML(SORT_OPTIONS, logsFilter.sortBy) + '</select>' +
+      '<select class="select select-sm" id="log-status">' + Rock.comp.select.options(STATUS_OPTIONS, logsFilter.status) + '</select>' +
+      '<select class="select select-sm" id="log-sort">' + Rock.comp.select.options(SORT_OPTIONS, logsFilter.sortBy) + '</select>' +
       '<label class="chk"><input type="checkbox" id="log-only-error"' + (logsFilter.onlyError ? ' checked' : '') + '><span>只看异常（≥4xx）</span></label>' +
       '</div>' +
       '<div id="log-table-wrap"></div>' +

@@ -1,7 +1,7 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/overview.js 概览页
  * 网关信息卡 + 运行指标卡 + 降级链可视化 + 组件状态总览。
- * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api / Rock.views.metrics。
+ * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api / Rock.comp.metrics / Rock.comp.componentState。
  * 挂载到全局命名空间 window.Rock.views.overview。
  * ========================================================================== */
 (function () {
@@ -12,13 +12,10 @@
 
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
-  const fmtInt = Rock.util.fmtInt;
   const store = Rock.state.store;
-  const COMPONENT_META = Rock.state.COMPONENT_META;
   const COMPONENT_ORDER = Rock.state.COMPONENT_ORDER;
   const normalizeSwitches = Rock.state.normalizeSwitches;
   const normalizeMetrics = Rock.state.normalizeMetrics;
-  const fmtRate = Rock.state.fmtRate;
   const api = Rock.api;
   const toast = Rock.ui.toast;
   const skeletonHTML = Rock.ui.skeletonHTML;
@@ -54,7 +51,7 @@
         const m = await api.get('/admin/metrics');
         store.metrics = normalizeMetrics(m);
         store.metricsError = null;
-        Rock.views.metrics.pushSample(store.metrics);
+        Rock.comp.metrics.pushSample(store.metrics);
         noteUpdated();
       } catch (e) {
         if (e.obsDisabled) { store.metricsError = 'obs'; }
@@ -134,9 +131,11 @@
     const host = $('#page-overview');
     if (!host) return;
     if (store.overviewFailed && !store.baseLoaded && !store.switchesLoaded) {
-      host.innerHTML =
-        '<div class="card"><div class="empty">管理接口不可达，无法加载概览数据。' +
-        '<br><button class="btn btn-sm btn-primary" data-act="overview-reload">重试</button></div></div>';
+      host.innerHTML = Rock.comp.empty.emptyCard({
+        text: '管理接口不可达，无法加载概览数据。',
+        action: '<button class="btn btn-sm btn-primary" data-act="overview-reload">重试</button>',
+        br: true,
+      });
       return;
     }
     if (!store.baseLoaded && !store.switchesLoaded) { skeleton(); return; }
@@ -164,23 +163,9 @@
         '<button class="btn btn-sm btn-primary" data-act="go-obs">去组件页开启观测</button>' +
         '</div>';
     } else if (!store.metrics) {
-      metricsBody = '<div class="empty" style="padding:24px 8px">暂无指标数据</div>';
+      metricsBody = Rock.comp.empty.message({ text: '暂无指标数据', padding: '24px 8px' });
     } else {
-      const m = store.metrics;
-      const delta = Rock.views.metrics.delta();
-      const tiles = [
-        { label: '每秒请求', value: Rock.views.metrics.fmtQps(m.qps), unit: '请求/秒', delta: delta.delta },
-        { label: '延迟 50%', value: fmtInt(m.p50_ms), unit: '毫秒', delta: null },
-        { label: '延迟 95%', value: fmtInt(m.p95_ms), unit: '毫秒', delta: null },
-        { label: '延迟 99%', value: fmtInt(m.p99_ms), unit: '毫秒', delta: null },
-        { label: '错误率', value: fmtRate(m.error_rate), unit: '', delta: null },
-      ].map(t =>
-        '<div class="metric-tile"><div class="metric-label">' + esc(t.label) + '</div>' +
-        '<div class="metric-value">' + esc(t.value) + (t.unit ? '<span class="metric-unit">' + esc(t.unit) + '</span>' : '') + '</div>' +
-        (t.delta ? '<div class="metric-delta ' + t.delta.cls + '">' + t.delta.txt + '</div>' : '') +
-        '</div>'
-      ).join('');
-      metricsBody = '<div class="metric-grid">' + tiles + '</div>';
+      metricsBody = Rock.comp.metrics.metricTiles({ obsOff: false });
     }
 
     // ---- 组件状态总览 ----
@@ -192,11 +177,11 @@
     const hasMq = comps.some(c => c.name === 'mq');
     let compBody;
     if (!comps.length) {
-      compBody = '<div class="empty">暂无组件数据</div>';
+      compBody = Rock.comp.empty.message({ text: '暂无组件数据' });
     } else {
       compBody = '<div class="comp-mini-grid">' + comps.map(c => {
-        const meta = COMPONENT_META[c.name] || { title: c.name, slotLabel: c.kind === 'component' ? '独立服务' : '链中间件' };
-        const dotCls = c.state === 'enabled' ? 'dot-ok' : (c.state === 'draining' ? 'dot-warn' : 'dot-off');
+        const meta = Rock.comp.componentState.meta(c.name, c.kind);
+        const dotCls = Rock.comp.componentState.stateMeta(c.state).dot;
         return '<div class="comp-mini" data-act="goto-components">' +
           '<span class="dot ' + dotCls + '"></span>' +
           '<span class="comp-mini-name">' + esc(meta.title) + '</span>' +
@@ -209,10 +194,11 @@
     }
 
     host.innerHTML =
-      '<div class="page-head">' +
-      '<div><div class="page-title">概览</div><div class="page-desc">30 秒完成巡检：网关状态 · 降级链 · 指标 · 组件</div></div>' +
-      '<button class="btn btn-sm" data-act="overview-reload">⟳ 刷新</button>' +
-      '</div>' +
+      Rock.comp.head.headHTML({
+        title: '概览',
+        desc: '30 秒完成巡检：网关状态 · 降级链 · 指标 · 组件',
+        actions: '<button class="btn btn-sm" data-act="overview-reload">⟳ 刷新</button>',
+      }) +
 
       '<div class="grid grid-2">' +
       '<div class="card hoverable" data-act="goto-config" style="cursor:pointer">' +

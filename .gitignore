@@ -1,6 +1,7 @@
 .reasonix/
 .crush/
 .vscode/
+.omo/
 
 # 配置测试副作用
 .env

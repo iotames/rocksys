@@ -2,7 +2,7 @@
  * RockSys 管理控制台 - views/components.js 组件页
  * 全部组件卡片（开关 / 状态色点 / 运行信息 / 可展开配置区），
  * 启停经二次确认后调用 /admin/switch/on|off，失败透出 error 原文。
- * 配置区复用 Rock.views.config 的共享渲染器。
+ * 配置区复用 Rock.comp.configEditor 的共享渲染器。
  * 挂载到全局命名空间 window.Rock.views.components。
  * ========================================================================== */
 (function () {
@@ -49,20 +49,10 @@
     if (host) host.innerHTML = skeletonHTML(5);
   }
 
-  function compStateMeta(s) {
-    if (s.state === 'enabled') return { text: '已启用', dot: 'dot-ok', tag: 'tag-green' };
-    if (s.state === 'draining') return { text: '切换中', dot: 'dot-warn', tag: 'tag-orange' };
-    return { text: '已关闭', dot: 'dot-off', tag: 'tag-gray' };
-  }
-
   function compCardHTML(s) {
-    const meta = COMPONENT_META[s.name] || {
-      title: s.name,
-      desc: '',
-      slotLabel: s.kind === 'component' ? '独立服务' : '链中间件',
-    };
+    const meta = Rock.comp.componentState.meta(s.name, s.kind);
     const slotLabel = s.kind === 'component' ? '独立服务' : (meta.slotLabel || '链中间件');
-    const st = compStateMeta(s);
+    const st = Rock.comp.componentState.stateMeta(s.state);
     const msgBad = /fail|error|timeout/i.test(s.message);
     return '<div class="comp-card" data-name="' + esc(s.name) + '">' +
       '<div class="comp-head">' +
@@ -93,9 +83,11 @@
     const host = $('#page-components');
     if (!host) return;
     if (store.componentsFailed && !store.switchesLoaded) {
-      host.innerHTML =
-        '<div class="card"><div class="empty">管理接口不可达，无法加载组件列表。' +
-        '<br><button class="btn btn-sm btn-primary" data-act="components-reload">重试</button></div></div>';
+      host.innerHTML = Rock.comp.empty.emptyCard({
+        text: '管理接口不可达，无法加载组件列表。',
+        action: '<button class="btn btn-sm btn-primary" data-act="components-reload">重试</button>',
+        br: true,
+      });
       return;
     }
     if (!store.switchesLoaded) { skeleton(); return; }
@@ -116,17 +108,18 @@
       return (ia < 0 ? 999 : ia) - (ix < 0 ? 999 : ix);
     });
     const hasMq = store.switches.some(c => c.name === 'mq');
-    const kindOpts = [
+    const kindOpts = Rock.comp.select.options([
       ['all', '全部'],
       ['middleware', '链中间件'],
       ['component', '独立组件'],
-    ].map(o => '<option value="' + o[0] + '"' + (compFilter.kind === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('');
+    ], compFilter.kind);
 
     host.innerHTML =
-      '<div class="page-head">' +
-      '<div><div class="page-title">组件</div><div class="page-desc">全部组件（默认 12 个，消息组件按配置装配）一键启停，操作即时生效</div></div>' +
-      '<button class="btn btn-sm" data-act="components-reload">⟳ 刷新</button>' +
-      '</div>' +
+      Rock.comp.head.headHTML({
+        title: '组件',
+        desc: '全部组件（默认 12 个，消息组件按配置装配）一键启停，操作即时生效',
+        actions: '<button class="btn btn-sm" data-act="components-reload">⟳ 刷新</button>',
+      }) +
       '<div class="filter-bar">' +
       '<select class="select select-sm" id="comp-kind">' + kindOpts + '</select>' +
       '<input class="input input-sm" id="comp-search" placeholder="搜索组件名" value="' + esc(compFilter.q) + '">' +
@@ -136,7 +129,7 @@
       '</div>' +
       (list.length
         ? '<div class="comp-grid">' + list.map(compCardHTML).join('') + '</div>'
-        : '<div class="card"><div class="empty">没有符合条件的组件</div></div>');
+        : '<div class="card">' + Rock.comp.empty.message({ text: '没有符合条件的组件' }) + '</div>');
 
     // 绑定筛选
     const kindSel = $('#comp-kind');
@@ -180,14 +173,14 @@
     if (!panel) return;
     if (!panel.hidden) { panel.hidden = true; return; }
     panel.hidden = false;
-    if (!store.configListLoaded) await Rock.views.config.loadList();
+    if (!store.configListLoaded) await Rock.comp.configEditor.loadList();
     const prefix = COMPONENT_PREFIX[name];
     let items = [];
     if (prefix) items = store.configList.filter(c => c.key.indexOf(prefix) === 0);
     if (store.configUnavailable && !items.length) {
       panel.innerHTML = '<div class="empty">配置接口暂不可用（/admin/config/list）</div>';
     } else {
-      Rock.views.config.renderConfigItems(panel, items, { compact: true });
+      Rock.comp.configEditor.render(panel, items, { compact: true });
     }
   }
 

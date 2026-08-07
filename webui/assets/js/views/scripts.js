@@ -73,8 +73,11 @@
     const list = scriptsState.list;
     if (scriptsState.error && !list.length) {
       host.innerHTML =
-        '<div class="page-head"><div><div class="page-title">脚本</div><div class="page-desc">管理策略脚本：发布与回滚</div></div>' +
-        '<button class="btn btn-sm" data-act="scripts-reload">⟳ 刷新</button></div>' +
+        Rock.comp.head.headHTML({
+          title: '脚本',
+          desc: '管理策略脚本：发布与回滚',
+          actions: '<button class="btn btn-sm" data-act="scripts-reload">⟳ 刷新</button>',
+        }) +
         '<div class="alert alert-danger">脚本接口不可用：' + esc(scriptsState.error) + '。请确认脚本组件（script）已启用。</div>';
       return;
     }
@@ -91,7 +94,7 @@
 
     let editorHTML;
     if (!sel) {
-      editorHTML = '<div class="card"><div class="empty">请在左侧选择脚本，或点击「新建脚本」开始</div></div>';
+      editorHTML = '<div class="card">' + Rock.comp.empty.message({ text: '请在左侧选择脚本，或点击「新建脚本」开始' }) + '</div>';
     } else {
       editorHTML =
         '<div class="card">' +
@@ -113,15 +116,16 @@
     }
 
     host.innerHTML =
-      '<div class="page-head">' +
-      '<div><div class="page-title">脚本</div><div class="page-desc">管理策略脚本：发布与回滚</div></div>' +
-      '<button class="btn btn-sm" data-act="scripts-reload">⟳ 刷新</button>' +
-      '</div>' +
+      Rock.comp.head.headHTML({
+        title: '脚本',
+        desc: '管理策略脚本：发布与回滚',
+        actions: '<button class="btn btn-sm" data-act="scripts-reload">⟳ 刷新</button>',
+      }) +
       '<div class="alert alert-info"><b>注意：</b>脚本保存在网关运行内存中，网关重启后需重新发布。回滚可选历史版本（仅限本次运行期内发布的版本）。</div>' +
       '<div class="scripts-layout">' +
       '<div class="card"><div class="card-title">脚本列表' +
       '<button class="btn btn-sm btn-primary" data-act="script-new">＋ 新建脚本</button></div>' +
-      '<div class="script-list">' + (items || '<div class="empty">暂无脚本，点击「新建脚本」开始</div>') + '</div></div>' +
+      '<div class="script-list">' + (items || Rock.comp.empty.message({ text: '暂无脚本，点击「新建脚本」开始' })) + '</div></div>' +
       editorHTML +
       '</div>';
 

@@ -259,11 +259,13 @@
     const host = $('#page-syslogs');
     if (!host) return;
     host.innerHTML =
-      '<div class="page-head">' +
-      '<div><div class="page-title">运行日志</div><div class="page-desc">系统进程实时日志（ring buffer 实时监控），与 HTTP 访问日志分开</div></div>' +
-      '<button class="btn btn-sm" data-act="syslog-clear">清空</button>' +
-      '<button class="btn btn-sm" data-act="syslog-history">⟳ 载入历史</button>' +
-      '</div>' +
+      Rock.comp.head.headHTML({
+        title: '运行日志',
+        desc: '系统进程实时日志（ring buffer 实时监控），与 HTTP 访问日志分开',
+        actions:
+          '<button class="btn btn-sm" data-act="syslog-clear">清空</button>' +
+          '<button class="btn btn-sm" data-act="syslog-history">⟳ 载入历史</button>',
+      }) +
 
       '<div class="syslog-layout">' +
       // 左：实时日志流
@@ -288,7 +290,7 @@
       '<div class="card-title">运行控制</div>' +
       '<div class="form-row">' +
       '<label class="form-label">日志级别</label>' +
-      '<select class="select" id="syslog-level">' + levelOptions() + '</select>' +
+      '<select class="select" id="syslog-level">' + Rock.comp.select.options(LEVEL_OPTIONS, null) + '</select>' +
       '</div>' +
       '<div class="form-hint">热切后立即生效并写回配置（重启保留）</div>' +
       '<div class="form-row">' +
@@ -323,10 +325,6 @@
 
   function infoLoading() {
     return '<div class="empty">状态加载中…</div>';
-  }
-
-  function levelOptions() {
-    return LEVEL_OPTIONS.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('');
   }
 
   // 流状态文案 + 按钮文字

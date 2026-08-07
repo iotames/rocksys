@@ -228,19 +228,19 @@
         views.config.load({ manual: true });
         break;
       case 'cfg-edit':
-        views.config.startEdit(key);
+        Rock.comp.configEditor.startEdit(key);
         break;
       case 'cfg-cancel':
-        views.config.cancelEdit();
+        Rock.comp.configEditor.cancelEdit();
         break;
       case 'cfg-save':
-        views.config.saveEdit(key);
+        Rock.comp.configEditor.saveEdit(key);
         break;
       case 'cfg-reset':
-        views.config.resetItem(key);
+        Rock.comp.configEditor.resetItem(key);
         break;
       case 'cfg-mask':
-        views.config.toggleMask(key);
+        Rock.comp.configEditor.toggleMask(key);
         break;
 
       // ---- 脚本 ----
