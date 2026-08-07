@@ -2,6 +2,7 @@ package chain
 
 import (
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -98,11 +99,20 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 		_ = a.forward(w, r, target, df)
 	}
 
-	// 8. 响应处理阶段：ResponseHooks 返回逆序切片，正向遍历即为逆序执行
+	// 8. 响应处理阶段：ResponseHooks 返回逆序切片，正向遍历即为逆序执行。
+	//    单个 hook panic → log.Error（hook 名 + 堆栈），继续后续 hook（与"err 不中断后续 hook"语义一致）。
+	//    ★ 响应阶段不写 500：可能已写回客户端，旁路 hook 写 500 会污染已发出的响应。
 	for _, h := range a.chain.ResponseHooks(Tail) {
-		if err := h.OnResponse(ctx); err != nil {
-			log.Warn("response hook error", "name", hookName(h), "err", err)
-		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("chain: response hook panic recovered", "name", hookName(h), "panic", r, "stack", string(debug.Stack()))
+				}
+			}()
+			if err := h.OnResponse(ctx); err != nil {
+				log.Warn("response hook error", "name", hookName(h), "err", err)
+			}
+		}()
 	}
 
 	// 9. 缓冲未被任何 Tail 中间件消费（ctx.done == false）时写回客户端

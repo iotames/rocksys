@@ -339,3 +339,144 @@ func TestAdapterSetDefaultUpstreamHotReload(t *testing.T) {
 		t.Fatalf("热更后应转发到 http://new，得到 %q", gotTarget.Load())
 	}
 }
+
+// ---- P3：请求路径 panic 兜底（recover）----
+
+// panicMiddleware 构造即 panic 的中间件。
+type panicMiddleware struct{ name string }
+
+func (m *panicMiddleware) Name() string             { return m.name }
+func (m *panicMiddleware) Handle(ctx *Context) bool { panic("boom-" + m.name) }
+
+// panicHook 实现 ResponseHook 的 panic Tail 中间件（Handle 不参与转发前）。
+type panicHook struct {
+	name string
+}
+
+func (h *panicHook) Name() string                  { return h.name }
+func (h *panicHook) Handle(ctx *Context) bool      { return false }
+func (h *panicHook) OnResponse(ctx *Context) error { panic("boom-hook-" + h.name) }
+
+// panicAfterWriteHook 先 WriteFinal 再 panic 的 Tail 中间件。
+type panicAfterWriteHook struct {
+	name string
+}
+
+func (h *panicAfterWriteHook) Name() string             { return h.name }
+func (h *panicAfterWriteHook) Handle(ctx *Context) bool { return false }
+func (h *panicAfterWriteHook) OnResponse(ctx *Context) error {
+	_ = ctx.WriteFinal(http.StatusCreated, nil, []byte("final"))
+	panic("boom-after-write-" + h.name)
+}
+
+// TestExecuteHeadPanicRecovers Head 槽位 panic → safeHandle 写 500、Execute 返回 false、不 panic 上抛。
+func TestExecuteHeadPanicRecovers(t *testing.T) {
+	c := New()
+	c.Add(Head, &panicMiddleware{name: "panicky"})
+
+	rec := httptest.NewRecorder()
+	ctx := &Context{W: rec, R: httptest.NewRequest(http.MethodGet, "/", nil),
+		DF: dataflow.New(httpsvr.NewDataFlow(), httptest.NewRequest(http.MethodGet, "/", nil)), RespW: rec}
+
+	if c.Execute(ctx) {
+		t.Fatal("panic 中间件应中断链（Execute 返回 false）")
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panic 后客户端应收到 500，得到 %d", rec.Code)
+	}
+}
+
+// TestExecuteMiddlePanicRecovers Middle 槽位 panic → 同样兜底为 500。
+func TestExecuteMiddlePanicRecovers(t *testing.T) {
+	c := New()
+	c.Add(Middle, &panicMiddleware{name: "panicky"})
+
+	rec := httptest.NewRecorder()
+	ctx := &Context{W: rec, R: httptest.NewRequest(http.MethodGet, "/", nil),
+		DF: dataflow.New(httpsvr.NewDataFlow(), httptest.NewRequest(http.MethodGet, "/", nil)), RespW: rec}
+
+	if c.Execute(ctx) {
+		t.Fatal("panic 中间件应中断链（Execute 返回 false）")
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panic 后客户端应收到 500，得到 %d", rec.Code)
+	}
+}
+
+// TestExecutePanicDoesNotKillChain panic 请求后，同一 Chain 后续正常请求不受影响。
+func TestExecutePanicDoesNotKillChain(t *testing.T) {
+	c := New()
+	c.Add(Middle, &panicMiddleware{name: "panicky"})
+	c.Add(Tail, &tailHook{name: "obs"}) // Tail 挂 hook 验证链结构未污染
+
+	rec := httptest.NewRecorder()
+	ctx := &Context{W: rec, R: httptest.NewRequest(http.MethodGet, "/", nil),
+		DF: dataflow.New(httpsvr.NewDataFlow(), httptest.NewRequest(http.MethodGet, "/", nil)), RespW: rec}
+	_ = c.Execute(ctx) // panic 请求
+
+	// 移除 panic 中间件后恢复正常
+	if err := c.Remove("panicky"); err != nil {
+		t.Fatalf("Remove err: %v", err)
+	}
+	if !c.Execute(ctx) {
+		t.Fatal("移除 panic 中间件后 Execute 应返回 true")
+	}
+}
+
+// TestResponseHookPanicContinues Tail hook panic → 仅记录日志，后续 hook 继续执行，客户端响应正常。
+// 注意：ResponseHooks(Tail) 返回注册逆序（impl.go），后注册者先执行。
+// 此处 tailHook 先注册（执行顺序第二）、panicHook 后注册（执行顺序第一）。
+func TestResponseHookPanicContinues(t *testing.T) {
+	ch := New()
+	hook := &tailHook{name: "obs"}
+	ch.Add(Tail, hook)                        // 注册顺序 1 → 执行顺序第二
+	ch.Add(Tail, &panicHook{name: "panicky"}) // 注册顺序 2 → 执行顺序第一（先 panic）
+
+	adapter := NewAdapter(ch, "http://default", func(w http.ResponseWriter, r *http.Request, target string, df *dataflow.DataFlow) error {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	adapter.Handler(rec, httptest.NewRequest(http.MethodGet, "/", nil), httpsvr.NewDataFlow())
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("客户端响应应为 200，得到 %d", rec.Code)
+	}
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	if hook.gotCode != http.StatusOK {
+		t.Fatalf("panic hook 之后的 hook 仍应执行且拿到上游码 200，gotCode = %d", hook.gotCode)
+	}
+}
+
+// TestResponseHookPanicAfterWriteFinal 执行顺序第一的 hook WriteFinal 后 panic：
+// 客户端收到改写响应，第二个 hook 仍执行。
+func TestResponseHookPanicAfterWriteFinal(t *testing.T) {
+	ch := New()
+	hook := &tailHook{name: "obs"}
+	ch.Add(Tail, hook)                            // 注册顺序 1 → 执行顺序第二
+	ch.Add(Tail, &panicAfterWriteHook{name: "w"}) // 注册顺序 2 → 执行顺序第一（WriteFinal 后 panic）
+
+	adapter := NewAdapter(ch, "http://default", func(w http.ResponseWriter, r *http.Request, target string, df *dataflow.DataFlow) error {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("upstream"))
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	adapter.Handler(rec, httptest.NewRequest(http.MethodGet, "/", nil), httpsvr.NewDataFlow())
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("WriteFinal 改写响应应生效，客户端收到 201，得到 %d", rec.Code)
+	}
+	if rec.Body.String() != "final" {
+		t.Fatalf("WriteFinal 改写 body 应生效，得到 %q", rec.Body.String())
+	}
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	if hook.gotCode == 0 {
+		t.Fatal("WriteFinal 后 panic 不应中断后续 hook，第二个 hook 仍应执行")
+	}
+}

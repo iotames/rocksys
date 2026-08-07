@@ -101,6 +101,11 @@ RockGateway（单进程）──HTTP──▶ 默认 upstream（如 127.0.0.1:80
 ```
 任何一环故障 → 热关闭 → 请求绕过该环直通下一级。多级故障也只会退化成"老实转发"，**转发行为永不中断**。
 
+**panic 行为（P3 recover 兜底）**：
+- 链中间件（Head/Middle）panic 被 `safeHandle` 兜底：记录中间件名 + 完整堆栈、写 500、中断该请求链，**其余请求零影响**；recover 只兜底不吞错——完整堆栈必入日志。
+- ResponseHook（Tail 响应阶段）panic 仅记录日志继续后续 hook（响应阶段可能已写回客户端，**不写 500** 以免污染已发出的响应）。
+- `easyserver.ServeHTTP` 外层 recover 为最后防线，兜住转发（Forward）阶段与未来新中间件漏包的 panic，避免击穿到 net/http 导致连接中断。
+
 ---
 
 ## 6. 串联机制（组件之间的协作通道）

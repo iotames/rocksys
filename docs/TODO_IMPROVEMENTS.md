@@ -4,7 +4,7 @@
 
 # RockSys 组件容错改进计划（TODO 任务卡）
 
-> 状态：待审视（未实施）
+> 状态：**已实施**（P1–P3 全部落地，2026-08-07；详见文末「完成情况」）
 > 来源：2026-08-07 组件容错审计。结论：业务转发不依赖任何组件，组件故障被隔离在旁路/异步路径，**业务连续性达标**。
 > 但存在三个值得正视的风险点，按下列任务卡逐项改进。供 AI 员工按步骤实施，实施前须先审视本计划。
 
@@ -164,3 +164,25 @@ DB 层对 sqlite 自动保证「写等待 5s + WAL 并发读」，从根源消�
 ## 回滚策略
 - 各项改动相互独立、可单独 revert（TODO-1 仅 db 层 + 默认值；TODO-2 仅 chain/adapter；TODO-3 仅 obs 插件）。
 - TODO-1 若 pragma 导致 dataDB 初始化异常：直接 revert `ensureSQLitePragma`，恢复裸 DSN 即可（业务不受影响，仅回到锁冲突状态）。
+
+---
+
+## 完成情况（2026-08-07 回填，P1–P3 已实施）
+
+> 实施依据：`docs/IMPROVEMENT_PLAN.md`（设计）+ `docs/IMPROVEMENT_PLAN-dev.md`（实施，P1→P4）。P3.4（easyserver ServeHTTP 兜底）经用户确认由「可选」提级为「必须」。TODO-2b/3b 排除，留二期。
+
+### TODO-1（P1 sqlite 补参）✅
+- 验证：`go test ./internal/db/...` 全绿（8 纯函数用例 + `TestOpenSQLiteAutoPragma` 集成测试，断言 `PRAGMA journal_mode=wal`、`busy_timeout=5000`）；`go build ./...`、`go vet ./...` 通过。
+- 改动：`internal/db/db.go`（`ensureSQLitePragma` + Open 接入）、`cmd/rocksys/main.go`（默认 `DB_DSN` 带参）、`internal/db/db_test.go`、`docs/DEV_HANDBOOK.md`（C.2 DSN 参数约定）。
+
+### TODO-2（P3 recover 兜底）✅
+- 验证：`go test ./internal/chain/...` 全绿（5 新用例：Head/Middle panic 兜底 500、panic 不毒化链、hook panic 后续继续、WriteFinal 后 panic 不中断）；easyserver 子库 `go test ./...` 回归通过。
+- 改动：`internal/chain/impl.go`（`safeHandle`）、`internal/chain/adapter.go`（ResponseHook 循环 recover，不写 500）、`internal/chain/chain_test.go`、`easyserver/httpsvr/server.go`（ServeHTTP 最后防线，已提交子模块）、`ARCHITECTURE.md`（§5.2 panic 行为）。
+
+### TODO-3 第一期（P2 重试+指标）✅
+- 验证：`go test -race ./plugins/obs/...` 全绿（6 新用例）；手工验证 `/admin/metrics` 返回 `drop_count`/`consecutive_fails`。
+- 改动：`plugins/obs/store.go`（`writeBatchWithRetry`/`consecutiveFails`/常量）、`plugins/obs/obs.go`（`StoreStats`）、`plugins/obs/admin.go`（metrics 新字段）、`plugins/obs/store_test.go`、`docs/DEV_HANDBOOK.md`（写失败语义）。
+
+### 全量回归
+- `go build ./...` / `go vet ./...` / `go test ./...`（25 包）全绿；`-race` 关键包（obs/chain/db）全绿。
+- 提交：P1/P2/P3 三个独立中文 commit（无 AI 署名），easyserver 子模块单独提交后更新主仓库引用。

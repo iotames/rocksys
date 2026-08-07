@@ -3,7 +3,10 @@ package chain
 import (
 	"errors"
 	"net/http"
+	"runtime/debug"
 	"sync"
+
+	"github.com/iotames/easyserver/log"
 )
 
 // Chain 中间件链：三段槽位各自持有不可变快照，读写均持锁保护。
@@ -55,8 +58,23 @@ func (c *Chain) Replace(slot Slot, newList []Middleware) {
 	c.segments[slot] = newList
 }
 
+// safeHandle 包装单个中间件执行：panic 时记录中间件名 + 完整堆栈，尝试写 500，返回 false（中断链）。
+// 写 500 用 http.Error：主流场景（panic 时未写响应）正常写 500；若中间件违规已写过响应
+// （违反 interface.go 契约——返回 true 的中间件禁止写响应），net/http 状态码不覆盖、
+// body 可能追加，属退化行为但不崩溃。recover 只兜底不吞错：完整堆栈必入日志。
+func safeHandle(m Middleware, ctx *Context) (next bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("chain: middleware panic recovered", "name", m.Name(), "panic", r, "stack", string(debug.Stack()))
+			http.Error(ctx.W, "internal server error", http.StatusInternalServerError)
+			next = false
+		}
+	}()
+	return m.Handle(ctx)
+}
+
 // Execute 执行转发前链（仅 Head → Middle，不执行 Tail）。
-// 任一返回 false 则中断（中间件已自行响应）；全部返回 true 则 engine 执行 Forward。
+// 任一返回 false 则中断（中间件已自行响应或 panic 被 safeHandle 兜底为 500）；全部返回 true 则 engine 执行 Forward。
 func (c *Chain) Execute(ctx *Context) (shouldForward bool) {
 	c.mu.RLock()
 	head := c.segments[Head]
@@ -64,12 +82,12 @@ func (c *Chain) Execute(ctx *Context) (shouldForward bool) {
 	c.mu.RUnlock()
 
 	for _, m := range head {
-		if !m.Handle(ctx) {
+		if !safeHandle(m, ctx) {
 			return false
 		}
 	}
 	for _, m := range middle {
-		if !m.Handle(ctx) {
+		if !safeHandle(m, ctx) {
 			return false
 		}
 	}
@@ -100,7 +118,8 @@ func (c *Chain) ResponseHooks(slot Slot) []ResponseHook {
 // WriteFinal 由 Tail 中间件调用：写入最终响应并置 done=true。
 // 若已有中间件写过（done=true）则返回 error；响应头须在调用前设置完。
 // ★ 移除可能过期的 Content-Length：Tail 中间件（如 result）改写 body 后，
-//   上游响应头里的 Content-Length 已不匹配，须让 Go 按实际 body 重新计算，否则连接被截断。
+//
+//	上游响应头里的 Content-Length 已不匹配，须让 Go 按实际 body 重新计算，否则连接被截断。
 func (c *Context) WriteFinal(code int, header http.Header, body []byte) error {
 	if c.done {
 		return errors.New("final response already written")
