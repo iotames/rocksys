@@ -1,9 +1,11 @@
 package conf
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -191,4 +193,248 @@ func TestSetPersistsToConfigFile(t *testing.T) {
 	if !strings.Contains(string(data), ":9090") {
 		t.Errorf("configFile 未持久化 ROCKSYS_LISTEN=:9090:\n%s", data)
 	}
+}
+
+// TestLogConfigParsing 新配置项解析（P2 §2.1）：
+// 默认值 / 环境变量生效 / 非法 MAX_SIZE 回退 50 / 负数回退 50 / 0=不限制。
+func TestLogConfigParsing(t *testing.T) {
+	cleanup(t)
+
+	t.Run("默认值", func(t *testing.T) {
+		mgr, err := Load(nil)
+		if err != nil {
+			t.Fatalf("Load err: %v", err)
+		}
+		cfg := mgr.Current()
+		if cfg.LogToFile {
+			t.Errorf("LogToFile=%v, want false", cfg.LogToFile)
+		}
+		if cfg.LogFile != "logs/rocksys.log" {
+			t.Errorf("LogFile=%q, want logs/rocksys.log", cfg.LogFile)
+		}
+		if cfg.LogMaxSize != 50 {
+			t.Errorf("LogMaxSize=%d, want 50", cfg.LogMaxSize)
+		}
+	})
+
+	t.Run("环境变量生效", func(t *testing.T) {
+		t.Setenv("ROCKSYS_LOG_TO_FILE", "true")
+		t.Setenv("ROCKSYS_LOG_FILE", "/tmp/rocksys-test.log")
+		t.Setenv("ROCKSYS_LOG_MAX_SIZE", "128")
+		mgr, err := Load(nil)
+		if err != nil {
+			t.Fatalf("Load err: %v", err)
+		}
+		cfg := mgr.Current()
+		if !cfg.LogToFile {
+			t.Errorf("LogToFile=false, want true")
+		}
+		if cfg.LogFile != "/tmp/rocksys-test.log" {
+			t.Errorf("LogFile=%q, want /tmp/rocksys-test.log", cfg.LogFile)
+		}
+		if cfg.LogMaxSize != 128 {
+			t.Errorf("LogMaxSize=%d, want 128", cfg.LogMaxSize)
+		}
+	})
+
+	t.Run("MAX_SIZE 非法回退 50", func(t *testing.T) {
+		t.Setenv("ROCKSYS_LOG_MAX_SIZE", "abc")
+		mgr, err := Load(nil)
+		if err != nil {
+			t.Fatalf("Load err: %v", err)
+		}
+		if got := mgr.Current().LogMaxSize; got != 50 {
+			t.Errorf("LogMaxSize=%d, want 50（非法值回退默认）", got)
+		}
+	})
+
+	t.Run("MAX_SIZE 负数回退 50", func(t *testing.T) {
+		t.Setenv("ROCKSYS_LOG_MAX_SIZE", "-10")
+		mgr, err := Load(nil)
+		if err != nil {
+			t.Fatalf("Load err: %v", err)
+		}
+		if got := mgr.Current().LogMaxSize; got != 50 {
+			t.Errorf("LogMaxSize=%d, want 50（负数视为非法回退默认）", got)
+		}
+	})
+
+	t.Run("MAX_SIZE 为 0 不限制", func(t *testing.T) {
+		t.Setenv("ROCKSYS_LOG_MAX_SIZE", "0")
+		mgr, err := Load(nil)
+		if err != nil {
+			t.Fatalf("Load err: %v", err)
+		}
+		if got := mgr.Current().LogMaxSize; got != 0 {
+			t.Errorf("LogMaxSize=%d, want 0（0=不限制）", got)
+		}
+	})
+}
+
+// TestSetSameValueSkipsWrite 值比较防循环（P2 §2.2/§2.3）：
+// 相同值（含 EqualFold 大小写不同）Set 不写盘，.env mtime 不变。
+func TestSetSameValueSkipsWrite(t *testing.T) {
+	cleanup(t)
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	// 先热更一次写盘，确保后续能观测到"跳过写盘"
+	if err := mgr.Set("ROCKSYS_LOG_LEVEL", "debug"); err != nil {
+		t.Fatalf("Set(debug) err: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	fi, err := os.Stat(".env")
+	if err != nil {
+		t.Fatalf("stat .env: %v", err)
+	}
+	before := fi.ModTime().UnixNano()
+
+	time.Sleep(20 * time.Millisecond)
+	// 完全相同值与 EqualFold 相同值都不得触发写盘
+	for _, v := range []string{"debug", "DEBUG"} {
+		if err := mgr.Set("ROCKSYS_LOG_LEVEL", v); err != nil {
+			t.Fatalf("Set(%q) err: %v", v, err)
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	fi, err = os.Stat(".env")
+	if err != nil {
+		t.Fatalf("stat .env: %v", err)
+	}
+	if after := fi.ModTime().UnixNano(); before != after {
+		t.Errorf("相同值 Set 仍触发写盘：mtime %d → %d", before, after)
+	}
+}
+
+// TestSetUnregisteredKeyReturnsNil 未注册 key 直接 return nil（M7 行为变更）：不写盘不广播。
+func TestSetUnregisteredKeyReturnsNil(t *testing.T) {
+	cleanup(t)
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	fi, err := os.Stat(".env")
+	if err != nil {
+		t.Fatalf("stat .env: %v", err)
+	}
+	before := fi.ModTime().UnixNano()
+
+	time.Sleep(20 * time.Millisecond)
+	if err := mgr.Set("ROCKSYS_NOT_EXIST", "x"); err != nil {
+		t.Fatalf("Set(未注册 key) err: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	fi, err = os.Stat(".env")
+	if err != nil {
+		t.Fatalf("stat .env: %v", err)
+	}
+	if after := fi.ModTime().UnixNano(); before != after {
+		t.Errorf("未注册 key Set 仍触发写盘：mtime %d → %d", before, after)
+	}
+	data, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	if strings.Contains(string(data), "ROCKSYS_NOT_EXIST") {
+		t.Errorf(".env 不应出现未注册 key:\n%s", data)
+	}
+}
+
+// TestSyncArgsUpdatesArgs syncArgs 同步命令行参数两种形态：
+// `--name=value` 与 `--name value`；两种形态都不存在的 key 不追加。
+func TestSyncArgsUpdatesArgs(t *testing.T) {
+	cleanup(t)
+	mgr, err := Load([]string{
+		"--log-level=debug",
+		"--admin", "127.0.0.1:19528",
+	})
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	mm, ok := mgr.(*confManager)
+	if !ok {
+		t.Fatalf("mgr 类型 %T，want *confManager", mgr)
+	}
+
+	// 形态1：--ROCKSYS_LOG_LEVEL=debug → 替换为 =warn
+	mm.syncArgs("ROCKSYS_LOG_LEVEL", "warn")
+	found := false
+	for _, a := range mm.args {
+		if a == "--ROCKSYS_LOG_LEVEL=warn" {
+			found = true
+		}
+		if a == "--ROCKSYS_LOG_LEVEL=debug" {
+			t.Errorf("args 中旧值 --ROCKSYS_LOG_LEVEL=debug 未被替换: %v", mm.args)
+		}
+	}
+	if !found {
+		t.Errorf("args 中未找到 --ROCKSYS_LOG_LEVEL=warn: %v", mm.args)
+	}
+
+	// 形态2：--ROCKSYS_ADMIN value → 替换后续元素
+	mm.syncArgs("ROCKSYS_ADMIN", "0.0.0.0:9999")
+	found = false
+	for i, a := range mm.args {
+		if a == "--ROCKSYS_ADMIN" {
+			if i+1 < len(mm.args) && mm.args[i+1] == "0.0.0.0:9999" {
+				found = true
+			}
+		}
+		if a == "127.0.0.1:19528" {
+			t.Errorf("args 中旧值 127.0.0.1:19528 未被替换: %v", mm.args)
+		}
+	}
+	if !found {
+		t.Errorf("args 中未找到 --ROCKSYS_ADMIN 0.0.0.0:9999: %v", mm.args)
+	}
+
+	// 两种形态都不存在：跳过不追加
+	before := len(mm.args)
+	mm.syncArgs("ROCKSYS_UPSTREAM", "http://127.0.0.1:8080")
+	if len(mm.args) != before {
+		t.Errorf("未在 args 中的 key 不应追加：len=%d, want %d", len(mm.args), before)
+	}
+}
+
+// TestConcurrentSetReloadList 并发 Set（POST 热更）+ reloadFilesLocked（watcher 轮询）
+// + List（GET /admin/config/list 常轮询）无数据竞争（P2 §2.6 验收，M2 并发触发用例）。
+func TestConcurrentSetReloadList(t *testing.T) {
+	cleanup(t)
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	mm, ok := mgr.(*confManager)
+	if !ok {
+		t.Fatalf("mgr 类型 %T，want *confManager", mgr)
+	}
+
+	var wg sync.WaitGroup
+	// 并发 Set：不同值触发 SetItemValue + publishLocked + syncArgsLocked + UpdateFile
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = mgr.Set("ROCKSYS_LOG_LEVEL", fmt.Sprintf("level-%d", i))
+		}(i)
+	}
+	// 并发 reloadFiles：watcher 轮询重载
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = mm.reloadFilesLocked()
+		}()
+	}
+	// 并发 List：管理接口常轮询
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = mgr.List()
+		}()
+	}
+	wg.Wait()
 }

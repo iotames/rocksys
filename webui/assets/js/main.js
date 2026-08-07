@@ -15,7 +15,7 @@
   const views = Rock.views;
   const ui = Rock.ui;
 
-  const ROUTES = { overview: 1, components: 1, config: 1, scripts: 1, metrics: 1, logs: 1 };
+  const ROUTES = { overview: 1, components: 1, config: 1, scripts: 1, metrics: 1, logs: 1, syslogs: 1 };
 
   function currentRoute() {
     const h = location.hash.replace(/^#\/?/, '');
@@ -32,7 +32,7 @@
     $$('.menu-item[data-route]').forEach(a => {
       a.classList.toggle('active', a.getAttribute('data-route') === route);
     });
-    const inObs = route === 'metrics' || route === 'logs';
+    const inObs = route === 'metrics' || route === 'logs' || route === 'syslogs';
     const grp = $('#menu-group-obs');
     if (grp) grp.classList.toggle('open', inObs || grp.classList.contains('open'));
   }
@@ -45,6 +45,7 @@
     config:     { fetch: () => views.config.load({}), lazy: true },
     scripts:    { fetch: () => views.scripts.load({}), lazy: true },
     logs:       { fetch: () => views.logs.loadPage({ force: true }), lazy: true },
+    syslogs:    { fetch: () => views.syslogs.load({}), lazy: false },
   };
 
   function refreshPage(route, opts) {
@@ -53,7 +54,13 @@
     return Promise.resolve(p.fetch());
   }
 
+  // 路由切换前的清理钩子：运行日志页离开时关闭 SSE 实时流，避免后台连接泄漏
+  let prevRoute = '';
   function renderPage(route) {
+    if (prevRoute === 'syslogs' && route !== 'syslogs' && views.syslogs) {
+      views.syslogs.leave();
+    }
+    prevRoute = route;
     $$('.page').forEach(sec => sec.classList.add('hidden'));
     const page = $('#page-' + route);
     if (page) page.classList.remove('hidden');
@@ -280,6 +287,17 @@
         views.logs.toggleExpand(key);
         break;
       }
+
+      // ---- 运行日志 ----
+      case 'syslog-toggle-stream':
+        views.syslogs.toggleStream();
+        break;
+      case 'syslog-history':
+        views.syslogs.loadHistory(500);
+        break;
+      case 'syslog-clear':
+        views.syslogs.clearLines();
+        break;
       default:
         break;
     }

@@ -1172,3 +1172,48 @@ b, strong { font-weight: 600; }
 .link-like:hover { text-decoration: underline; }
 
 .updated-mark { font-size: 11px; color: var(--text-2); }
+
+/* ---------- 28. 运行日志页（syslogs） ---------- */
+.syslog-layout { display: flex; gap: 16px; align-items: flex-start; }
+.syslog-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.syslog-side { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px; }
+@media (max-width: 1100px) { .syslog-layout { flex-direction: column; } .syslog-side { width: 100%; } }
+
+.syslog-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.toolbar-spacer { flex: 1; }
+
+.syslog-lines {
+  height: 560px;
+  overflow-y: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.syslog-row { display: flex; gap: 10px; align-items: baseline; white-space: pre-wrap; word-break: break-all; }
+.syslog-row:hover { background: rgba(127, 127, 127, .06); }
+.syslog-time { color: var(--text-2); flex-shrink: 0; }
+.syslog-msg { color: var(--text-1); }
+
+.lvl { display: inline-block; flex-shrink: 0; min-width: 44px; text-align: center; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; }
+.lvl-debug { color: var(--text-2); background: rgba(127, 127, 127, .15); }
+.lvl-info  { color: var(--primary-light); background: rgba(64, 158, 255, .12); }
+.lvl-warn  { color: var(--warn); background: rgba(245, 158, 11, .12); }
+.lvl-error { color: var(--danger-light); background: rgba(239, 68, 68, .12); }
+
+.stream-on { color: var(--ok-light); }
+
+.tag-ok  { color: var(--ok-light); }
+.tag-off { color: var(--text-2); }
+
+.info-grid { display: flex; flex-direction: column; gap: 8px; }
+.info-item { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; font-size: 12.5px; }
+.info-item .k { color: var(--text-2); white-space: nowrap; }
+.info-item .v { text-align: right; word-break: break-all; }
+
+.switch { width: 40px; height: 20px; position: relative; appearance: none; background: rgba(127, 127, 127, .35); border-radius: 10px; outline: none; cursor: pointer; transition: background .2s; margin: 0; }
+.switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .2s; }
+.switch:checked { background: var(--ok-light); }
+.switch:checked::after { left: 22px; }

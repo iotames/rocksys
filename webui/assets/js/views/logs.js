@@ -282,7 +282,7 @@
     if (!logsQuery.toTime) logsQuery.toTime = '23:59';
     host.innerHTML =
       '<div class="page-head">' +
-      '<div><div class="page-title">日志</div><div class="page-desc">按时间范围与路径查看访问日志，定位单个请求</div></div>' +
+      '<div><div class="page-title">访问日志</div><div class="page-desc">按时间范围与路径查看 HTTP 数据请求日志，定位单个请求（与系统运行日志分开）</div></div>' +
       '<button class="btn btn-sm" data-act="logs-reload">⟳ 手动刷新</button>' +
       '</div>' +
       '<div class="card storage-card"><span class="storage-label">存储占用：</span><span id="log-storage">' + storageHTML() + '</span></div>' +

@@ -162,6 +162,13 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodPost, PathLogin, check(s.handleLogin))
 	s.srv.AddHandler(http.MethodPost, PathRegister, check(s.handleRegister))
 	s.srv.AddHandler(http.MethodPost, PathReset, check(s.handleReset))
+	// 进程日志管理端点（§3.1 表）：info/level/output/tail/stream，均走 requireAuth 鉴权。
+	// 命名区分：obs 插件已有 /admin/logs（复数，业务访问日志）；本组为 /admin/log/*（单数，进程日志）。
+	s.srv.AddHandler(http.MethodGet, "/admin/log/info", check(s.handleLogInfo))
+	s.srv.AddHandler(http.MethodPost, "/admin/log/level", check(s.handleLogLevel))
+	s.srv.AddHandler(http.MethodPost, "/admin/log/output", check(s.handleLogOutput))
+	s.srv.AddHandler(http.MethodGet, "/admin/log/tail", check(s.handleLogTail))
+	s.srv.AddHandler(http.MethodGet, "/admin/log/stream", check(s.handleLogStream))
 }
 
 // RegisterWebUI 注册内嵌 WebUI 静态资源（管理控制台）。

@@ -21,9 +21,12 @@
     metrics: null,                 // GET /admin/metrics 最新指标
     metricsError: null,            // 'obs' = 观测未开启
     metricsHistory: [],            // 趋势采样历史 [{t, qps, p50, p95, p99, err}]
-    logs: [],                      // 日志行
+    logs: [],                      // 访问日志行（obs /admin/logs）
     logsLoaded: false,
     logsError: null,
+    syslogInfo: null,              // GET /admin/log/info 运行日志状态
+    syslogInfoError: null,         // 'obs' = 观测未开启；其余为错误消息
+    syslogPageVisible: false,      // 运行日志页是否当前可见（控制 SSE 生命周期）
     unreachable: false,            // 网关是否不可达
     lastUpdated: null,             // 最近一次成功更新时间戳
     // 各页"首次加载失败"标志（无缓存数据时展示错误态，避免永久骨架屏）

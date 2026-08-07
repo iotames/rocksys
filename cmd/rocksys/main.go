@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"log/slog"
 	"os"
@@ -44,6 +45,13 @@ import (
 	_ "github.com/lib/pq"              // 注册 postgres 驱动（DB_DRIVER=postgres）
 	_ "modernc.org/sqlite"
 )
+
+// embedLogTplFS 内嵌 log.tpl（日志输出模板兜底源，作为 hotswap.NewScriptDir 的 embedFS）。
+// ⚠️ //go:embed 只能用于包级 var，不能放函数内局部变量；cmd/rocksys 必须内嵌一份，否则
+// 传 nil fs.FS 给 NewScriptDir 会 panic（模板加载失败回退逻辑只兜 error 不兜 panic）。
+//
+//go:embed log.tpl
+var embedLogTplFS embed.FS
 
 // shutdownTimeout 优雅停机总时限（§7.1 步骤 8）。
 const shutdownTimeout = 30 * time.Second
@@ -130,7 +138,42 @@ func buildServer(args []string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// ── 日志系统装配（docs/log-system-dev.md §2.4/§2.5）────────────────────────────
+	// 时序硬约束：须在首次日志调用（下方 log.Info("rocksys starting")）之前、且早于所有
+	// conf.Register（其 publish 会触发 watcher 回调 → log.GetInfo() → 日志初始化）——
+	// 否则模板加载器注入过晚，外挂 log.tpl 静默失效。
+
+	// 1. 注入模板加载器（外置优先/内嵌兜底）。直接传 NewScriptDir 构造值，不经 GetScriptDir 单例。
+	log.SetTemplateLoader(hotswap.NewScriptDir(embedLogTplFS, "log"))
+
+	// 2. 文件存档（E1/E2）。
+	if cfgMgr.Current().LogToFile {
+		log.SetLogWriterByFile(cfgMgr.Current().LogFile)
+		log.SetMaxSize(cfgMgr.Current().LogMaxSize)
+	}
+
+	// 3. 级别钩子 → 持久化（必须在启动级别之前注册，启动级别变更才会写盘保留）。
+	log.SetOnLevelChange(func(level string) {
+		_ = cfgMgr.Set("ROCKSYS_LOG_LEVEL", level)
+	})
+
+	// 4. 启动级别（★ 替换原 log.SetLevel(slogLevel(...))，不保留两处）。
 	log.SetLevel(slogLevel(cfgMgr.Current().LogLevel))
+
+	// 5. 订阅配置热更（§2.5）：PUT /admin/config 改级别/文件的唯一生效通道（异步秒级内生效）。
+	cfgMgr.Watch(func(cfg *conf.Config) {
+		log.SetLevel(slogLevel(cfg.LogLevel))
+		if cfg.LogToFile && !log.GetInfo().FileOn {
+			log.SetLogWriterByFile(cfg.LogFile)
+			log.SetMaxSize(cfg.LogMaxSize)
+		} else if cfg.LogToFile && log.GetInfo().FileOn {
+			// 文件通道已开：同步 E2 上限热更（否则改 ROCKSYS_LOG_MAX_SIZE 静默无效）。
+			log.SetMaxSize(cfg.LogMaxSize)
+		} else if !cfg.LogToFile && log.GetInfo().FileOn {
+			log.SetFileWriter(false)
+		}
+	})
+
 	log.Info("rocksys starting",
 		"upstream", cfgMgr.Current().DefaultUpstream,
 		"listen", cfgMgr.Current().ListenAddr,

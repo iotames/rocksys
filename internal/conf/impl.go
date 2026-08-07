@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/iotames/easyserver/log"
+
 	"github.com/iotames/easyconf"
 )
 
@@ -34,14 +36,14 @@ const watcherPollInterval = 3 * time.Second
 
 // confManager Manager 接口的默认实现
 type confManager struct {
-	cfg      atomic.Value        // 持有 *Config，并发安全读取
-	ec       *easyconf.Conf      // 底层 easyconf 封装
-	watchers []func(*Config)     // 热更订阅者
-	args     []string            // ★ 保存 Load 时改写后的命令行参数（--ROCKSYS_* 注册名）
-	mu       sync.Mutex          // 保护 watchers / started / cancel / done
-	started  bool                // 轮询是否已启动
-	cancel   context.CancelFunc  // 停止轮询
-	done     chan struct{}       // 轮询 goroutine 退出信号
+	cfg      atomic.Value       // 持有 *Config，并发安全读取
+	ec       *easyconf.Conf     // 底层 easyconf 封装
+	watchers []func(*Config)    // 热更订阅者
+	args     []string           // ★ 保存 Load 时改写后的命令行参数（--ROCKSYS_* 注册名）
+	mu       sync.Mutex         // 保护 watchers / started / cancel / done / m.args / easyconf 项读写
+	started  bool               // 轮询是否已启动
+	cancel   context.CancelFunc // 停止轮询
+	done     chan struct{}      // 轮询 goroutine 退出信号
 
 	// easyconf 绑定的底座指针（重建 Config 时取用）
 	listenAddr      *string
@@ -50,6 +52,9 @@ type confManager struct {
 	configFile      *string
 	adminAddr       *string
 	logLevel        *string
+	logToFile       *bool   // 文件存档开关（E1）
+	logFile         *string // 日志文件路径
+	logMaxSize      *string // 文件大小上限（整数 MB，字符串存储便于校验；E2）
 }
 
 // defaultLoader Load 的默认实现
@@ -73,8 +78,9 @@ func defaultLoader(args []string) (Manager, error) {
 	}
 
 	// 1. ★ 指定 --config 时的优先级修补（命令行 > 环境变量 > ConfigFile > .env）
+	//    装配期单线程，无并发，直接读 *m.configFile 无锁可接受。
 	if *m.configFile != "" {
-		if err := m.reloadFiles(m.watchFiles(), args); err != nil {
+		if err := m.reloadFilesLocked(); err != nil {
 			return nil, err
 		}
 		return m, nil
@@ -83,7 +89,7 @@ func defaultLoader(args []string) (Manager, error) {
 	return m, nil
 }
 
-// bindBaseVars 注册底座 6 个配置项
+// bindBaseVars 注册底座 9 个配置项（6 个既有 + 3 个日志文件项）
 func (m *confManager) bindBaseVars() {
 	m.listenAddr = new(string)
 	m.defaultUpstream = new(string)
@@ -91,6 +97,9 @@ func (m *confManager) bindBaseVars() {
 	m.configFile = new(string)
 	m.adminAddr = new(string)
 	m.logLevel = new(string)
+	m.logToFile = new(bool)
+	m.logFile = new(string)
+	m.logMaxSize = new(string)
 
 	m.ec.StringVar(m.listenAddr, "ROCKSYS_LISTEN", defaultListenAddr, "监听地址")
 	m.ec.StringVar(m.defaultUpstream, "ROCKSYS_UPSTREAM", defaultDefaultUpstream, "默认后端")
@@ -98,6 +107,9 @@ func (m *confManager) bindBaseVars() {
 	m.ec.StringVar(m.configFile, "ROCKSYS_CONFIG", defaultConfigFile, "配置文件路径")
 	m.ec.StringVar(m.adminAddr, "ROCKSYS_ADMIN", defaultAdminAddr, "管理接口地址")
 	m.ec.StringVar(m.logLevel, "ROCKSYS_LOG_LEVEL", defaultLogLevel, "日志级别")
+	m.ec.BoolVar(m.logToFile, "ROCKSYS_LOG_TO_FILE", false, "文件存档（E1）")
+	m.ec.StringVar(m.logFile, "ROCKSYS_LOG_FILE", defaultLogFile, "日志文件路径")
+	m.ec.StringVar(m.logMaxSize, "ROCKSYS_LOG_MAX_SIZE", "50", "文件大小上限（整数 MB，0=不限制；E2）")
 }
 
 // watchFiles 返回热更监听/重载顺序的文件列表（优先级从低到高，configFile 覆盖 .env）
@@ -109,8 +121,20 @@ func (m *confManager) watchFiles() []string {
 	return files
 }
 
-// reloadFiles 重载配置文件列表（从低到高）→ 重放环境变量 → 重放命令行 → 重建并广播
-func (m *confManager) reloadFiles(files []string, args []string) error {
+// reloadFilesLocked 重载配置文件列表（从低到高）→ 重放环境变量 → 重放命令行 → 重建并广播。
+// ★ 本函数整体持 m.mu（调用方不持锁）。args 与 files 均在锁内读取（M4）：
+//
+//	若先快照 args 再释放锁、进入本函数再加锁，conf.Set（更新 args + 写盘）插入两次持锁之间时，
+//	重载会用旧 args 覆盖热更值——内存回退、磁盘已更新、热更静默失败不自愈。
+//
+// ★ 内部 publishLocked 已含 rebuildConfig + cfg.Store + 快照 + go fn(cfg)（M3），
+//
+//	本函数不重复 rebuild/Store。
+func (m *confManager) reloadFilesLocked() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	files := m.watchFiles() // 锁内读 *m.configFile（中-2：锁外读与 Set 写竞争）
+	args := m.args          // 锁内读（M4：与 syncArgsLocked 同锁串行）
 	for _, f := range files {
 		if err := m.ec.SetValuesByEnvFile(f); err != nil {
 			return err
@@ -122,12 +146,28 @@ func (m *confManager) reloadFiles(files []string, args []string) error {
 	for k, v := range parseArgsToMap(args) {
 		_ = m.ec.SetItemValue(k, v)
 	}
-	m.publish()
+	m.publishLocked()
 	return nil
 }
 
-// rebuildConfig 从 easyconf 绑定变量重建 Config（UpstreamTimeout 秒 → Duration 换算）
+// parseLogMaxSizeMB 解析 ROCKSYS_LOG_MAX_SIZE（整数 MB，字符串存储便于校验）为 int64。
+// 空串/解析失败/负数均视为非法，返回 ok=false；合法值 ok=true（0 表示不限制）。
+func parseLogMaxSizeMB(raw string) (int64, bool) {
+	v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// rebuildConfig 从 easyconf 绑定变量重建 Config
+// （UpstreamTimeout 秒 → Duration 换算；ROCKSYS_LOG_MAX_SIZE 解析为整数 MB）。
 func (m *confManager) rebuildConfig() *Config {
+	logMaxSize, ok := parseLogMaxSizeMB(*m.logMaxSize)
+	if !ok {
+		// 防御性兜底：publishLocked 已在重建前把 easyconf 项修正为默认 "50"，正常不会走到
+		logMaxSize = defaultLogMaxSize
+	}
 	return &Config{
 		ListenAddr:      *m.listenAddr,
 		DefaultUpstream: *m.defaultUpstream,
@@ -135,19 +175,41 @@ func (m *confManager) rebuildConfig() *Config {
 		ConfigFile:      *m.configFile,
 		AdminAddr:       *m.adminAddr,
 		LogLevel:        *m.logLevel,
+		LogToFile:       *m.logToFile,
+		LogFile:         *m.logFile,
+		LogMaxSize:      logMaxSize,
 	}
 }
 
-// publish 重建 Config → atomic.Value.Store → 逐个回调 watchers（独立 goroutine）
-func (m *confManager) publish() {
+// publishLocked 无锁内部版（调用方须已持 m.mu）：
+//  1. M5 修正：ROCKSYS_LOG_MAX_SIZE 为非法值（解析失败/负数）时，先将 easyconf 项修正为
+//     默认 "50"（否则后续 conf.Set 的 UpdateFile 会把非法原始串写回 .env）。【修正点：publishLocked 内】
+//  2. cfg := m.rebuildConfig()   // 移入锁内（M1，防与 Set 并发 race）
+//  3. m.cfg.Store(cfg)           // 必须（M3）：否则 Set 热更后 Current() 读到旧配置
+//  4. 快照 watchers（依赖调用方持锁，写 watchers 的 Watch() 同样持 m.mu，读写互斥成立）
+//  5. 逐个 go fn(cfg)            // 回调在独立 goroutine（锁外执行），不二次加锁
+//
+// ⚠️ 本函数不得加任何锁（不持 m.mu，也不二次加锁）。
+func (m *confManager) publishLocked() {
+	if _, ok := parseLogMaxSizeMB(*m.logMaxSize); !ok {
+		log.Warn(fmt.Sprintf("ROCKSYS_LOG_MAX_SIZE(%q) 非法，回退默认 %d", *m.logMaxSize, defaultLogMaxSize))
+		// M5 修正：同步把 easyconf 项修正为默认 "50"（SetItemValue 会更新绑定指针 *m.logMaxSize）
+		_ = m.ec.SetItemValue("ROCKSYS_LOG_MAX_SIZE", strconv.Itoa(defaultLogMaxSize))
+	}
 	cfg := m.rebuildConfig()
 	m.cfg.Store(cfg)
-	m.mu.Lock()
 	watchers := append([]func(*Config){}, m.watchers...)
-	m.mu.Unlock()
 	for _, fn := range watchers {
 		go fn(cfg)
 	}
+}
+
+// publish 加锁公开版：装配期 defaultLoader/Register 调用（L1：装配期无并发，保持加锁版亦可）。
+// 内部加 m.mu.Lock 后调 publishLocked。
+func (m *confManager) publish() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.publishLocked()
 }
 
 // Current 返回当前只读配置（原子读取，无锁）
@@ -208,7 +270,8 @@ func (m *confManager) watchLoop(ctx context.Context, files []string) {
 				}
 			}
 			if changed {
-				_ = m.reloadFiles(files, m.args)
+				// 直接调无锁内部版；args/files 均在 reloadFilesLocked 内持锁读取（消除 TOCTOU）
+				_ = m.reloadFilesLocked()
 			}
 		}
 	}
@@ -255,8 +318,11 @@ func (m *confManager) Register(pval any, name, defval, title string, usage ...st
 		return fmt.Errorf("conf: Register(%s) 不支持类型 %T", name, pval)
 	}
 	// 注册后触发"重载 + 广播"：.env 文件 → 环境变量 → 命令行重放
-	// ★ 优先级必须与 defaultLoader/reloadFiles 一致（命令行 > 环境变量 > .env）：
+	// ★ 优先级必须与 defaultLoader/reloadFilesLocked 一致（命令行 > 环境变量 > .env）：
 	// 先读文件（低优先）、再环境变量（覆盖）、最后命令行（最高）。
+	// ⚠️ 装配期例外（中-6/L1）：Register 仅在 StartWatcher 前的装配期调用，实际无并发，
+	//    故保持无锁直调 SetValuesByEnvFile/SetValuesByEnv/重放 args（与既有行为一致）。
+	//    若未来运行期再注册，须改为持 m.mu（可复用 reloadFilesLocked 的语义）。
 	if err := m.ec.SetValuesByEnvFile(envFile); err != nil {
 		return err
 	}
@@ -266,7 +332,7 @@ func (m *confManager) Register(pval any, name, defval, title string, usage ...st
 	for k, v := range parseArgsToMap(m.args) {
 		_ = m.ec.SetItemValue(k, v)
 	}
-	m.publish()
+	m.publish() // 装配期无并发，加锁公开版可接受（L1）
 	return nil
 }
 
@@ -274,11 +340,33 @@ func (m *confManager) Register(pval any, name, defval, title string, usage ...st
 // ★ 工程化第一原则「热更即持久化」：热更立即生效后，同步写回配置源文件
 // （--config 指定时写 configFile，否则写 .env），保证重启后状态保留。
 // 持久化失败返回 error（此时热更已生效，调用方需知晓持久化未落盘）。
+// ★ 最终时序（§2.3）：整体持 m.mu；currentValue 值比较防循环 → SetItemValue →
+//
+//	publishLocked → syncArgsLocked → watchFiles 取最后文件 UpdateFile 持久化。
+//
+// ⚠️ 防死锁（H1）：已持 m.mu，内部只能调用 publishLocked/syncArgsLocked，
+//
+//	不得调用加锁版 publish()/syncArgs()（同一 goroutine 二次 Lock 永久阻塞）。
 func (m *confManager) Set(name, value string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 防循环：值相同则跳过（不重写配置源、不重复广播）
+	cur, ok := m.currentValue(name)
+	if !ok {
+		// M7 行为变更：未注册 key 直接 return nil（不写盘不广播）
+		return nil
+	}
+	// ⚠️ EqualFold 仅对级别类枚举键（m.isCaseInsensitiveKey）；路径类值（ROCKSYS_LOG_FILE）
+	//    Linux 大小写敏感，不得 EqualFold，否则大小写差异被误判相同而跳过写盘。
+	if (m.isCaseInsensitiveKey(name) && strings.EqualFold(cur, value)) || cur == value {
+		return nil
+	}
 	if err := m.ec.SetItemValue(name, value); err != nil {
 		return err
 	}
-	m.publish()
+	m.publishLocked()             // ★ 无锁内部版（不得调用加锁的 publish()）
+	m.syncArgsLocked(name, value) // ★ 无锁内部版（不得调用加锁的 syncArgs()）
 	files := m.watchFiles()
 	if err := m.ec.UpdateFile(files[len(files)-1]); err != nil {
 		return fmt.Errorf("set %s: 热更已生效，但持久化到配置文件失败: %w", name, err)
@@ -288,7 +376,12 @@ func (m *confManager) Set(name, value string) error {
 
 // List 列出全部已注册配置项元数据（含底座与各挂件）。
 // 跳过注释项（Name 为空）与 Value 为 nil 的异常项，避免序列化 panic。
+// ★ 收口到 m.mu：遍历 GetItems/GetValue 与 Set/reloadFilesLocked 的 easyconf 项读写
+//
+//	互斥，避免与热更/ watcher 轮询并发时构成数据竞争（M2）。
 func (m *confManager) List() []ConfigItem {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	items := m.ec.GetItems()
 	out := make([]ConfigItem, 0, len(items))
 	for _, it := range items {
@@ -305,6 +398,66 @@ func (m *confManager) List() []ConfigItem {
 		out = append(out, item)
 	}
 	return out
+}
+
+// currentValue 读当前注册值。ok=false 表示未注册。
+// ★ easyconf.Conf 无 GetItem(name) 方法，只有 GetItems()；用 GetItems() 遍历匹配 name。
+//
+//	bool/int 项的 GetValue() 返回字符串形态（"true"/"false"），与 Set 入参同为字符串，可直接比较。
+//
+// ★ 调用方须已持 m.mu（避免与 Set/reloadFilesLocked 的 easyconf 项读写并发 race）。
+func (m *confManager) currentValue(name string) (string, bool) {
+	for _, it := range m.ec.GetItems() {
+		if it != nil && it.Name == name && it.Value != nil {
+			return it.GetValue(), true
+		}
+	}
+	return "", false
+}
+
+// isCaseInsensitiveKey 哪些 key 的值比较忽略大小写（级别类枚举）；其余（路径等）精确比较。
+// ⚠️ 仅 ROCKSYS_LOG_LEVEL 用 EqualFold；路径类值（ROCKSYS_LOG_FILE）Linux 上大小写敏感，不得 EqualFold。
+func (m *confManager) isCaseInsensitiveKey(name string) bool {
+	return name == "ROCKSYS_LOG_LEVEL"
+}
+
+// syncArgsLocked 热更写回后同步更新内存命令行参数，避免 watcher 重放旧值覆盖。
+// ★ 仅当 key 原本已存在于 m.args 时才更新其值；否则**不追加**——追加会使后续
+//
+//	用户直接改 .env 的同一 key 永久失效（命令行优先级覆盖，直到重启）。
+//
+// ★ 需同时处理两种形态：`--name=value` 与 `--name value`（空格分隔，见 parseArgsToMap）。
+//
+//	遍历 m.args：命中任一形态则替换为新值；两种形态都不存在则跳过（不追加）。
+//
+// ★ 仅处理两种 value 形态；无值开关型（--name 后直接下一个参数）不在本方案覆盖——
+//
+//	遇到 `--name` 后跟 `--` 开头的参数时跳过。
+//
+// ★ 本函数为「无锁内部版」，调用方须已持 m.mu（由 Set 持有）；禁止自行加锁。
+func (m *confManager) syncArgsLocked(name, value string) {
+	full := "--" + name
+	for i := 0; i < len(m.args); i++ {
+		a := m.args[i]
+		// 形态1：--name=value（含 `--name=` 与任意旧值）
+		if strings.HasPrefix(a, full+"=") {
+			m.args[i] = full + "=" + value
+			continue
+		}
+		// 形态2：--name value（value 不得以 "--" 开头；`--name` 后跟 `--` 开头参数时跳过）
+		if a == full && i+1 < len(m.args) && !strings.HasPrefix(m.args[i+1], "--") {
+			m.args[i+1] = value
+			i++
+			continue
+		}
+	}
+}
+
+// syncArgs 公开入口：加锁后调内部版（供其他路径复用）。
+func (m *confManager) syncArgs(name, value string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syncArgsLocked(name, value)
 }
 
 // mapShortFlags 将 --listen 等短名改写为 --ROCKSYS_* 注册名
