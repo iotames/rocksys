@@ -1651,6 +1651,14 @@ func (o *Obs) Shutdown(ctx context.Context) error
 
 > ★ **与 MiddlewareLifecycle.Stop() 桥接**：`hotswap.MiddlewareLifecycle.Stop() error` 不接收 context，而 `Shutdown` 需要超时控制（flush 缓冲）。obs 应额外暴露 `Stop() error` 方法，内部调用 `Shutdown(context.Background())`。hotswap Disable 流程通过 `MiddlewareLifecycle.Stop()` 优雅 flush（阻塞至 flush 完成）；若需超时，在 obs 内部 `Shutdown` 中自行设置 deadline。
 
+### 写失败重试与告警（P2）
+
+- 底层 `Write` 失败自动重试 1 次（间隔 50ms）；仍失败丢弃该批并告警（`log.Warn`）。
+- 连续失败 ≥10 次告警升级 `log.Error`（提示运维检查 DB 或热切 `OBS_STORE`）；成功写入后计数清零。
+- 队列满丢弃（异步队列 4096 上限）**不计入**连续失败。
+- `/admin/metrics` 暴露 `drop_count`（累计丢弃条数）与 `consecutive_fails`（当前连续失败次数）。
+- 重试次数/间隔/阈值集中为包级常量（`obsRetryTimes`/`obsRetryDelay`/`obsFailThreshold`），禁止魔数散落。
+
 ### 文件管理（file 后端，已弃用）
 
 - 按天切分：`logs/access-2024-01-01.jsonl`（每行一个平铺维度 JSON）
@@ -1662,7 +1670,7 @@ func (o *Obs) Shutdown(ctx context.Context) error
 
 > 以下端点经 `adminapi.RegisterPlugin` 注册（§8.1 插件端点注册机制），由 obs 包提供 handler。
 
-- `GET /admin/metrics` → `{"qps":123.4,"p95_ms":45,"error_rate":0.01}`
+- `GET /admin/metrics` → `{"qps":123.4,"p95_ms":45,"error_rate":0.01,"drop_count":0,"consecutive_fails":0}`（后两字段为 P2 新增）
 - `GET /admin/logs` → 按条件查询访问日志，返回 JSONL（每行一个平铺维度对象）：
   - `from` / `to`：时间范围，`YYYY-MM-DD`（当日全天）或 `YYYY-MM-DDTHH:MM`（精确到分），缺省当天全天
   - `path`：路径精确匹配；`path_like`：路径模糊匹配（包含）

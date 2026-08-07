@@ -32,13 +32,16 @@ func (h *AdminHandler) Metrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := h.obs.Metrics().Snapshot(time.Now())
+	dropCount, consecutiveFails := h.obs.StoreStats()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"qps":        s.QPS,
-		"p95_ms":     s.P95,
-		"p50_ms":     s.P50,
-		"p99_ms":     s.P99,
-		"error_rate": s.ErrorRate,
+		"qps":               s.QPS,
+		"p95_ms":            s.P95,
+		"p50_ms":            s.P50,
+		"p99_ms":            s.P99,
+		"error_rate":        s.ErrorRate,
+		"drop_count":        dropCount,
+		"consecutive_fails": consecutiveFails,
 	})
 }
 

@@ -191,6 +191,12 @@ func (o *Obs) Shutdown(ctx context.Context) error {
 // Metrics 返回指标聚合器（供 admin handler 读取）。
 func (o *Obs) Metrics() *Metrics { return o.metrics }
 
+// StoreStats 返回当前存储后端的丢弃与连续失败计数（admin 观测用）。
+func (o *Obs) StoreStats() (dropCount, consecutiveFails int64) {
+	as := o.sink.Load().(*AsyncStore)
+	return as.DropCount(), as.ConsecutiveFails()
+}
+
 // Query 按条件查询访问日志（转发当前启用的存储后端）。
 func (o *Obs) Query(q Query) ([]map[string]any, error) {
 	return o.sink.Load().(*AsyncStore).Query(q)

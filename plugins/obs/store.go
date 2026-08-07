@@ -50,6 +50,13 @@ type Store interface {
 // asyncCap 异步队列上限，超出降级丢弃（不阻塞请求）。
 const asyncCap = 4096
 
+// obs 底层写失败重试与告警常量（集中定义，禁止魔数散落多处）。
+const (
+	obsRetryTimes    = 1                 // 底层写失败后的重试次数（总尝试 = obsRetryTimes + 1）
+	obsRetryDelay    = 50 * time.Millisecond // 重试间隔
+	obsFailThreshold = 10                // 连续失败阈值：达到后告警升级为 Error
+)
+
 // AsyncStore 通用异步写入包装：为任意 Store 提供"异步排队 + 批量落盘 + 队列满降级"语义。
 // 线程安全：Write/Query 可并发；Replace 原子切换底层后端；Close 后 run 退出（无 goroutine 泄漏）。
 type AsyncStore struct {
@@ -57,6 +64,9 @@ type AsyncStore struct {
 	store   Store
 	pending []*AccessRecord
 	drop    atomic.Int64 // 丢弃计数（告警用）
+
+	// consecutiveFails 连续底层写失败次数（成功清零；队列满丢弃不计入）。
+	consecutiveFails atomic.Int64
 
 	wake   chan struct{}   // 有数据待写信号（cap 1）
 	flush  chan chan error // flush 请求通道
@@ -169,6 +179,37 @@ func (a *AsyncStore) Close() error {
 // DropCount 返回累计丢弃条数（告警观测用）。
 func (a *AsyncStore) DropCount() int64 { return a.drop.Load() }
 
+// ConsecutiveFails 返回当前连续底层写失败次数（告警观测用）。
+func (a *AsyncStore) ConsecutiveFails() int64 { return a.consecutiveFails.Load() }
+
+// writeBatchWithRetry 写一批记录：失败重试 obsRetryTimes 次（间隔 obsRetryDelay）。
+// 成功 → consecutiveFails 清零，返回 nil；
+// 全部失败 → drop 计数累加整批、consecutiveFails+1，达 obsFailThreshold 告警升级
+// log.Error（提示运维检查 DB 或热切 OBS_STORE），否则 log.Warn；返回最终 err。
+// 注意：consecutiveFails 只统计底层 Write 失败；Write 成功后的 s.Flush 失败
+// （当前 FileStore/DBStore Flush 恒返回 nil，实际无影响）不计入。
+func (a *AsyncStore) writeBatchWithRetry(s Store, batch []*AccessRecord) error {
+	var err error
+	for i := 0; i <= obsRetryTimes; i++ {
+		err = s.Write(batch)
+		if err == nil {
+			a.consecutiveFails.Store(0)
+			return nil
+		}
+		if i < obsRetryTimes {
+			time.Sleep(obsRetryDelay)
+		}
+	}
+	fails := a.consecutiveFails.Add(1)
+	a.drop.Add(int64(len(batch)))
+	if fails >= obsFailThreshold {
+		log.Error("obs: 访问日志写入连续失败，请检查数据库或热切 OBS_STORE", "store", s.Name(), "err", err, "consecutive_fails", fails, "drop_count", a.drop.Load())
+	} else {
+		log.Warn("obs: 访问日志写入失败，丢弃该批", "store", s.Name(), "err", err, "consecutive_fails", fails, "drop_count", a.drop.Load())
+	}
+	return err
+}
+
 // run 异步写入循环：唤醒即批量落盘，收到 flush 请求则排空缓冲并冲刷底层，关闭则退出。
 func (a *AsyncStore) run() {
 	for {
@@ -183,7 +224,7 @@ func (a *AsyncStore) run() {
 	}
 }
 
-// writePending 取走全部 pending 并写入底层；失败时整批降级丢弃并告警。
+// writePending 取走全部 pending 并写入底层；失败时经 writeBatchWithRetry 重试/计数/告警。
 func (a *AsyncStore) writePending() {
 	a.mu.Lock()
 	if len(a.pending) == 0 {
@@ -195,10 +236,7 @@ func (a *AsyncStore) writePending() {
 	s := a.store
 	a.mu.Unlock()
 
-	if err := s.Write(batch); err != nil {
-		a.drop.Add(int64(len(batch)))
-		log.Warn("obs: 访问日志写入失败，丢弃该批", "store", s.Name(), "err", err, "drop_count", a.drop.Load())
-	}
+	_ = a.writeBatchWithRetry(s, batch) // 重试/计数/告警已内聚；worker 循环无需感知 err
 }
 
 // flushAll 排空缓冲 → 写底层 → 冲刷底层（供 Flush 调用）。
@@ -213,10 +251,7 @@ func (a *AsyncStore) flushAll() error {
 
 	var err error
 	if len(batch) > 0 {
-		if err = s.Write(batch); err != nil {
-			a.drop.Add(int64(len(batch)))
-			log.Warn("obs: flush 写入失败，丢弃该批", "store", s.Name(), "err", err, "drop_count", a.drop.Load())
-		}
+		err = a.writeBatchWithRetry(s, batch) // 内部已处理 drop 计数与告警，不得重复 drop
 	}
 	if cerr := s.Flush(context.Background()); err == nil {
 		err = cerr
