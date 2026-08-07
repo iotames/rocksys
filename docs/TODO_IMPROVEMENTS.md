@@ -126,7 +126,7 @@ DB 层对 sqlite 自动保证「写等待 5s + WAL 并发读」，从根源消�
 2. 加 `consecutiveFails` 计数与告警升级。
 3. admin 指标暴露。
 4. 单测 + `go test ./...`。
-5. 更新 `docs/log-system.md`（丢弃/失败语义说明）。
+5. 更新 `docs/DEV_HANDBOOK.md`（丢弃/失败语义说明）。
 
 ### 验收标准
 - 模拟 DB 锁定持续：日志先见重试、后见丢弃告警、连续失败升级 Error；请求侧全程正常。
@@ -157,7 +157,7 @@ DB 层对 sqlite 自动保证「写等待 5s + WAL 并发读」，从根源消�
 
 ## 通用要求（每项任务必做）
 - 全部改动后运行 `go test ./...` 与 `go vet ./...`。
-- 同步更新受影响 .md 文档（README.md / docs/DEV_HANDBOOK.md / docs/log-system.md / ARCHITECTURE.md，按任务卡指定）。
+- 同步更新受影响 .md 文档（README.md / docs/DEV_HANDBOOK.md / ARCHITECTURE.md，按任务卡指定）。
 - commit message 用中文，无 AI 协作署名；**commit 前须经用户确认**。
 - 每项完成后回填「完成情况」：验证命令与结果、改动文件清单。
 

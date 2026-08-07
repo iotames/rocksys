@@ -138,7 +138,7 @@ func buildServer(args []string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	// ── 日志系统装配（docs/log-system-dev.md §2.4/§2.5）────────────────────────────
+	// ── 日志系统装配（时序硬约束）──────────────────────────────────────
 	// 时序硬约束：须在首次日志调用（下方 log.Info("rocksys starting")）之前、且早于所有
 	// conf.Register（其 publish 会触发 watcher 回调 → log.GetInfo() → 日志初始化）——
 	// 否则模板加载器注入过晚，外挂 log.tpl 静默失效。

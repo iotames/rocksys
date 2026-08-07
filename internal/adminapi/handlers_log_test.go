@@ -1,4 +1,4 @@
-// P3 验收测试（docs/log-system-dev.md §3.5）：/admin/log/* 端点鉴权 401、
+// /admin/log/* 端点验收测试：鉴权 401、
 // 级别/文件通道热切、tail 增量与 reset、SSE 实时推送与断连无泄漏。
 package adminapi
 
@@ -418,6 +418,49 @@ func TestHandleLogStream(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body(), "data: ") {
 		t.Fatalf("缺少 data: 帧: %q", rec.Body())
+	}
+
+	// 客户端断开 → goroutine 退出（无泄漏）。
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("取消后 SSE goroutine 未退出（存在泄漏）")
+	}
+}
+
+// TestHandleLogStreamHeartbeat SSE 心跳帧断言：
+// 无新日志时每 500ms 发送注释行 `: ping`（防代理空闲断开），不依赖是否有日志。
+func TestHandleLogStreamHeartbeat(t *testing.T) {
+	s := New("127.0.0.1:19527", nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/admin/log/stream", nil).WithContext(ctx)
+	rec := &syncRecorder{rec: httptest.NewRecorder(), notify: make(chan struct{})}
+	hctx := httpsvr.Context{Writer: rec, Request: req}
+
+	done := make(chan struct{})
+	go func() {
+		s.handleLogStream(hctx)
+		close(done)
+	}()
+
+	// 等待连接建立（首帧已发）后，不写任何日志，只等心跳帧。
+	select {
+	case <-rec.notify:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSE 连接未建立（未收到首帧）")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(rec.Body(), ": ping") {
+		if time.Now().After(deadline) {
+			t.Fatalf("3s 内未收到心跳帧 `: ping`，body=%q", rec.Body())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if strings.Contains(rec.Body(), "data: ") {
+		t.Fatalf("无日志输入时不应出现 data 帧，body=%q", rec.Body())
 	}
 
 	// 客户端断开 → goroutine 退出（无泄漏）。

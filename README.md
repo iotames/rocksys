@@ -404,7 +404,6 @@ sudo systemctl restart rocksys
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构 | 设计底座：转发链、三层时间戳、降级链、红线 |
 | [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) | 开发者 | 目录结构、模块关系、热运维引擎 |
 | [docs/DEV_HANDBOOK.md](docs/DEV_HANDBOOK.md) | AI/实现 | 详细技术规格，供对照实现 |
-| [docs/log-system.md](docs/log-system.md) | 方案 | 极简增强式日志系统设计：ERROR 基座 + 可选增强热插拔 |
 
 ---
 

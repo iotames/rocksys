@@ -1,4 +1,4 @@
-// Copyright © 进程日志管理端点（规格 docs/log-system-dev.md §3.1~§3.4）。
+// Copyright © 进程日志管理端点。
 //
 // 提供 5 个 /admin/log/* 端点：info（状态）/level（级别热切）/output（文件通道热切）/
 // tail（HTTP 轮询）/stream（SSE 实时推送），全部走现有 requireAuth 鉴权。
@@ -163,11 +163,13 @@ func (s *AdminServer) handleLogStream(ctx httpsvr.Context) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	fl.Flush()
 
 	// 从最新开始：用 GetInfo().RingTotal 作为起始游标——Tail(since>=total) 返回 EOF，
 	// 后续轮询只取新日志；切勿用 math.MaxInt64（恒 EOF 导致一行都不推）。
+	// ★ 先取 since 快照再 Flush：SSE 测试以首次 Flush 为「连接已建立」信号，
+	//   notify 关闭时 since 已确定，测试在 notify 后写日志不会漏推（避免快照竞态）。
 	since := log.GetInfo().RingTotal
+	fl.Flush()
 	for {
 		res := log.Tail(100, since)
 		// ★ 无条件推进游标：Tail 在 since 已被覆盖时返回 Reset=true 且 Lines 为空，
