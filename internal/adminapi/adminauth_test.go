@@ -202,6 +202,25 @@ func TestStaticTokenDualTrack(t *testing.T) {
 	if s.auth.check(ctx) {
 		t.Fatal("错误静态 token 不应通过鉴权")
 	}
+	if ctx.Writer.(*httptest.ResponseRecorder).Code != http.StatusUnauthorized {
+		t.Fatalf("错误静态 token 应 401, got %d", ctx.Writer.(*httptest.ResponseRecorder).Code)
+	}
+
+	// 已初始化（注册用户并登录获取 JWT），配置静态 token 后携带 JWT 访问受保护接口 → 仍放行（双轨并行）
+	regCtx := newCtx(http.MethodPost, PathRegister, `{"username":"admin","password":"Admin@12345"}`)
+	s.handleRegister(regCtx)
+	loginCtx := newCtx(http.MethodPost, PathLogin, `{"username":"admin","password":"Admin@12345"}`)
+	s.handleLogin(loginCtx)
+	loginOut := jsonBody(t, loginCtx)
+	jwt, _ := loginOut["token"].(string)
+	if jwt == "" {
+		t.Fatalf("登录未返回 JWT: %v", loginOut)
+	}
+	ctx = newCtx(http.MethodGet, PathSwitchList, "")
+	ctx.Request.Header.Set(authorizationHeader, bearerPrefix+jwt)
+	if !s.auth.check(ctx) {
+		t.Fatal("配置静态 token 后携带有效 JWT 应通过鉴权（双轨并行）")
+	}
 }
 
 func TestLoopbackTrust(t *testing.T) {
@@ -216,5 +235,13 @@ func TestLoopbackTrust(t *testing.T) {
 	ctx := newCtx(http.MethodGet, PathSwitchList, "")
 	if !s.auth.check(ctx) {
 		t.Fatal("回环地址免登录应放行")
+	}
+
+	// 回环地址 + 配置静态 token → 仍免登录放行（回环永远免鉴权）
+	static := "static-secret"
+	s.auth.token = &static
+	ctx = newCtx(http.MethodGet, PathSwitchList, "")
+	if !s.auth.check(ctx) {
+		t.Fatal("配置静态 token 后回环地址仍应免鉴权放行")
 	}
 }

@@ -260,9 +260,9 @@ func TestRequireAuth(t *testing.T) {
 		t.Fatal("未设置 token 时不应拦截请求")
 	}
 
-	// 设置 token：无 Authorization → 401
+	// 设置 token（非回环地址）：无 Authorization → 401
 	token := "secret"
-	s2 := New("127.0.0.1:19527", nil, nil, nil)
+	s2 := New("0.0.0.0:19527", nil, nil, nil)
 	s2.auth.token = &token
 	require2 := s2.requireAuth()
 	called = false

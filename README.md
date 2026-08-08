@@ -108,7 +108,7 @@ make cross-build
 浏览器访问 **`http://127.0.0.1:19527/`**（即 `--admin` 指定的地址）即打开图形化管理控制台（默认仅监听回环地址）。
 
 首次使用：
-1. 若启动了管理接口令牌（`ROCKSYS_ADMIN_TOKEN`），点击顶部工具条「访问凭证」输入令牌并保存。
+1. 默认监听回环地址，本机访问免登录。
 2. 默认落地「概览」页：查看网关状态、运行指标、降级链与组件总览。
 
 ### 4. 验证代理
@@ -251,10 +251,11 @@ SQL_DIR = sql
 ```bash
 export ROCKSYS_ADMIN_TOKEN=your-secret
 ./bin/rocksys --upstream http://127.0.0.1:9000
-# 此后所有管理操作（curl / rockctl / WebUI）需带请求头 Authorization: Bearer your-secret
+# 静态令牌仅供管理接口绑定非回环地址（远程部署）时使用：curl / rockctl 请求需带请求头 Authorization: Bearer your-secret；
+# 回环地址本机访问免鉴权
 ```
 
-> `ROCKSYS_ADMIN_TOKEN` 经配置中心注册（同 `bin/.env`/环境变量/命令行取值链），热更立即生效；也可在 WebUI「配置」页查看/修改。
+> `ROCKSYS_ADMIN_TOKEN` 经配置中心注册（同 `bin/.env`/环境变量/命令行取值链），热更立即生效；也可在 WebUI「配置」页查看/修改；仅非回环部署生效，令牌无过期与轮换机制，配置者须自行定期轮换。
 
 ---
 
@@ -268,7 +269,7 @@ export ROCKSYS_ADMIN_TOKEN=your-secret
 # 构建 rockctl
 go build -o bin/rockctl ./cmd/rockctl
 
-# 默认连 127.0.0.1:19527；远程可 --admin 指定；令牌经环境变量 ROCKSYS_ADMIN_TOKEN
+# 默认连 127.0.0.1:19527；远程可 --admin 指定；令牌经环境变量 ROCKSYS_ADMIN_TOKEN（仅管理接口绑定非回环地址时使用）
 rockctl switch list                # 列出组件状态
 rockctl switch on shield           # 开启防护
 rockctl switch off dispatch        # 关闭路由（回退默认后端）
@@ -335,7 +336,7 @@ sudo systemctl enable --now rocksys
 
 1. **管理接口仅监听回环**（默认 `127.0.0.1:19527`），严禁 `ROCKSYS_ADMIN` 设为 `0.0.0.0` 暴露外网。
 2. 远程管理用 SSH 隧道：`ssh -L 19527:127.0.0.1:19527 user@host` 后浏览器访问 `http://127.0.0.1:19527/`。
-3. 设置 `ROCKSYS_ADMIN_TOKEN`，避免回环端口被本机其他进程访问。
+3. 回环地址本机免鉴权；静态 token（`ROCKSYS_ADMIN_TOKEN`）仅用于非回环部署的远程调用鉴权。
 4. 对外暴露的监听端口建议置于防火墙 / 安全组之后。
 
 ### 升级与优雅重启

@@ -1,7 +1,7 @@
 /* ==========================================================================
  * RockSys 管理控制台 - ui.js UI 基础设施
- * Toast、二次确认弹窗、通用模态、骨架屏、状态色点、网关可达性横幅、
- * 访问凭证设置弹窗。依赖 Rock.util / Rock.state（运行时访问）。
+ * Toast、二次确认弹窗、通用模态、骨架屏、状态色点、网关可达性横幅。
+ * 依赖 Rock.util / Rock.state（运行时访问）。
  * 挂载到全局命名空间 window.Rock.ui。
  * ========================================================================== */
 (function () {
@@ -13,15 +13,6 @@
   const esc = Rock.util.esc;
   const fmtTime = Rock.util.fmtTime;
   const fmtDateTime = Rock.util.fmtDateTime;
-
-  // 401 弹窗防重入标志
-  let tokenDialogOpen = false;
-  // 凭证保存/清除后的回调（由 main.js 注入：刷新当前页）
-  let tokenSavedHandler = function () {};
-
-  function setTokenSavedHandler(fn) {
-    tokenSavedHandler = fn || function () {};
-  }
 
   // 右上角消息提示（成功 / 失败 / 警告 / 信息）
   function toast(message, type, duration) {
@@ -149,63 +140,7 @@
       Rock.auth.showAuth();
       Rock.auth.showPanel('login');
       Rock.auth.setError('访问凭证无效或已过期，请重新登录');
-    } else if (!tokenDialogOpen) {
-      openTokenDialog('访问凭证无效或已过期，请重新输入。');
     }
-  }
-
-  // 访问凭证设置弹窗（保存/清除后调用 tokenSavedHandler 刷新当前页）
-  function openTokenDialog(hint) {
-    if (tokenDialogOpen) return;
-    tokenDialogOpen = true;
-    const current = Rock.api.getToken();
-    const overlay = openModal({
-      title: '访问凭证设置',
-      width: 460,
-      body:
-        (hint ? '<div class="alert alert-warning">' + esc(hint) + '</div>' :
-          '<div class="form-hint">若网关设置了访问令牌，在此输入后保存，之后所有操作自动携带，无需重复填写。凭证仅保存在本机浏览器。</div>') +
-        '<div class="form-row" style="margin-top:12px">' +
-        '<label class="form-label">访问令牌（Token）</label>' +
-        '<div class="input-affix">' +
-        '<input type="password" id="token-input" class="input" placeholder="请输入访问令牌" value="' + esc(current) + '" autocomplete="off">' +
-        '<button class="btn btn-sm" id="token-eye">显示</button>' +
-        '</div></div>',
-      footer:
-        (current ? '<button class="btn btn-danger" id="token-clear">清除凭证</button>' : '') +
-        '<button class="btn" data-modal-act="cancel">取消</button>' +
-        '<button class="btn btn-primary" id="token-save">保存</button>',
-    });
-    const input = $('#token-input');
-    const eye = $('#token-eye');
-    eye.addEventListener('click', () => {
-      const show = input.type === 'password';
-      input.type = show ? 'text' : 'password';
-      eye.textContent = show ? '隐藏' : '显示';
-    });
-    const saveBtn = $('#token-save');
-    saveBtn.addEventListener('click', () => {
-      const v = input.value.trim();
-      if (!v) { toast('请输入访问令牌', 'warning'); return; }
-      Rock.api.setToken(v);
-      overlay.remove();
-      tokenDialogOpen = false;
-      toast('访问凭证已保存，后续请求自动携带', 'success');
-      tokenSavedHandler();
-    });
-    const clearBtn = $('#token-clear');
-    if (clearBtn) {
-      clearBtn.addEventListener('click', () => {
-        Rock.api.setToken('');
-        overlay.remove();
-        tokenDialogOpen = false;
-        toast('访问凭证已清除', 'info');
-        tokenSavedHandler();
-      });
-    }
-    // 弹窗关闭时复位标志
-    const orig = overlay.remove.bind(overlay);
-    overlay.remove = function () { tokenDialogOpen = false; orig(); };
   }
 
   window.Rock.ui = {
@@ -216,7 +151,5 @@
     markUnreachable,
     noteUpdated,
     onUnauthorized,
-    openTokenDialog,
-    setTokenSavedHandler,
   };
 })();

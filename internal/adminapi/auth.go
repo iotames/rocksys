@@ -1,10 +1,11 @@
-// Copyright © 管理接口鉴权器：回环信任 + 静态 token 双轨 + 登录 JWT。
+// Copyright © 管理接口鉴权器：回环信任 + 静态 token 与登录 JWT 双轨并行。
 //
-// 鉴权策略（优先级从高到低）：
-//  1. 回环信任：绑定 127.0.0.1/localhost 且未配置静态 token 时放行（本机免登录）；
+// 鉴权策略：
+//  1. 回环信任：绑定 127.0.0.1/localhost → 本机免登录（无论是否配置静态 token）；
 //  2. 公开路径：/admin/auth/status|login|register|reset 免鉴权（handler 内部校验前置条件）；
 //  3. 静态预共享 token（ROCKSYS_ADMIN_TOKEN，供 rockctl/脚本使用）；
-//  4. 已初始化 → 校验登录 JWT；未初始化 → 拒绝（仅注册引导可用）。
+//  4. 登录 JWT（已初始化时校验）；
+//  非回环地址下静态 token 与 JWT 双轨并行，任一通过即放行；未初始化且无静态 token → 拒绝（仅注册引导可用）。
 package adminapi
 
 import (
@@ -67,7 +68,7 @@ func newAdminAuth(confMgr conf.Manager, initialized *bool, jwtSecret, token *str
 
 // check 校验请求是否通过鉴权。返回 false 表示已写 401 拒绝响应。
 func (a *adminAuth) check(ctx httpsvr.Context) bool {
-	// 回环信任：本机免登录（未配置静态 token 时）
+	// 回环信任：本机免登录（回环地址始终免鉴权）
 	if !a.authRequired() {
 		return true
 	}
@@ -75,14 +76,11 @@ func (a *adminAuth) check(ctx httpsvr.Context) bool {
 	if isPublicAdminPath(ctx.Request.URL.Path) {
 		return true
 	}
-	// 静态预共享 token（ROCKSYS_ADMIN_TOKEN，rockctl/脚本用；经配置中心注册，可热更）
-	if tok := a.staticToken(); tok != "" {
-		if !secureCompare(bearerToken(ctx.Request), tok) {
-			return a.writeUnauthorized(ctx)
-		}
+	// 静态预共享 token（ROCKSYS_ADMIN_TOKEN，供 rockctl/脚本用）——与登录 JWT 双轨并行
+	if tok := a.staticToken(); tok != "" && secureCompare(bearerToken(ctx.Request), tok) {
 		return true
 	}
-	// 已初始化：校验登录 JWT
+	// 登录 JWT：已初始化（存在管理员）时校验
 	if a.hasUser() {
 		token := bearerToken(ctx.Request)
 		if token == "" {
@@ -93,15 +91,13 @@ func (a *adminAuth) check(ctx httpsvr.Context) bool {
 		}
 		return true
 	}
-	// 未初始化：拒绝（仅公开路径可用）
+	// 未初始化且无静态 token：拒绝（仅公开路径可用）
 	return a.writeUnauthorized(ctx)
 }
 
-// authRequired 返回当前是否需要登录：绑定非回环地址 或 配置了静态 token。
+// authRequired 返回当前是否需要鉴权：仅非回环监听地址需要。
+// 回环地址（127.0.0.1/localhost）视为本机信任，始终免鉴权（无论是否配置静态 token）。
 func (a *adminAuth) authRequired() bool {
-	if a.staticToken() != "" {
-		return true
-	}
 	addr := a.addrFallback
 	if a.confMgr != nil {
 		addr = a.confMgr.Current().AdminAddr

@@ -91,7 +91,7 @@ func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *ea
 		}
 		s.jwtSecret = &jwtSecret
 		var adminToken string
-		if err := confMgr.Register(&adminToken, "ROCKSYS_ADMIN_TOKEN", "", "管理接口静态预共享令牌（供 rockctl/脚本使用；配置后即使回环地址也需 Bearer 鉴权）"); err != nil {
+		if err := confMgr.Register(&adminToken, "ROCKSYS_ADMIN_TOKEN", "", "管理接口静态预共享令牌（供 rockctl/脚本调用；仅非回环部署生效，回环地址本机免鉴权；令牌无过期与轮换机制，配置者须妥善保管并自行定期轮换）"); err != nil {
 			panic(err)
 		}
 		s.adminToken = &adminToken
@@ -233,7 +233,7 @@ func contentTypeByExt(path string) string {
 }
 
 // requireAuth 返回构造时的鉴权包装器（§8.3/§8.4）。
-// 委托 adminAuth.check 完成：回环信任 → 公开路径豁免 → 静态 token → 登录 JWT。
+// 委托 adminAuth.check 完成：回环信任 → 公开路径豁免 → 静态 token / 登录 JWT（双轨并行，任一通过即放行）。
 func (s *AdminServer) requireAuth() func(func(httpsvr.Context)) func(httpsvr.Context) {
 	return func(next func(httpsvr.Context)) func(httpsvr.Context) {
 		return func(ctx httpsvr.Context) {

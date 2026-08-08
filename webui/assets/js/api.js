@@ -53,7 +53,7 @@
     return res.then(async r => {
       if (r.status === 401) {
         // 凭证失效：优先取后端错误信息（如登录密码错误），否则通用提示
-        let msg = '未授权：访问凭证无效或已过期，请重新输入';
+        let msg = '未授权：登录已失效，请重新登录';
         try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (e) { /* 非 JSON 响应 */ }
         Rock.ui.onUnauthorized();
         throw new ApiError(msg, 401);

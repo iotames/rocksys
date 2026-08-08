@@ -1,6 +1,6 @@
 /* ==========================================================================
  * RockSys 管理控制台 - main.js 入口
- * 路由与视图切换、侧边栏高亮、顶部工具条（访问凭证 / 自动刷新 / 手动刷新）、
+ * 路由与视图切换、侧边栏高亮、顶部工具条（自动刷新 / 手动刷新）、
  * 全局事件委托（click / change）、初始化。最后加载，依赖全部模块。
  * 挂载到全局命名空间 window.Rock.main。
  * ========================================================================== */
@@ -13,7 +13,6 @@
   const $$ = Rock.util.$$;
   const store = Rock.state.store;
   const views = Rock.views;
-  const ui = Rock.ui;
 
   const ROUTES = { overview: 1, components: 1, config: 1, scripts: 1, metrics: 1, logs: 1, syslogs: 1 };
 
@@ -84,7 +83,6 @@
 
   // 顶部工具条
   function bindToolbar() {
-    $('#btn-token').addEventListener('click', () => ui.openTokenDialog(''));
     $('#auto-refresh').addEventListener('change', restartAutoRefresh);
     $('#btn-refresh').addEventListener('click', manualRefresh);
   }
@@ -148,11 +146,6 @@
       if (currentRoute() === 'metrics') views.metrics.drawChart();
     }, 200));
   }
-
-  // 注入：访问凭证保存/清除后刷新当前页
-  ui.setTokenSavedHandler(function () {
-    refreshPage(currentRoute(), { manual: true });
-  });
 
   // ======== 全局 tooltip 委托（[data-tip]：跟随鼠标、视口内自动翻转，防溢出） ========
   let tipEl = null;

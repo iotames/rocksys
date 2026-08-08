@@ -1160,12 +1160,11 @@ rockctl script rollback     → POST /admin/script/rollback
 
 ### 8.3 鉴权
 
-管理接口鉴权由 `adminapi.adminAuth` 统一完成，策略优先级从高到低：
+管理接口鉴权由 `adminapi.adminAuth` 统一完成，策略：
 
-1. **回环信任**：绑定 `127.0.0.1`/`localhost` 且未配置静态 token 时，本机免登录放行。
+1. **回环信任**：绑定 `127.0.0.1`/`localhost` 时，本机访问一律免登录放行（无论是否配置静态 token）。
 2. **公开路径**：`/admin/auth/status|login|register|reset` 免鉴权（前置条件由各 handler 校验）。
-3. **静态预共享 token**：`ROCKSYS_ADMIN_TOKEN` 环境变量 → 请求头 `Authorization: Bearer <token>` 校验（供 rockctl/脚本使用，双轨兼容）。
-4. **登录 JWT**：已初始化（存在管理员）时校验登录签发的 JWT；未初始化时拒绝（仅注册引导可用）。
+3. **静态预共享 token / 登录 JWT（双轨并行）**：非回环地址（远程部署）下，`ROCKSYS_ADMIN_TOKEN`（请求头 `Authorization: Bearer <token>`，供 rockctl/脚本使用）或登录签发的 JWT 任一通过即放行；未初始化（无用户）且未配置静态 token 时拒绝。
 
 > `ROCKSYS_ADMIN_TOKEN` 经配置中心注册（`conf.Manager.Register`），取值链与其他配置项一致：`bin/.env` → 环境变量 → 命令行 → 代码默认值（空）；热更立即生效。
 
@@ -1198,7 +1197,7 @@ rockctl script rollback     → POST /admin/script/rollback
 | --- | --- | --- |
 | `ADMIN_INITIALIZED` | `false` | 是否已初始化超级管理员；忘记密码时运维手动改 `false` 触发重置 |
 | `ADMIN_JWT_SECRET` | 空 | 登录 JWT 签名密钥；为空时进程内随机（重启后需重新登录），可配置固定值保证跨重启有效 |
-| `ROCKSYS_ADMIN_TOKEN` | 空 | 管理接口静态预共享令牌（供 rockctl/脚本使用；配置后即使回环地址也需 Bearer 鉴权），可热更 |
+| `ROCKSYS_ADMIN_TOKEN` | 空 | 管理接口静态预共享令牌（供 rockctl/脚本调用；仅非回环部署生效，回环地址本机免鉴权；令牌无过期与轮换机制，配置者须妥善保管并自行定期轮换），可热更 |
 
 ### 8.5 验收
 

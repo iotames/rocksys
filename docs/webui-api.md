@@ -13,10 +13,10 @@
 | 协议 | HTTP，仅回环监听 |
 | 请求体 | `Content-Type: application/json`（GET 无请求体） |
 | 响应体 | 均为 JSON（日志接口除外，见 §3.8） |
-| 鉴权 | 三级：① 回环地址（127.0.0.1）且未配置静态 token → 免登录；② 配置了 `ROCKSYS_ADMIN_TOKEN` → 请求头 `Authorization: Bearer <token>`；③ 已初始化 → 登录签发的 JWT（`Authorization: Bearer <token>`） |
+| 鉴权 | 回环地址（127.0.0.1）免鉴权；非回环地址需鉴权：① 静态预共享 token（`ROCKSYS_ADMIN_TOKEN`，供 rockctl/脚本）→ `Authorization: Bearer <token>`；② 登录 JWT（`Authorization: Bearer <token>`），两者任一通过即放行 |
 | 鉴权失败 | `401`，响应体 JSON `{"ok":false,"error":"<原因>"}`（认证端点）或文本 `unauthorized`（其余端点） |
 | 写操作响应 | 统一 `{"ok":true}` 或 `{"ok":false,"error":"<原因>"}` |
-| 前端访问凭证 | 登录成功后 JWT 存浏览器本地；每次请求带 `Authorization` 头；收到 401 时跳转登录视图 |
+| 前端访问凭证 | 账号密码登录后 JWT 存浏览器本地；每次请求自动带 `Authorization` 头；收到 401 时跳转登录视图 |
 
 ---
 
@@ -365,7 +365,7 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `auth_required` | bool | 是否需要登录（绑定非回环地址或有静态 token） |
+| `auth_required` | bool | 是否需要登录（仅绑定非回环地址时为 true；回环地址始终免鉴权） |
 | `has_user` | bool | 是否已注册超级管理员 |
 | `username` | string | 已有管理员用户名（未注册时为空） |
 | `setup_mode` | bool | 是否处于重置模式（`ADMIN_INITIALIZED=false` 且已有用户） |
@@ -427,5 +427,6 @@
 | 版本 | 时间 | 变更 |
 |------|------|------|
 | 1.0 | 2026-08-04 | 初稿：覆盖 11 个端点，含新增 `GET /admin/config/list`、`GET /admin/script/list`（用于 WebUI 配置分组与脚本版本历史） |
+| 1.1 | 2026-08-08 | 鉴权行为更新：回环地址一律免鉴权；非回环地址下静态预共享 token（`ROCKSYS_ADMIN_TOKEN`）与登录 JWT 双轨并行、任一通过即放行；WebUI 移除手动输入「访问凭证」，统一账号密码登录 |
 
 > 契约原则：只增不改删；新增字段不影响旧字段语义。
