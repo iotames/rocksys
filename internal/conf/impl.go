@@ -28,8 +28,17 @@ var shortFlagMap = map[string]string{
 	"--log-level": "--ROCKSYS_LOG_LEVEL",
 }
 
-// envFile 默认始终监听的配置文件（不存在时 easyconf 自动创建）
+// envFile 默认始终监听的配置文件（不存在时 easyconf 自动创建）。
+// ★ 相对当前工作目录解析，不写死绝对/固定前缀路径：程序在哪个目录运行，运行时文件就落在哪个目录。
+//   开发规范要求工作目录为 bin/（make run 已 `cd bin`），故实际生成 bin/.env；禁止在项目根目录运行程序。
 const envFile = ".env"
+
+// defaultEnvFile 全量默认值快照文件：装配完成后同步所有已注册项默认值（代表代码真实兜底行为）。该文件为 easyconf 配置文件列表成员，参与取值（最低优先级兜底）。
+// 同样相对工作目录（开发规范下为 bin/default.env）。
+const defaultEnvFile = "default.env"
+
+// DefaultEnvPath 返回 default.env 全量默认值快照路径（相对工作目录，供 make gen-env 打印）。
+func DefaultEnvPath() string { return defaultEnvFile }
 
 // watcherPollInterval 热更轮询间隔
 const watcherPollInterval = 3 * time.Second
@@ -65,19 +74,21 @@ func defaultLoader(args []string) (Manager, error) {
 	// ★ 重置全局 flag 集，避免多进程内多次 Load 重复注册 panic
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
-	ec := easyconf.NewConf(envFile, "default.env")
+	// 配置文件为相对工作目录路径（.env / default.env），由 easyconf 自动创建。
+	// ★ 开发规范：必须在 bin/ 目录运行程序（make run 已 `cd bin`），运行时文件跟随工作目录落在 bin/ 下。
+	ec := easyconf.NewConf(envFile, defaultEnvFile)
 	m := &confManager{
 		ec:   ec,
 		args: args,
 	}
 	m.bindBaseVars()
 
-	// Parse(true) 启用 flag 解析 → 三级优先级：命令行 > 环境变量 > .env文件
+	// Parse(true) 启用 flag 解析 → 三级优先级：命令行 > 环境变量 > 配置文件（.env 覆盖 default.env）
 	if err := ec.Parse(true); err != nil {
 		return nil, err
 	}
 
-	// 1. ★ 指定 --config 时的优先级修补（命令行 > 环境变量 > ConfigFile > .env）
+	// 1. ★ 指定 --config 时的优先级修补（命令行 > 环境变量 > ConfigFile > 工作目录 .env）
 	//    装配期单线程，无并发，直接读 *m.configFile 无锁可接受。
 	if *m.configFile != "" {
 		if err := m.reloadFilesLocked(); err != nil {
@@ -112,7 +123,7 @@ func (m *confManager) bindBaseVars() {
 	m.ec.StringVar(m.logMaxSize, "ROCKSYS_LOG_MAX_SIZE", "50", "文件大小上限（整数 MB，0=不限制；E2）")
 }
 
-// watchFiles 返回热更监听/重载顺序的文件列表（优先级从低到高，configFile 覆盖 .env）
+// watchFiles 返回热更监听/重载顺序的文件列表（优先级从低到高，configFile 覆盖工作目录 .env）
 func (m *confManager) watchFiles() []string {
 	files := []string{envFile}
 	if cf := *m.configFile; cf != "" && cf != envFile {
@@ -183,7 +194,7 @@ func (m *confManager) rebuildConfig() *Config {
 
 // publishLocked 无锁内部版（调用方须已持 m.mu）：
 //  1. M5 修正：ROCKSYS_LOG_MAX_SIZE 为非法值（解析失败/负数）时，先将 easyconf 项修正为
-//     默认 "50"（否则后续 conf.Set 的 UpdateFile 会把非法原始串写回 .env）。【修正点：publishLocked 内】
+//     默认 "50"（否则后续 conf.Set 的 UpdateFile 会把非法原始串写回工作目录 .env）。【修正点：publishLocked 内】
 //  2. cfg := m.rebuildConfig()   // 移入锁内（M1，防与 Set 并发 race）
 //  3. m.cfg.Store(cfg)           // 必须（M3）：否则 Set 热更后 Current() 读到旧配置
 //  4. 快照 watchers（依赖调用方持锁，写 watchers 的 Watch() 同样持 m.mu，读写互斥成立）
@@ -232,7 +243,7 @@ func (m *confManager) Watch(fn func(*Config)) {
 }
 
 // StartWatcher 启动配置文件 mtime 轮询
-// 默认始终监听 .env；当 ConfigFile 非空时额外监听该文件
+// 默认始终监听工作目录 .env（开发规范下即 bin/.env）；当 ConfigFile 非空时额外监听该文件
 func (m *confManager) StartWatcher() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -297,7 +308,7 @@ func (m *confManager) Shutdown(ctx context.Context) error {
 }
 
 // Register 挂件配置项注册（name 即环境变量名）
-// 注册后触发一次"重载 + 广播"，保证挂件项能从环境变量/.env/命令行读入
+// 注册后触发一次"重载 + 广播"，保证挂件项能从环境变量/工作目录 .env/命令行读入
 func (m *confManager) Register(pval any, name, defval, title string, usage ...string) error {
 	switch p := pval.(type) {
 	case *string:
@@ -317,7 +328,7 @@ func (m *confManager) Register(pval any, name, defval, title string, usage ...st
 	default:
 		return fmt.Errorf("conf: Register(%s) 不支持类型 %T", name, pval)
 	}
-	// 注册后触发"重载 + 广播"：.env 文件 → 环境变量 → 命令行重放
+	// 注册后触发"重载 + 广播"：工作目录 .env 文件 → 环境变量 → 命令行重放
 	// ★ 优先级必须与 defaultLoader/reloadFilesLocked 一致（命令行 > 环境变量 > .env）：
 	// 先读文件（低优先）、再环境变量（覆盖）、最后命令行（最高）。
 	// ⚠️ 装配期例外（中-6/L1）：Register 仅在 StartWatcher 前的装配期调用，实际无并发，
@@ -336,9 +347,22 @@ func (m *confManager) Register(pval any, name, defval, title string, usage ...st
 	return nil
 }
 
+// SyncDefaultFile 将全部已注册配置项的默认值快照（DefaultString，含标题/默认值说明/用法注释）写入 default.env。
+// default.env 代表代码中的真实兜底行为，参与取值（最低优先级兜底，优先级由 easyconf 决定）。
+// 装配完成后调用（buildServer 尾部 / --gen-env）；持锁串行，避免与 Set/reload 并发 race。
+func (m *confManager) SyncDefaultFile() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	content := m.ec.DefaultString()
+	if content == "" {
+		return nil
+	}
+	return os.WriteFile(defaultEnvFile, []byte(content+"\n"), 0o644)
+}
+
 // Set 运行期按注册名全名设值并广播。
 // ★ 工程化第一原则「热更即持久化」：热更立即生效后，同步写回配置源文件
-// （--config 指定时写 configFile，否则写 .env），保证重启后状态保留。
+// （--config 指定时写 configFile，否则写工作目录 .env），保证重启后状态保留。
 // 持久化失败返回 error（此时热更已生效，调用方需知晓持久化未落盘）。
 // ★ 最终时序（§2.3）：整体持 m.mu；currentValue 值比较防循环 → SetItemValue →
 //
@@ -424,7 +448,7 @@ func (m *confManager) isCaseInsensitiveKey(name string) bool {
 // syncArgsLocked 热更写回后同步更新内存命令行参数，避免 watcher 重放旧值覆盖。
 // ★ 仅当 key 原本已存在于 m.args 时才更新其值；否则**不追加**——追加会使后续
 //
-//	用户直接改 .env 的同一 key 永久失效（命令行优先级覆盖，直到重启）。
+//	用户直接改工作目录 .env 的同一 key 永久失效（命令行优先级覆盖，直到重启）。
 //
 // ★ 需同时处理两种形态：`--name=value` 与 `--name value`（空格分隔，见 parseArgsToMap）。
 //

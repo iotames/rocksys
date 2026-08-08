@@ -438,3 +438,38 @@ func TestConcurrentSetReloadList(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestSyncDefaultFileWritesAllDefaults SyncDefaultFile 将全部已注册配置项（含挂件项）的默认值快照
+// 写入工作目录 default.env：文件存在、含挂件项 key、含其默认值、含默认值说明注释，且为默认值形态。
+func TestSyncDefaultFileWritesAllDefaults(t *testing.T) {
+	cleanup(t)
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	var rules string
+	if err := mgr.Register(&rules, "REWRITE_RULES", "r1,r2", "测试挂件项"); err != nil {
+		t.Fatalf("Register err: %v", err)
+	}
+	if err := mgr.SyncDefaultFile(); err != nil {
+		t.Fatalf("SyncDefaultFile err: %v", err)
+	}
+	data, err := os.ReadFile("default.env")
+	if err != nil {
+		t.Fatalf("read default.env: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, "REWRITE_RULES") {
+		t.Errorf("default.env 缺少挂件项 REWRITE_RULES:\n%s", s)
+	}
+	if !strings.Contains(s, "r1,r2") {
+		t.Errorf("default.env 缺少 REWRITE_RULES 默认值 r1,r2:\n%s", s)
+	}
+	if !strings.Contains(s, "# The default value is:") {
+		t.Errorf("default.env 缺少默认值说明注释:\n%s", s)
+	}
+	// 默认值快照形态：KEY = 默认值（而非当前值）
+	if !strings.Contains(s, "REWRITE_RULES = \"r1,r2\"") {
+		t.Errorf("default.env 未按默认值快照形态输出 REWRITE_RULES:\n%s", s)
+	}
+}

@@ -78,10 +78,17 @@ type Server struct {
 }
 
 func main() {
-	// --version / -version：打印版本信息后退出，不启动服务。
+	// --version / -version：打印版本信息后退出；--gen-env：生成全量默认值快照后退出，均不启动服务。
 	if len(os.Args) > 1 {
-		if arg := os.Args[1]; arg == "--version" || arg == "-version" {
+		switch os.Args[1] {
+		case "--version", "-version":
 			printVersion()
+			return
+		case "--gen-env":
+			if err := genDefaultEnv(os.Args[2:]); err != nil {
+				log.Error("gen-env failed", "err", err)
+				os.Exit(1)
+			}
 			return
 		}
 	}
@@ -92,7 +99,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 6. 启动配置热更监听（★ 始终启动：默认监听 .env；--config 指定时额外监听该文件，见 §2.4）
+	// 6. 启动配置热更监听（★ 始终启动：默认监听工作目录 .env；--config 指定时额外监听该文件，见 §2.4）
 	if err := srv.cfgMgr.StartWatcher(); err != nil {
 		log.Error("start config watcher", "err", err)
 	}
@@ -211,7 +218,12 @@ func buildServer(args []string) (*Server, error) {
 	if err := cfgMgr.Register(&dbDriver, "DB_DRIVER", "sqlite", "数据库驱动名（sqlite/mysql/postgres）"); err != nil {
 		return nil, fmt.Errorf("register DB_DRIVER: %w", err)
 	}
-	if err := cfgMgr.Register(&dbDSN, "DB_DSN", "rocksys.db?_busy_timeout=5000&_journal_mode=WAL", "数据库连接串（sqlite 为文件路径；默认已含 busy_timeout=5000 与 WAL，可显式覆盖）"); err != nil {
+	if err := cfgMgr.Register(&dbDSN, "DB_DSN", "rocksys.db?_busy_timeout=5000&_journal_mode=WAL",
+		"数据库连接串（不同驱动取值不同；sqlite 默认已含 busy_timeout=5000 与 WAL，可显式覆盖）",
+		"  sqlite（默认）: rocksys.db 或 rocksys.db?_busy_timeout=5000&_journal_mode=WAL",
+		"  mysql:    user:pass@tcp(127.0.0.1:3306)/rocksys?charset=utf8mb4&parseTime=true",
+		"  postgres: host=127.0.0.1 port=5432 user=postgres dbname=rocksys sslmode=disable",
+	); err != nil {
 		return nil, fmt.Errorf("register DB_DSN: %w", err)
 	}
 	if err := cfgMgr.Register(&sqlDir, "SQL_DIR", "sql", "外置 SQL 脚本目录（优先加载，嵌入文件兜底）"); err != nil {
@@ -292,6 +304,12 @@ func buildServer(args []string) (*Server, error) {
 		return nil, fmt.Errorf("register webui static: %w", err)
 	}
 
+	// 配置中心红线：装配完成后同步工作目录 default.env（开发规范下即 bin/default.env）为全量默认值快照（代表代码真实兜底行为）。
+	// 同步失败不阻断启动（default.env 仅兜底快照，不影响运行）。
+	if err := cfgMgr.SyncDefaultFile(); err != nil {
+		log.Warn("sync default.env", "err", err.Error())
+	}
+
 	return &Server{
 		cfgMgr:   cfgMgr,
 		chain:    ch,
@@ -321,4 +339,21 @@ func printVersion() {
 	fmt.Printf("Version: %s\n", Version)
 	fmt.Printf("BuildTime: %s\n", BuildTime)
 	fmt.Printf("GoVersion: %s\n", GoVersion)
+}
+
+// genDefaultEnv 装配全部配置项后生成全量 default.env（默认值快照），不启动服务。
+// default.env 写入当前工作目录（开发规范：make gen-env 在 bin/ 目录运行，故实际为 bin/default.env）。
+// DB_DSN 指向内存库，避免产生 rocksys.db 文件副作用。
+func genDefaultEnv(args []string) error {
+	os.Setenv("DB_DSN", ":memory:")
+	srv, err := buildServer(args)
+	if err != nil {
+		return err
+	}
+	// buildServer 尾部已同步一次；此处显式再调并检查，保证 gen-env 失败可感知、可退出。
+	if err := srv.cfgMgr.SyncDefaultFile(); err != nil {
+		return err
+	}
+	fmt.Printf("default.env 已生成（基于当前工作目录）: %s\n", conf.DefaultEnvPath())
+	return nil
 }

@@ -16,7 +16,7 @@ import (
 	"rocksys/internal/hotswap"
 )
 
-// cleanupEnvFiles 清理 easyconf 在包目录自动创建的 .env / default.env（与 conf 测试一致）。
+// cleanupEnvFiles 清理 easyconf 在包目录自动创建的工作目录 .env / default.env（与 conf 测试一致）。
 func cleanupEnvFiles(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -119,6 +119,15 @@ func TestBuildServer(t *testing.T) {
 	}
 	if err := srv.mgr.Disable("shield"); err != nil {
 		t.Fatalf("Disable shield: %v", err)
+	}
+
+	// 配置中心红线：default.env 为全量默认值快照，须包含挂件项 DB_DSN 与其默认值。
+	def, err := os.ReadFile("default.env")
+	if err != nil {
+		t.Fatalf("read default.env: %v", err)
+	}
+	if s := string(def); !strings.Contains(s, "DB_DSN") || !strings.Contains(s, "rocksys.db?_busy_timeout=5000") {
+		t.Errorf("default.env 应包含 DB_DSN 全量默认值:\n%s", s)
 	}
 }
 

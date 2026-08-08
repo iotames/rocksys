@@ -8,6 +8,8 @@
 default.env
 # 数据库测试副作用
 *.db
+*.db-shm
+*.db-wal
 # Python 缓存
 __pycache__/
 *.pyc

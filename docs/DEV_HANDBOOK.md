@@ -318,9 +318,17 @@ go run ./cmd/rocksys --upstream http://127.0.0.1:9000
 ROCKSYS_UPSTREAM=http://127.0.0.1:9001 go run ./cmd/rocksys
 # → 日志输出 "config: upstream=http://127.0.0.1:9001"
 
-# 配置文件热更（修改 .env 后 3s 内）
+# 配置文件热更（修改 bin/.env 后 3s 内）
 # → 日志输出 "config: hot-reload detected, new upstream=..."
 ```
+
+### 2.8 配置中心红线（最高优先级）
+
+1. **统一配置入口**：全项目配置一律基于 `internal/conf`（底层 easyconf），所有配置项必须经 `conf.Manager.Register` 注册；服务端禁止绕过配置中心直接 `os.Getenv` 读取配置（`cmd/rockctl` 客户端、`*_integration_test.go` 环境变量门控除外）。
+2. **禁止在项目根目录运行程序**：运行时文件（`.env`、`default.env`、`logs/`、`*.db` 等）跟随**工作目录**生成。开发规范：程序必须在 `bin/` 目录运行（工作目录=bin/），运行时文件自然落在 `bin/` 下。程序源码**不写死配置路径**（`internal/conf` 用相对工作目录的 `.env`/`default.env`）；严禁在项目根目录直接执行 `./bin/rocksys`。
+3. **`default.env` 是全量默认值快照**：装配完成后程序自动将全部已注册配置项默认值（含标题/默认值说明/用法注释）同步到工作目录 `default.env`（开发规范下即 `bin/default.env`，`SyncDefaultFile`），代表代码真实兜底行为；**参与**运行期取值，优先级由 easyconf 决定（取值链：命令行 → 环境变量 → 工作目录 `.env` → `default.env` → 代码默认值）。
+4. **改默认值改代码**：修改默认值必须改 `Register` 调用，`default.env` 由程序自动同步，或 `make gen-env` 主动刷新；禁止手工编辑 `default.env`。
+5. **新增配置项必须注册**：任何配置项（含挂件）必须走 `Register` 注册，不得另开读取入口。
 
 ---
 
@@ -1131,7 +1139,7 @@ rockctl script rollback     → POST /admin/script/rollback
 3. **静态预共享 token**：`ROCKSYS_ADMIN_TOKEN` 环境变量 → 请求头 `Authorization: Bearer <token>` 校验（供 rockctl/脚本使用，双轨兼容）。
 4. **登录 JWT**：已初始化（存在管理员）时校验登录签发的 JWT；未初始化时拒绝（仅注册引导可用）。
 
-> `ROCKSYS_ADMIN_TOKEN` 由 adminapi 包直接 `os.Getenv` 读取，**不注册进 easyconf**（无需持久化）。
+> `ROCKSYS_ADMIN_TOKEN` 经配置中心注册（`conf.Manager.Register`），取值链与其他配置项一致：`bin/.env` → 环境变量 → 命令行 → 代码默认值（空）；热更立即生效。
 
 ### 8.4 认证端点（登录/注册/重置）
 
@@ -1162,6 +1170,7 @@ rockctl script rollback     → POST /admin/script/rollback
 | --- | --- | --- |
 | `ADMIN_INITIALIZED` | `false` | 是否已初始化超级管理员；忘记密码时运维手动改 `false` 触发重置 |
 | `ADMIN_JWT_SECRET` | 空 | 登录 JWT 签名密钥；为空时进程内随机（重启后需重新登录），可配置固定值保证跨重启有效 |
+| `ROCKSYS_ADMIN_TOKEN` | 空 | 管理接口静态预共享令牌（供 rockctl/脚本使用；配置后即使回环地址也需 Bearer 鉴权），可热更 |
 
 ### 8.5 验收
 
@@ -2096,7 +2105,7 @@ ec.IntListVar(pval *[]int, name string, defval []int, title)  // []int 逗号分
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `DB_DRIVER` | `sqlite` | 数据库驱动名（sqlite/mysql/postgres） |
-| `DB_DSN` | `rocksys.db?_busy_timeout=5000&_journal_mode=WAL` | 连接串（sqlite 为文件路径；默认已含 busy_timeout=5000 与 WAL，可显式覆盖） |
+| `DB_DSN` | `rocksys.db?_busy_timeout=5000&_journal_mode=WAL` | 连接串（不同驱动取值不同；sqlite 默认已含 busy_timeout=5000 与 WAL，可显式覆盖） |
 | `SQL_DIR` | `sql` | 外置 SQL 脚本目录（优先加载，嵌入兜底） |
 
 ### C.2 SQL 脚本目录约定（数据库铁律）

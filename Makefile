@@ -15,7 +15,8 @@
 #   make cross-build # 交叉编译生产产物（bin/rocksys-<os>-<arch>[.exe]，含 linux amd64/arm64、windows amd64）
 #   make test        # 运行全部测试
 #   make vet         # 静态检查
-#   make run         # 构建并运行
+#   make gen-env     # 生成 bin/default.env 全量默认值快照（在 bin/ 目录运行，不删 .env）
+#   make run         # 构建并在 bin/ 目录运行（工作目录=bin/，运行时文件落 bin/，绝不污染项目根目录）
 
 REPOS  := easyconf easyserver easydb
 GITHUB := https://github.com/iotames
@@ -39,7 +40,7 @@ LD_FLAGS := -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)
 # windows 目标产物自动追加 .exe 后缀
 CROSS_TARGETS := linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: all deps build cross-build test vet run clean
+.PHONY: all deps build cross-build test vet gen-env run clean
 
 all: build
 
@@ -74,8 +75,16 @@ test: deps
 vet: deps
 	go vet ./...
 
+# 生成 bin/default.env 全量默认值快照（所有已注册配置项默认值+注释；不删除 bin/.env）。
+# ★ 红线：必须在 bin/ 目录运行（工作目录=bin/），default.env 才落在 bin/ 下；
+#   禁止在项目根目录运行（会在根目录残留运行时文件）。gen-env 依赖 build 产物并 cd bin 执行。
+gen-env: build
+	cd bin && ./rocksys --gen-env
+
+# ★ 红线：run 必须进入 bin/ 目录运行（工作目录=bin/），运行时文件（.env/default.env/logs/*.db）
+#   跟随工作目录落在 bin/，绝不污染项目根目录。禁止在项目根目录直接执行 ./bin/rocksys。
 run: build
-	./bin/rocksys
+	cd bin && ./rocksys
 
 clean:
 	rm -rf bin

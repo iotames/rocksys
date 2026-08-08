@@ -147,7 +147,9 @@ curl http://127.0.0.1:8080/hello
 
 ## 配置
 
-所有配置支持三种来源（优先级从高到低）：**命令行参数 > 环境变量 > `.env` 配置文件**。配置文件热更（修改后约 3s 自动生效，无需重启）。**第一原则「热更即持久化」**：运行时热改（`PUT /admin/config`、WebUI「配置」页、RockConfig）一律立即生效并同步写回配置文件，重启后保留。
+所有配置支持三种来源（优先级从高到低）：**命令行参数 > 环境变量 > 工作目录 `.env` 配置文件**（开发规范下即 `bin/.env`）。配置文件热更（修改后约 3s 自动生效，无需重启）。**第一原则「热更即持久化」**：运行时热改（`PUT /admin/config`、WebUI「配置」页、RockConfig）一律立即生效并同步写回配置文件，重启后保留。
+
+> **配置中心红线**：禁止在项目根目录运行程序（会在根目录残留运行时文件）。运行时文件跟随**工作目录**生成；开发规范必须在 `bin/` 目录运行（`make run`/`make gen-env` 已 `cd bin`），故实际落点为 `bin/.env`、`bin/default.env`。`bin/default.env` 为全量默认值快照（装配完成自动同步，`make gen-env` 主动刷新），参与运行期取值（最低优先级兜底，优先级由 easyconf 决定）。
 
 ### 底座配置
 
@@ -157,10 +159,10 @@ curl http://127.0.0.1:8080/hello
 | `--upstream` / `ROCKSYS_UPSTREAM` | `http://127.0.0.1:8080` | 默认后端 |
 | `--admin` / `ROCKSYS_ADMIN` | `127.0.0.1:19527` | 管理接口（回环，不对外网） |
 | `--timeout` / `ROCKSYS_TIMEOUT` | `18` | 转发超时（秒） |
-| `--config` / `ROCKSYS_CONFIG` | 空 | `.env` 配置文件路径 |
+| `--config` / `ROCKSYS_CONFIG` | 空 | `bin/.env` 配置文件路径（任意位置） |
 | `ROCKSYS_LOG_LEVEL` | `info` | 日志级别（debug/info/warn/error） |
 
-### 配置文件示例（`.env`）
+### 配置文件示例（`bin/.env`）
 
 ```bash
 # ===== 底座 =====
@@ -216,11 +218,11 @@ MQ_ENABLED = false
 
 # ===== 数据访问层 =====
 DB_DRIVER = sqlite
-DB_DSN = rocksys.db
+DB_DSN = rocksys.db               # 默认已含 ?_busy_timeout=5000&_journal_mode=WAL，可显式覆盖；mysql/postgres 示例见注释
 SQL_DIR = sql
 ```
 
-> 每个挂件默认关闭；`.env` 里写配置不等于启用，需在 WebUI「组件」页或 `rockctl switch on` 显式开启。
+> 每个挂件默认关闭；`bin/.env` 里写配置不等于启用，需在 WebUI「组件」页或 `rockctl switch on` 显式开启。
 > 全部挂件配置项详解见 `docs/COMPONENTS.md`；完整键清单可在 WebUI「配置」页查看。
 
 ### 管理接口令牌
@@ -230,6 +232,8 @@ export ROCKSYS_ADMIN_TOKEN=your-secret
 ./bin/rocksys --upstream http://127.0.0.1:9000
 # 此后所有管理操作（curl / rockctl / WebUI）需带请求头 Authorization: Bearer your-secret
 ```
+
+> `ROCKSYS_ADMIN_TOKEN` 经配置中心注册（同 `bin/.env`/环境变量/命令行取值链），热更立即生效；也可在 WebUI「配置」页查看/修改。
 
 ---
 
@@ -350,7 +354,7 @@ sudo systemctl restart rocksys
 | 后端全挂 | dispatch 健康检查将节点摘除；全挂写 503 中断链；关闭 dispatch 即回退默认后端 |
 | 防护误拦 | WebUI「组件」页关闭 shield（或调整规则）；转发自动降级不受影响 |
 | Lua 脚本出错 | 自动回滚脚本或 `script rollback` 移除；脚本仅策略、不影响转发 |
-| 配置改坏 | WebUI「配置」页恢复默认值，或改回 `.env` 后 3s 热更生效 |
+| 配置改坏 | WebUI「配置」页恢复默认值，或改回 `bin/.env` 后 3s 热更生效 |
 | 组件故障 | 关闭该组件即摘除环节，转发链自动降级，**转发永不中断** |
 
 ---
@@ -368,7 +372,7 @@ sudo systemctl restart rocksys
 ### 数据库铁律
 
 1. **SQL 落盘**：所有数据库操作写成独立 `.sql` 文件，放 `sql/<dbtype>/`（`sql/sqlite/`、`sql/mysql/`、`sql/postgres/`），禁止 Go 代码内联 SQL。
-2. **换库只改 .env**：切换数据库仅改 `DB_DRIVER` / `DB_DSN`（`SQL_DIR` 默认 `sql`），不改代码、不重编译。
+2. **换库只改 bin/.env**：切换数据库仅改 `DB_DRIVER` / `DB_DSN`（`SQL_DIR` 默认 `sql`），不改代码、不重编译。
 3. **纯 SQL 原生**：不用对象模型 / ORM，参数化占位符 `?`（sqlite/mysql）或 `$1`（postgres）；动态标识符 `{xxx}` 禁止来自外部输入。
 4. **方言齐平**：SQL 变更须同步 sqlite/mysql/postgres 三份方言脚本；缺脚本即运行时报错（`internal/db.SQL()` 强制校验），不悄悄降级。
 

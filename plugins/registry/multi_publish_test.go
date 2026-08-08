@@ -31,6 +31,7 @@ func (r *recordConfMgr) Set(name, value string) error {
 	return nil
 }
 func (r *recordConfMgr) List() []conf.ConfigItem { return nil }
+func (r *recordConfMgr) SyncDefaultFile() error  { return nil }
 
 // TestMultiInstancePublish 多实例注册联动：注册两个实例后 DISPATCH_RULES 应同时含两者。
 // 回归：曾在 E2E 中发现注册第二个实例后路由偶发失效，验证 publish 逻辑正确。

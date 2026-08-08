@@ -40,6 +40,7 @@ func (f *fakeConfMgr) Register(pval any, name, defval, title string, usage ...st
 }
 func (f *fakeConfMgr) Set(name, value string) error { return nil }
 func (f *fakeConfMgr) List() []conf.ConfigItem      { return nil }
+func (f *fakeConfMgr) SyncDefaultFile() error       { return nil }
 
 // newTestObs 构造写往 t.TempDir() 的 Obs：dataDB=nil，默认 db 后端不可用，
 // buildStore 回退 file（过渡兜底），测试读写日志文件。

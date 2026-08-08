@@ -23,12 +23,14 @@ type Manager interface {
 	Shutdown(ctx context.Context) error
 	// Register 挂件配置项注册（name 即环境变量名）
 	Register(pval any, name, defval, title string, usage ...string) error
+	// SyncDefaultFile 将全部已注册配置项的默认值快照同步到工作目录 default.env（开发规范下即 bin/default.env，全量覆盖）。
+	SyncDefaultFile() error
 	// Set 运行期按注册名全名设值并广播
 	Set(name, value string) error
 	// List 列出全部已注册配置项元数据（含底座与各挂件），供管理接口输出。
 	List() []ConfigItem
 }
 
-// Load 从命令行/环境变量/.env文件加载配置
+// Load 从命令行/环境变量/工作目录 .env 文件加载配置
 // 用法：mgr, err := conf.Load(os.Args[1:])
 func Load(args []string) (Manager, error) { return defaultLoader(args) }

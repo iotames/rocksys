@@ -29,6 +29,7 @@ func (f *fakeConfMgr) Register(any, string, string, string, ...string) error {
 }
 func (f *fakeConfMgr) Set(string, string) error { return nil }
 func (f *fakeConfMgr) List() []conf.ConfigItem  { return nil }
+func (f *fakeConfMgr) SyncDefaultFile() error   { return nil }
 
 func (f *fakeConfMgr) Watch(fn func(*conf.Config)) {
 	f.mu.Lock()

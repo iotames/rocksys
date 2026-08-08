@@ -32,6 +32,7 @@ func (f *fakeConfMgr) Register(pval any, name, defval, title string, usage ...st
 }
 func (f *fakeConfMgr) Set(name, value string) error { return nil }
 func (f *fakeConfMgr) List() []conf.ConfigItem      { return nil }
+func (f *fakeConfMgr) SyncDefaultFile() error       { return nil }
 
 // signToken 生成合法 HS256 JWT（测试辅助，走自研 jwtutil）。
 func signToken(t *testing.T, secret, issuer string, ttl time.Duration, tenantID, userID string) string {

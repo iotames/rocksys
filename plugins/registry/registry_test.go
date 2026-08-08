@@ -43,6 +43,7 @@ func (f *fakeConfMgr) Set(name, value string) error {
 	return nil
 }
 func (f *fakeConfMgr) List() []conf.ConfigItem { return nil }
+func (f *fakeConfMgr) SyncDefaultFile() error  { return nil }
 func (f *fakeConfMgr) value(name string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

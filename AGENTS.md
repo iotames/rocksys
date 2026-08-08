@@ -27,7 +27,7 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 - Go 代码使用 `gofmt` 格式；提交前必须通过 `make vet`。
 - 标识符保持工程化英文命名；注释、文档、提交信息一律简体中文。
 - 外部依赖最小化：纯标准库可实现的（如 JWT）不引入第三方库。
-- 配置热更遵循优先级：`.env` → 环境变量 → 命令行参数。
+- 配置热更遵循优先级：`bin/.env` → 环境变量 → 命令行参数。
 
 ## Testing Guidelines
 
@@ -46,8 +46,16 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 
 ## Security & Configuration Tips
 
-- `.env`、`default.env` 不入库，本地配置勿提交。
+- `bin/.env`、`bin/default.env` 不入库，本地配置勿提交。
 - 管理接口默认回环免登录；公网部署务必开启鉴权并依赖登录限流。
+
+## 配置中心红线（最高优先级）
+
+1. **统一配置入口**：全项目配置一律基于 `internal/conf`（底层 easyconf），所有配置项必须经 `conf.Manager.Register` 注册；服务端禁止绕过配置中心直接 `os.Getenv` 读取配置（`cmd/rockctl` 客户端、`*_integration_test.go` 环境变量门控除外）。
+2. **禁止在项目根目录运行程序**：运行时文件（`.env`、`default.env`、`logs/`、`*.db` 等）跟随**工作目录**生成。开发规范：程序必须在 `bin/` 目录运行（`make run`/`make gen-env` 已 `cd bin`，工作目录=bin/），运行时文件自然落在 `bin/` 下。程序源码**不写死配置路径**（`internal/conf` 用相对工作目录的 `.env`/`default.env`）；严禁在项目根目录直接执行 `./bin/rocksys`（会在根目录残留运行时文件，此前犯过）。
+3. **`default.env` 是全量默认值快照**：装配完成后程序自动将全部已注册配置项的默认值（含标题/默认值说明/用法注释）同步到工作目录 `default.env`（开发规范下即 `bin/default.env`），代表代码真实兜底行为；**参与**运行期取值，优先级由 easyconf 决定（取值链：命令行 → 环境变量 → 工作目录 `.env` → `default.env` → 代码默认值，`default.env` 为最低优先级兜底）。
+4. **改默认值改代码**：修改配置项默认值必须改 `Register` 调用（代码），`default.env` 由程序自动同步，或 `make gen-env` 主动刷新；禁止手工编辑 `default.env`。
+5. **新增配置项必须注册**：新增任何配置项（含挂件）必须走 `Register` 注册，不得另开读取入口。
 
 ## Agent-Specific Instructions
 
