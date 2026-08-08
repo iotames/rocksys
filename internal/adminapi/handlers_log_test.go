@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -167,14 +166,7 @@ func TestValidLevel(t *testing.T) {
 // TestLogEndpointsRequireAuth 未认证访问 5 个 /admin/log/* 端点 → 401（走真实 HTTP 路由链，
 // 同时验证 5 条精确路由已注册——未注册会 404 而非 401）。
 func TestLogEndpointsRequireAuth(t *testing.T) {
-	// 确保无静态 token 干扰（静态 token 存在时同样 401，但为确定性起见清除）。
-	old, had := os.LookupEnv(envAdminToken)
-	os.Unsetenv(envAdminToken)
-	defer func() {
-		if had {
-			os.Setenv(envAdminToken, old)
-		}
-	}()
+	// New(nil) 时静态 token 未配置（token 指针为 nil），非回环地址必须鉴权。
 
 	// 非回环地址绑定 → 必须鉴权；未初始化且无用户 → 一律 401。
 	s := New("0.0.0.0:19527", nil, nil, nil)

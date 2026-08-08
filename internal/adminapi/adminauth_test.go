@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -185,9 +184,10 @@ func TestResetPassword(t *testing.T) {
 }
 
 func TestStaticTokenDualTrack(t *testing.T) {
-	defer os.Unsetenv(envAdminToken)
-	os.Setenv(envAdminToken, "static-secret")
 	s := setupAuthServer(t)
+	// 等价于配置中心注册 ROCKSYS_ADMIN_TOKEN 后绑定的指针（confMgr=nil 场景直接注入）
+	token := "static-secret"
+	s.auth.token = &token
 
 	// 静态 token 正确 → 放行（无需用户/JWT）
 	ctx := newCtx(http.MethodGet, PathSwitchList, "")

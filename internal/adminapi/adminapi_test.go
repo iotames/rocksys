@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -23,11 +22,11 @@ type fakeMiddleware struct {
 	slot  chain.Slot
 }
 
-func (f *fakeMiddleware) Name() string                                { return f.name }
-func (f *fakeMiddleware) Handle(*chain.Context) (next bool)           { return true }
-func (f *fakeMiddleware) Start(cfg any) error                         { f.state = hotswap.StateEnabled; return nil }
-func (f *fakeMiddleware) Stop() error                                 { f.state = hotswap.StateDisabled; return nil }
-func (f *fakeMiddleware) Slot() chain.Slot                            { return f.slot }
+func (f *fakeMiddleware) Name() string                      { return f.name }
+func (f *fakeMiddleware) Handle(*chain.Context) (next bool) { return true }
+func (f *fakeMiddleware) Start(cfg any) error               { f.state = hotswap.StateEnabled; return nil }
+func (f *fakeMiddleware) Stop() error                       { f.state = hotswap.StateDisabled; return nil }
+func (f *fakeMiddleware) Slot() chain.Slot                  { return f.slot }
 
 // setup 构造 conf.Manager 与 hotswap.Manager。
 func setup(t *testing.T) (conf.Manager, *hotswap.Manager, string) {
@@ -229,13 +228,13 @@ func TestRegisterWebUI(t *testing.T) {
 
 func TestContentTypeByExt(t *testing.T) {
 	cases := map[string]string{
-		"index.html":      "text/html",
-		"assets/style.css": "text/css",
+		"index.html":        "text/html",
+		"assets/style.css":  "text/css",
 		"assets/js/main.js": "application/javascript",
-		"data.json":       "application/json",
-		"pic.svg":         "image/svg+xml",
-		"pic.png":         "image/png",
-		"file.txt":        "text/plain",
+		"data.json":         "application/json",
+		"pic.svg":           "image/svg+xml",
+		"pic.png":           "image/png",
+		"file.txt":          "text/plain",
 	}
 	for path, want := range cases {
 		got := contentTypeByExt(path)
@@ -259,9 +258,9 @@ func TestRequireAuth(t *testing.T) {
 	}
 
 	// 设置 token：无 Authorization → 401
-	defer os.Unsetenv(envAdminToken)
-	os.Setenv(envAdminToken, "secret")
+	token := "secret"
 	s2 := New("127.0.0.1:19527", nil, nil, nil)
+	s2.auth.token = &token
 	require2 := s2.requireAuth()
 	called = false
 	h2 := require2(func(httpsvr.Context) { called = true })

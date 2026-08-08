@@ -45,24 +45,23 @@ const (
 	authorizationHeader = "Authorization"
 	// bearerPrefix Bearer token 前缀。
 	bearerPrefix = "Bearer "
-	// envAdminToken 可选的鉴权 token 环境变量（§8.3），不注册进 easyconf。
-	envAdminToken = "ROCKSYS_ADMIN_TOKEN"
 )
 
 var errNilHandler = errors.New("adminapi: nil path or handler")
 
 // AdminServer 管理接口服务器（§8.1.0）。
 type AdminServer struct {
-	srv        *easyserver.Server // 独立 easyserver 实例（回环地址）
-	confMgr    conf.Manager       // ★ 用于内建 PUT /admin/config（调用 conf.Manager.Set）
-	hotswapMgr *hotswap.Manager   // ★ 用于内建 /admin/switch/on|off|list
-	initialized *bool             // ADMIN_INITIALIZED 配置指针（热更可读）
-	jwtSecret   *string           // ADMIN_JWT_SECRET 配置指针（登录 JWT 签名密钥）
-	edb        *easydb.EasyDb     // 用户存储数据库连接（dataDB.EasyDB()，可 nil）
-	sqls       db.SQLSource       // 用户存储 SQL 脚本源（dataDB，可 nil）
-	users       *userStore        // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
-	auth        *adminAuth        // 管理接口鉴权器
-	loginLimiter *loginLimiter    // 登录失败限流器（按 IP）
+	srv          *easyserver.Server // 独立 easyserver 实例（回环地址）
+	confMgr      conf.Manager       // ★ 用于内建 PUT /admin/config（调用 conf.Manager.Set）
+	hotswapMgr   *hotswap.Manager   // ★ 用于内建 /admin/switch/on|off|list
+	initialized  *bool              // ADMIN_INITIALIZED 配置指针（热更可读）
+	jwtSecret    *string            // ADMIN_JWT_SECRET 配置指针（登录 JWT 签名密钥）
+	adminToken   *string            // ROCKSYS_ADMIN_TOKEN 配置指针（静态预共享令牌）
+	edb          *easydb.EasyDb     // 用户存储数据库连接（dataDB.EasyDB()，可 nil）
+	sqls         db.SQLSource       // 用户存储 SQL 脚本源（dataDB，可 nil）
+	users        *userStore         // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
+	auth         *adminAuth         // 管理接口鉴权器
+	loginLimiter *loginLimiter      // 登录失败限流器（按 IP）
 }
 
 // New 创建独立的管理接口服务器并注册全部内建端点（§8.1/§8.4）。
@@ -82,16 +81,23 @@ func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *ea
 	// 注册管理接口专属配置项：初始化标记 + 登录 JWT 签名密钥。
 	if confMgr != nil {
 		var initialized bool
-		if err := confMgr.Register(&initialized, "ADMIN_INITIALIZED", "false", "是否已初始化超级管理员"); err == nil {
-			s.initialized = &initialized
+		if err := confMgr.Register(&initialized, "ADMIN_INITIALIZED", "false", "是否已初始化超级管理员"); err != nil {
+			panic(err)
 		}
+		s.initialized = &initialized
 		var jwtSecret string
-		if err := confMgr.Register(&jwtSecret, "ADMIN_JWT_SECRET", "", "管理接口登录 JWT 签名密钥（为空时进程内随机，重启后需重新登录）"); err == nil {
-			s.jwtSecret = &jwtSecret
+		if err := confMgr.Register(&jwtSecret, "ADMIN_JWT_SECRET", "", "管理接口登录 JWT 签名密钥（为空时进程内随机，重启后需重新登录）"); err != nil {
+			panic(err)
 		}
+		s.jwtSecret = &jwtSecret
+		var adminToken string
+		if err := confMgr.Register(&adminToken, "ROCKSYS_ADMIN_TOKEN", "", "管理接口静态预共享令牌（供 rockctl/脚本使用；配置后即使回环地址也需 Bearer 鉴权）"); err != nil {
+			panic(err)
+		}
+		s.adminToken = &adminToken
 	}
 	s.initUsers()
-	s.auth = newAdminAuth(confMgr, s.initialized, s.jwtSecret, s.users, addr)
+	s.auth = newAdminAuth(confMgr, s.initialized, s.jwtSecret, s.adminToken, s.users, addr)
 	s.registerBuiltin()
 	return s
 }

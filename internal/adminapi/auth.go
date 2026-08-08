@@ -12,7 +12,6 @@ import (
 	"crypto/subtle"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -41,6 +40,7 @@ type adminAuth struct {
 	confMgr      conf.Manager // 读取 AdminAddr（动态判断是否回环）
 	initialized  *bool        // ADMIN_INITIALIZED 配置指针（热更可读）
 	jwtSecret    *string      // ADMIN_JWT_SECRET 配置指针
+	token        *string      // ROCKSYS_ADMIN_TOKEN 配置指针（静态预共享令牌，可热更）
 	users        *userStore   // 用户存储（判断是否已初始化）
 	addrFallback string       // confMgr 为 nil 时的监听地址（New 传入，测试/降级场景）
 	issuer       string
@@ -49,13 +49,14 @@ type adminAuth struct {
 }
 
 // newAdminAuth 构造鉴权器。confMgr/users 可为 nil（单元测试场景），addr 为监听地址回退。
-func newAdminAuth(confMgr conf.Manager, initialized *bool, jwtSecret *string, users *userStore, addr string) *adminAuth {
+func newAdminAuth(confMgr conf.Manager, initialized *bool, jwtSecret, token *string, users *userStore, addr string) *adminAuth {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 	return &adminAuth{
 		confMgr:      confMgr,
 		initialized:  initialized,
 		jwtSecret:    jwtSecret,
+		token:        token,
 		users:        users,
 		addrFallback: addr,
 		issuer:       jwtIssuer,
@@ -74,8 +75,8 @@ func (a *adminAuth) check(ctx httpsvr.Context) bool {
 	if isPublicAdminPath(ctx.Request.URL.Path) {
 		return true
 	}
-	// 静态预共享 token（ROCKSYS_ADMIN_TOKEN，rockctl/脚本用）
-	if tok := os.Getenv(envAdminToken); tok != "" {
+	// 静态预共享 token（ROCKSYS_ADMIN_TOKEN，rockctl/脚本用；经配置中心注册，可热更）
+	if tok := a.staticToken(); tok != "" {
 		if !secureCompare(bearerToken(ctx.Request), tok) {
 			return a.writeUnauthorized(ctx)
 		}
@@ -98,7 +99,7 @@ func (a *adminAuth) check(ctx httpsvr.Context) bool {
 
 // authRequired 返回当前是否需要登录：绑定非回环地址 或 配置了静态 token。
 func (a *adminAuth) authRequired() bool {
-	if os.Getenv(envAdminToken) != "" {
+	if a.staticToken() != "" {
 		return true
 	}
 	addr := a.addrFallback
@@ -123,6 +124,15 @@ func (a *adminAuth) setupMode() bool {
 		return false
 	}
 	return a.hasUser()
+}
+
+// staticToken 返回静态预共享令牌（经配置中心注册的 ROCKSYS_ADMIN_TOKEN，可热更）。
+// token 指针为 nil（confMgr 未就绪/测试场景）或值为空时视为未配置。
+func (a *adminAuth) staticToken() string {
+	if a.token != nil {
+		return strings.TrimSpace(*a.token)
+	}
+	return ""
 }
 
 // secret 返回 JWT 签名密钥：优先配置项，否则进程内随机密钥。
