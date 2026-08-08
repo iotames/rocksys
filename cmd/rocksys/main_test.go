@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -10,18 +11,23 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"rocksys/internal/hotswap"
 )
 
-// cleanupEnvFiles 清理 easyconf 在包目录自动创建的工作目录 .env / default.env（与 conf 测试一致）。
+// cleanupEnvFiles 清理 easyconf 在包目录自动创建的工作目录 .env / default.env，以及
+// TestBuildServerMQEnabled 默认 DB_DSN 建库残留的 rocksys.db*（配置中心红线：运行时文件不得残留源码树）。
 func cleanupEnvFiles(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		_ = os.Remove(".env")
 		_ = os.Remove("default.env")
+		_ = os.Remove("rocksys.db")
+		_ = os.Remove("rocksys.db-shm")
+		_ = os.Remove("rocksys.db-wal")
 	})
 }
 
@@ -81,6 +87,27 @@ func TestPrintVersion(t *testing.T) {
 	}
 }
 
+// TestWaitForQuitOrFail 验证停机决策（fail-fast 红线）：
+// 监听失败（如 EADDRINUSE）→ 返回 error，调用方将 log.Error + os.Exit(1)；
+// 收到停机信号 → 返回 nil，进入优雅停机。
+func TestWaitForQuitOrFail(t *testing.T) {
+	// 分支一：监听失败 → 必须返回 error（fail-fast）。
+	quit := make(chan os.Signal, 1)
+	errCh := make(chan error, 1)
+	errCh <- errors.New("bind: address already in use")
+	if err := waitForQuitOrFail(quit, errCh); err == nil {
+		t.Error("监听失败时应返回 error（fail fast）")
+	}
+
+	// 分支二：收到停机信号 → 返回 nil，进入优雅停机。
+	quit2 := make(chan os.Signal, 1)
+	errCh2 := make(chan error, 1)
+	quit2 <- syscall.SIGTERM
+	if err := waitForQuitOrFail(quit2, errCh2); err != nil {
+		t.Errorf("收到停机信号应返回 nil，got %v", err)
+	}
+}
+
 // TestBuildServer 装配全部挂件：7 个链中间件 + config/registry/object 3 个独立组件，默认不注册 mq。
 func TestBuildServer(t *testing.T) {
 	cleanupEnvFiles(t)
@@ -121,13 +148,19 @@ func TestBuildServer(t *testing.T) {
 		t.Fatalf("Disable shield: %v", err)
 	}
 
-	// 配置中心红线：default.env 为全量默认值快照，须包含挂件项 DB_DSN 与其默认值。
+	// 配置中心红线：default.env 为全量默认值快照，须包含 DB_DSN 与本次收敛的全部新增注册项。
 	def, err := os.ReadFile("default.env")
 	if err != nil {
 		t.Fatalf("read default.env: %v", err)
 	}
-	if s := string(def); !strings.Contains(s, "DB_DSN") || !strings.Contains(s, "rocksys.db?_busy_timeout=5000") {
-		t.Errorf("default.env 应包含 DB_DSN 全量默认值:\n%s", s)
+	s := string(def)
+	for _, key := range []string{"DB_DSN", "SCRIPT_TIMEOUT", "REGISTRY_ADDR", "REGISTRY_TTL", "OBJECT_BASE_DIR", "MQ_ENABLED", "MQ_POLL_INTERVAL", "MQ_MAX_RETRIES", "MQ_BASE_BACKOFF", "MQ_CONSUMER_BASE_URL"} {
+		if !strings.Contains(s, key) {
+			t.Errorf("default.env 应包含全量默认值 %s:\n%s", key, s)
+		}
+	}
+	if srv.dataDB != nil {
+		_ = srv.dataDB.Close() // 关闭 sqlite 连接，释放 rocksys.db 句柄，供 cleanupEnvFiles 删除
 	}
 }
 
@@ -162,6 +195,9 @@ func TestBuildServerMQEnabled(t *testing.T) {
 	}
 	if err := srv.mgr.Disable("mq"); err != nil {
 		t.Fatalf("Disable mq: %v", err)
+	}
+	if srv.dataDB != nil {
+		_ = srv.dataDB.Close() // 关闭 sqlite 连接，释放 rocksys.db 句柄，供 cleanupEnvFiles 删除
 	}
 }
 
@@ -278,5 +314,8 @@ func TestSmokeProxy(t *testing.T) {
 	}
 	if err := srv.cfgMgr.Shutdown(ctx); err != nil {
 		t.Fatalf("conf shutdown: %v", err)
+	}
+	if srv.dataDB != nil {
+		_ = srv.dataDB.Close() // 关闭 sqlite 连接，释放 rocksys.db 句柄，供 cleanupEnvFiles 删除
 	}
 }

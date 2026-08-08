@@ -30,7 +30,8 @@ var shortFlagMap = map[string]string{
 
 // envFile 默认始终监听的配置文件（不存在时 easyconf 自动创建）。
 // ★ 相对当前工作目录解析，不写死绝对/固定前缀路径：程序在哪个目录运行，运行时文件就落在哪个目录。
-//   开发规范要求工作目录为 bin/（make run 已 `cd bin`），故实际生成 bin/.env；禁止在项目根目录运行程序。
+//
+//	开发规范要求工作目录为 bin/（make run 已 `cd bin`），故实际生成 bin/.env；禁止在项目根目录运行程序。
 const envFile = ".env"
 
 // defaultEnvFile 全量默认值快照文件：装配完成后同步所有已注册项默认值（代表代码真实兜底行为）。该文件为 easyconf 配置文件列表成员，参与取值（最低优先级兜底）。
@@ -282,7 +283,9 @@ func (m *confManager) watchLoop(ctx context.Context, files []string) {
 			}
 			if changed {
 				// 直接调无锁内部版；args/files 均在 reloadFilesLocked 内持锁读取（消除 TOCTOU）
-				_ = m.reloadFilesLocked()
+				if err := m.reloadFilesLocked(); err != nil {
+					log.Warn("conf: 配置文件热更重载失败", "err", err)
+				}
 			}
 		}
 	}

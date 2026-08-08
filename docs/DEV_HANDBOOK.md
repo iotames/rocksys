@@ -299,8 +299,27 @@ func parseArgsToMap(args []string) map[string]string
 | `--config` | `ROCKSYS_CONFIG` | .env 配置文件路径 | 空=极简模式 |
 | `--admin` | `ROCKSYS_ADMIN` | 管理接口地址 | `127.0.0.1:19527` |
 | `--log-level` | `ROCKSYS_LOG_LEVEL` | 日志级别 | `info` |
+|  | `ROCKSYS_LOG_TO_FILE` | 日志文件存档开关 | `false` |
+|  | `ROCKSYS_LOG_FILE` | 日志文件路径 | `logs/rocksys.log` |
+|  | `ROCKSYS_LOG_MAX_SIZE` | 日志文件大小上限(MB，0=不限制) | `50` |
 
-> **命名约定**：底座的 6 个配置项以 `ROCKSYS_` 为前缀（环境变量名 = 注册名），挂件配置项**不带前缀**（如 `SHIELD_RATE_LIMIT_RPS`、`DISPATCH_RULES`）。命名空间的划分是约定性的——easyconf 无 prefix 自动补全机制，全凭 Register 时传入的 name 决定。`/admin/config` 写入时使用注册名（即环境变量名），不可混用短命令行名。
+**挂件配置项（节选，全部经 `Register` 注册）**：
+
+| 环境变量 | 含义 | 默认 |
+|---|---|---|
+| `REGISTRY_ADDR` | 注册服务监听地址 | `:9800` |
+| `REGISTRY_TTL` | 心跳超时(秒) | `30` |
+| `REGISTRY_STATIC_FILE` | 静态实例文件路径（YAML/JSON） | 空 |
+| `OBJECT_BASE_DIR` | 对象存储根目录 | `./data/object` |
+| `MQ_POLL_INTERVAL` | mq 轮询间隔(毫秒) | `1000` |
+| `MQ_MAX_RETRIES` | mq 最大重试次数（超限转死信） | `3` |
+| `MQ_BASE_BACKOFF` | mq 指数退避基数(毫秒) | `100` |
+| `MQ_CONSUMER_BASE_URL` | mq 默认消费方地址 | 空 |
+| `SCRIPT_TIMEOUT` | Lua 脚本执行超时(毫秒) | `100` |
+
+> 其余挂件项（`SHIELD_*`、`DISPATCH_RULES`、`REWRITE_RULES`、`OBS_*`、`COPY_TARGETS`、`RESULT_*`、`AUTH_*` 等）见 `docs/COMPONENTS.md` 与 WebUI「配置」页。
+
+> **命名约定**：底座的 9 个配置项以 `ROCKSYS_` 为前缀（环境变量名 = 注册名），挂件配置项**不带前缀**（如 `SHIELD_RATE_LIMIT_RPS`、`DISPATCH_RULES`、`REGISTRY_ADDR`、`OBJECT_BASE_DIR`、`MQ_POLL_INTERVAL`、`SCRIPT_TIMEOUT`）。命名空间的划分是约定性的——easyconf 无 prefix 自动补全机制，全凭 Register 时传入的 name 决定。`/admin/config` 写入时使用注册名（即环境变量名），不可混用短命令行名。
 
 ### 2.6 边界
 
@@ -976,7 +995,7 @@ func main() {
     // mgr.RegisterMiddleware(dispatch.New(cfgMgr)) // L2 路由 → chain.Middle
     // mgr.RegisterMiddleware(result.New(cfgMgr))   // L3 结果 → chain.Tail(+ResponseHook)
     // mgr.RegisterMiddleware(trace.New(cfgMgr))    // trace 透传 → chain.Head
-    // mgr.RegisterMiddleware(script.New(cfgMgr))   // Lua 策略 → chain.Middle
+    // mgr.RegisterMiddleware(script.New(time.Duration(ms) * time.Millisecond)) // Lua 策略 → chain.Middle
     // mgr.RegisterMiddleware(obs.New(cfgMgr))      // 访问日志/指标 → chain.Tail(+ResponseHook)
     // mgr.RegisterComponent(config.New(cfgMgr))    // KV 配置服务 → 独立组件
     // ... 随 P1/P2 逐步注册（auth → Head；registry/mq/object → 独立组件）
@@ -990,18 +1009,27 @@ func main() {
         log.Error("start config watcher", "err", err)
     }
 
-    // 7. 启动 HTTP 监听
+    // 5a/7. 启动 admin API 与主引擎监听。
+    // ★ fail-fast 红线（启动期）：端口绑定失败必须立刻退出，不得静默存活；
+    // 正常优雅停机（Shutdown）返回 http.ErrServerClosed 不视为错误。
+    errCh := make(chan error, 2)
     go func() {
-        if err := eng.ListenAndServe(); err != nil {
-            log.Error("server error", "err", err)
+        if err := eng.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+            errCh <- fmt.Errorf("server: %w", err)
         }
     }()
+    // go func() { if err := adminSrv.ListenAndServe(); ...同 errCh }()
 
-    // 8. 等待信号，优雅停机
+    // 8. 等待信号或监听失败，二者其一即进入停机流程
     quit := make(chan os.Signal, 1)
     signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-    <-quit
-    log.Info("rocksys shutting down...")
+    select {
+    case <-quit:
+        log.Info("rocksys shutting down...")
+    case err := <-errCh:
+        log.Error("rocksys 监听失败，fail fast", "err", err)
+        os.Exit(1)
+    }
     ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
     defer cancel()
 

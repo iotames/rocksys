@@ -229,10 +229,10 @@ func (s *OutboxStore) MarkDead(id int64) error {
 // PollingDeliverer 定时轮询 outbox + HTTP POST 投递到消费方（§18）。
 // 消费方地址：routes[topic] 优先，否则用 ConsumerBaseURL；两者皆无则报错。
 type PollingDeliverer struct {
-	store      *OutboxStore
-	interval   time.Duration
-	client     *http.Client
-	maxRetries int
+	store       *OutboxStore
+	interval    time.Duration
+	client      *http.Client
+	maxRetries  int
 	baseBackoff time.Duration
 
 	mu      sync.RWMutex
@@ -402,11 +402,11 @@ func (d *PollingDeliverer) sleep(dur time.Duration) bool {
 
 // Options MQ 组件启动配置（MQ.Start 的 cfg 参数，可空）。
 type Options struct {
-	Interval        time.Duration   // 轮询间隔；0 用默认 1s
-	ConsumerBaseURL string          // 默认消费方地址
+	Interval        time.Duration     // 轮询间隔；0 用默认 1s
+	ConsumerBaseURL string            // 默认消费方地址
 	Routes          map[string]string // topic -> 消费方 URL
-	MaxRetries      int             // 最大重试次数；0 用默认 3
-	BaseBackoff     time.Duration   // 指数退避基数；0 用默认 100ms
+	MaxRetries      int               // 最大重试次数；0 用默认 3
+	BaseBackoff     time.Duration     // 指数退避基数；0 用默认 100ms
 }
 
 // defaultOptions 返回内置默认配置。
@@ -422,6 +422,7 @@ type MQ struct {
 	sqls      db.SQLSource // SQL 脚本源（装配时注入 internal/db）
 	store     *OutboxStore
 	deliverer *PollingDeliverer
+	options   *Options // 装配期注入的运行参数（SetOptions），Start 时合并
 	state     atomic.Value
 }
 
@@ -441,6 +442,14 @@ func (m *MQ) SetSQLSource(src db.SQLSource) {
 	m.sqls = src
 }
 
+// SetOptions 注入运行参数（轮询间隔/消费方地址/重试次数/退避基数），Start 时生效。
+// 与 Start(cfg) 的 Options 优先级：本方法注入的 options 为装配期默认，Start(cfg) 非 nil 时覆盖。
+func (m *MQ) SetOptions(opts Options) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.options = &opts
+}
+
 // Name 返回组件名：mq。
 func (m *MQ) Name() string { return "mq" }
 
@@ -456,6 +465,9 @@ func (m *MQ) Start(cfg any) error {
 	}
 
 	opts := defaultOptions()
+	if m.options != nil {
+		opts = *m.options
+	}
 	if cfg != nil {
 		o, ok := cfg.(*Options)
 		if !ok {

@@ -20,6 +20,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/iotames/easyserver/log"
+
 	"rocksys/internal/conf"
 	"rocksys/internal/hotswap"
 )
@@ -293,10 +295,12 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// serve 阻塞托管 HTTP 服务；Stop 的 Shutdown 使其返回。
+// serve 阻塞托管 HTTP 服务；Stop 的 Shutdown 使其返回（正常关闭返回 http.ErrServerClosed 不告警）。
 func (s *Server) serve(ln net.Listener, srv *http.Server) {
 	defer s.wg.Done()
-	_ = srv.Serve(ln)
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Error("registry: 注册服务退出", "err", err)
+	}
 }
 
 // scanLoop 心跳过期扫描：定时调用 scanOnce，直至 ctx 取消。
@@ -506,11 +510,27 @@ type Registry struct {
 var _ hotswap.Component = (*Registry)(nil)
 
 // New 创建 registry 组件（默认 StateDisabled，由 hotswap.Enable 触发 Start）。
+// 装配期注册 REGISTRY_ADDR/REGISTRY_TTL/REGISTRY_STATIC_FILE 三项配置（cfgMgr 非 nil 时），
+// 注册后从配置读取当前值；SetAddr/SetTTL/SetStaticPath 仍可在 Start 前覆盖。
 func New(cfgMgr conf.Manager) *Registry {
 	r := &Registry{
 		cfgMgr: cfgMgr,
 		addr:   DefaultAddr,
 		ttl:    DefaultTTL,
+	}
+	if cfgMgr != nil {
+		var ttlSec int
+		if err := cfgMgr.Register(&r.addr, "REGISTRY_ADDR", DefaultAddr, "注册服务监听地址", "装配期生效，热更后需重启"); err != nil {
+			log.Warn("registry: 注册配置项失败", "name", "REGISTRY_ADDR", "err", err)
+		}
+		if err := cfgMgr.Register(&ttlSec, "REGISTRY_TTL", "30", "心跳超时(秒)", "装配期生效，热更后需重启"); err != nil {
+			log.Warn("registry: 注册配置项失败", "name", "REGISTRY_TTL", "err", err)
+		} else if ttlSec > 0 {
+			r.ttl = time.Duration(ttlSec) * time.Second
+		}
+		if err := cfgMgr.Register(&r.staticPath, "REGISTRY_STATIC_FILE", "", "静态实例文件路径（YAML/JSON，空=无静态实例）", "装配期生效，热更后需重启"); err != nil {
+			log.Warn("registry: 注册配置项失败", "name", "REGISTRY_STATIC_FILE", "err", err)
+		}
 	}
 	r.state.Store(hotswap.StateDisabled)
 	return r

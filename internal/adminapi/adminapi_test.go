@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -35,6 +36,8 @@ func setup(t *testing.T) (conf.Manager, *hotswap.Manager, string) {
 	if err != nil {
 		t.Fatalf("conf.Load: %v", err)
 	}
+	// 清理 easyconf 在包目录自动创建的工作目录 .env / default.env（配置中心红线：运行时文件不得残留源码树）。
+	t.Cleanup(func() { _ = os.Remove(".env"); _ = os.Remove("default.env") })
 	ch := chain.New()
 	mgr := hotswap.NewManager(ch, nil)
 	mgr.RegisterMiddleware(&fakeMiddleware{name: "shield", slot: chain.Middle})

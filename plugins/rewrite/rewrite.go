@@ -25,6 +25,8 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/iotames/easyserver/log"
+
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
 	"rocksys/internal/hotswap"
@@ -55,9 +57,11 @@ func New(cfgMgr conf.Manager) *Rewrite {
 	r := &Rewrite{cfg: cfgMgr}
 	r.rt.Store(&rewriteTable{})
 	if cfgMgr != nil {
-		_ = cfgMgr.Register(&r.rules, "REWRITE_RULES", "",
+		if err := cfgMgr.Register(&r.rules, "REWRITE_RULES", "",
 			"转发前改写规则（<prefix>=<spec>[;<spec>...]，逗号分隔。spec=uri|<new_prefix> 或 header=<name>:<value>）",
-			"示例：/api/v1/=uri|/api/[;header=X-Proxy-Tag:rewrite")
+			"示例：/api/v1/=uri|/api/[;header=X-Proxy-Tag:rewrite"); err != nil {
+			log.Warn("rewrite: 注册配置项失败", "name", "REWRITE_RULES", "err", err)
+		}
 	}
 	return r
 }

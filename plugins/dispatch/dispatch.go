@@ -71,11 +71,13 @@ func New(cfg conf.Manager) *Dispatch {
 	d.rt.Store(&RouteTable{})
 	if cfg != nil {
 		// 注册字符串指针：easyconf 写入配置值时自动更新 d.rules。
-		_ = cfg.Register(&d.rules, "DISPATCH_RULES", "",
+		if err := cfg.Register(&d.rules, "DISPATCH_RULES", "",
 			"路由规则（<Prefix>=<spec>，逗号分隔。spec=<node>[;<node>...][@interval@timeout@path]，"+
 				"node=http(s)://host[:port][|w=权重][|p=0高优/1备份]）",
 			"示例：/api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz",
-			"旧格式 /api/=http://host:port 仍兼容（单节点）")
+			"旧格式 /api/=http://host:port 仍兼容（单节点）"); err != nil {
+			log.Warn("dispatch: 注册配置项失败", "name", "DISPATCH_RULES", "err", err)
+		}
 	}
 	return d
 }

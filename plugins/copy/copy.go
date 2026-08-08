@@ -53,9 +53,11 @@ func New(cfgMgr conf.Manager) *Copy {
 	c := &Copy{cfg: cfgMgr}
 	c.snap.Store(&copyTargets{})
 	if cfgMgr != nil {
-		_ = cfgMgr.Register(&c.targets, "COPY_TARGETS", "",
+		if err := cfgMgr.Register(&c.targets, "COPY_TARGETS", "",
 			"请求抄送目标（逗号分隔的 shadow 后端 URL，空=关闭）",
-			"示例：http://shadow-a:9100;http://shadow-b:9100")
+			"示例：http://shadow-a:9100;http://shadow-b:9100"); err != nil {
+			log.Warn("copy: 注册配置项失败", "name", "COPY_TARGETS", "err", err)
+		}
 	}
 	return c
 }

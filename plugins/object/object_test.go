@@ -81,7 +81,7 @@ func TestLocalStoreTraversal(t *testing.T) {
 
 // TestObjectComponent Object 组件生命周期（hotswap.Component）
 func TestObjectComponent(t *testing.T) {
-	o := New()
+	o := New(nil)
 	o.baseDir = t.TempDir()
 
 	if o.Name() != "object" {

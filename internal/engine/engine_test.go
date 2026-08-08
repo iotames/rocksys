@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -388,6 +389,8 @@ func TestNewEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("conf.Load 失败: %v", err)
 	}
+	// 清理 easyconf 在包目录自动创建的工作目录 .env / default.env（配置中心红线：运行时文件不得残留源码树）。
+	t.Cleanup(func() { _ = os.Remove(".env"); _ = os.Remove("default.env") })
 	e := New(mgr, chain.New())
 	if e == nil || e.server == nil || e.pool == nil {
 		t.Fatal("New 返回的引擎未完整初始化")
@@ -400,6 +403,7 @@ func TestEngineShutdownNoListen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("conf.Load 失败: %v", err)
 	}
+	t.Cleanup(func() { _ = os.Remove(".env"); _ = os.Remove("default.env") })
 	e := New(mgr, chain.New())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

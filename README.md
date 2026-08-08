@@ -161,6 +161,9 @@ curl http://127.0.0.1:8080/hello
 | `--timeout` / `ROCKSYS_TIMEOUT` | `18` | 转发超时（秒） |
 | `--config` / `ROCKSYS_CONFIG` | 空 | `bin/.env` 配置文件路径（任意位置） |
 | `ROCKSYS_LOG_LEVEL` | `info` | 日志级别（debug/info/warn/error） |
+| `ROCKSYS_LOG_TO_FILE` | `false` | 日志文件存档开关 |
+| `ROCKSYS_LOG_FILE` | `logs/rocksys.log` | 日志文件路径（相对工作目录） |
+| `ROCKSYS_LOG_MAX_SIZE` | `50` | 日志文件大小上限（整数 MB，0=不限制） |
 
 ### 配置文件示例（`bin/.env`）
 
@@ -171,6 +174,9 @@ ROCKSYS_UPSTREAM = http://127.0.0.1:9000
 ROCKSYS_TIMEOUT = 18
 ROCKSYS_ADMIN = 127.0.0.1:19527
 ROCKSYS_LOG_LEVEL = info
+ROCKSYS_LOG_TO_FILE = false
+ROCKSYS_LOG_FILE = logs/rocksys.log
+ROCKSYS_LOG_MAX_SIZE = 50
 
 # ===== 防护 shield（L1）=====
 SHIELD_ENABLED = true
@@ -213,8 +219,23 @@ AUTH_JWT_SECRET = change-me
 AUTH_JWT_ISSUER = rocksys
 AUTH_JWT_TTL = 3600
 
+# ===== 脚本 script（Lua 策略）=====
+SCRIPT_TIMEOUT = 100            # Lua 脚本执行超时（毫秒）
+
 # ===== 消息 mq（outbox 表建于下方数据访问层业务库，DB_DRIVER/DB_DSN）=====
 MQ_ENABLED = false
+MQ_POLL_INTERVAL = 1000         # 轮询间隔（毫秒）
+MQ_MAX_RETRIES = 3              # 最大重试次数（超限转死信；0 视为未设置，回落默认 3）
+MQ_BASE_BACKOFF = 100           # 指数退避基数（毫秒）
+MQ_CONSUMER_BASE_URL =          # 默认消费方地址（未命中 topic 路由时使用）
+
+# ===== 注册中心 registry =====
+REGISTRY_ADDR = :9800           # 注册服务监听地址
+REGISTRY_TTL = 30               # 心跳超时（秒）
+REGISTRY_STATIC_FILE =          # 静态实例文件路径（YAML/JSON，空=无静态实例）
+
+# ===== 对象存储 object =====
+OBJECT_BASE_DIR = ./data/object
 
 # ===== 数据访问层 =====
 DB_DRIVER = sqlite

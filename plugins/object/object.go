@@ -11,6 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/iotames/easyserver/log"
+
+	"rocksys/internal/conf"
 	"rocksys/internal/hotswap"
 )
 
@@ -93,9 +96,15 @@ type Object struct {
 var _ hotswap.Component = (*Object)(nil)
 
 // New 构造 Object 组件（默认 StateDisabled，由 hotswap.Enable 触发 Start）。
-// baseDir 默认 ./data/object；测试/装配可在 Start 前覆盖 Object.baseDir。
-func New() *Object {
+// cfgMgr 非 nil 时注册 OBJECT_BASE_DIR 配置项（默认 ./data/object），并读取当前值；
+// 测试/自定义装配可在 Start 前覆盖 Object.baseDir。
+func New(cfgMgr conf.Manager) *Object {
 	o := &Object{baseDir: defaultBaseDir}
+	if cfgMgr != nil {
+		if err := cfgMgr.Register(&o.baseDir, "OBJECT_BASE_DIR", defaultBaseDir, "对象存储根目录", "装配期生效，热更后需重启；留空回退默认目录"); err != nil {
+			log.Warn("object: 注册配置项失败", "name", "OBJECT_BASE_DIR", "err", err)
+		}
+	}
 	o.state.Store(hotswap.StateDisabled)
 	return o
 }
@@ -112,6 +121,11 @@ func (o *Object) Start(_ any) error {
 		return nil // 幂等：已启动
 	}
 	base := filepath.Clean(o.baseDir)
+	if base == "." {
+		// 空值防御：Clean("")="." 会使路径校验形同虚设，回退默认目录并告警。
+		log.Warn("object: OBJECT_BASE_DIR 为空，回退默认目录", "dir", defaultBaseDir)
+		base = defaultBaseDir
+	}
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return err
 	}

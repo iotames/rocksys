@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -56,8 +58,7 @@ var embedLogTplFS embed.FS
 // shutdownTimeout 优雅停机总时限（§7.1 步骤 8）。
 const shutdownTimeout = 30 * time.Second
 
-// scriptTimeout Lua 脚本执行超时（§15）。
-const scriptTimeout = 100 * time.Millisecond
+// Lua 脚本执行超时经配置项 SCRIPT_TIMEOUT 注册（默认 100ms，见 buildServer 装配）。
 
 // 构建时经 -ldflags 注入：Version 为当前项目 git 最新 tag（无 tag 时回退 dev），
 // BuildTime 为构建时间；GoVersion 取编译时 runtime。由 --version/-version 命令展示。
@@ -100,29 +101,34 @@ func main() {
 	}
 
 	// 6. 启动配置热更监听（★ 始终启动：默认监听工作目录 .env；--config 指定时额外监听该文件，见 §2.4）
+	// 弱依赖：热更失效仅影响运行期配置变更，不阻断启动，故仅记录不 fail。
 	if err := srv.cfgMgr.StartWatcher(); err != nil {
 		log.Error("start config watcher", "err", err)
 	}
 
-	// 5a. 启动 admin API（独立 listener，回环地址，见第 8 章）
+	// 5a/7. 启动 admin API 与主引擎监听。
+	// ★ fail-fast 红线（启动期）：端口绑定失败（如 EADDRINUSE）必须立刻退出，不得静默存活——
+	// 否则进程"看似在线"实则服务端口未监听，运维无感知。监听错误经 errCh 上报；
+	// 正常优雅停机（Shutdown）返回 http.ErrServerClosed，不视为错误。
+	errCh := make(chan error, 2)
 	go func() {
-		if err := srv.adminSrv.ListenAndServe(); err != nil {
-			log.Error("admin server error", "err", err)
+		if err := srv.adminSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("admin server: %w", err)
+		}
+	}()
+	go func() {
+		if err := srv.eng.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("server: %w", err)
 		}
 	}()
 
-	// 7. 启动 HTTP 监听
-	go func() {
-		if err := srv.eng.ListenAndServe(); err != nil {
-			log.Error("server error", "err", err)
-		}
-	}()
-
-	// 8. 等待信号，优雅停机
+	// 8. 等待信号或监听失败，二者其一即进入停机流程
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Info("rocksys shutting down...")
+	if err := waitForQuitOrFail(quit, errCh); err != nil {
+		log.Error("rocksys 监听失败，fail fast", "err", err)
+		os.Exit(1)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
@@ -135,6 +141,18 @@ func main() {
 	_ = srv.cfgMgr.Shutdown(ctx)
 	if srv.dataDB != nil {
 		_ = srv.dataDB.Close() // mq/obs/admin 均复用 dataDB 连接，一并关闭
+	}
+}
+
+// waitForQuitOrFail 等待停机信号或监听失败（fail-fast 红线：监听失败必须立刻退出，不得静默存活）。
+// 返回 nil 表示收到停机信号，进入优雅停机；返回 error 表示监听失败，调用方应 log.Error + os.Exit(1)。
+func waitForQuitOrFail(quit <-chan os.Signal, errCh <-chan error) error {
+	select {
+	case <-quit:
+		log.Info("rocksys shutting down...")
+		return nil
+	case err := <-errCh:
+		return err
 	}
 }
 
@@ -202,12 +220,19 @@ func buildServer(args []string) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("shield.New: %w", err)
 	}
-	mgr.RegisterMiddleware(shieldMw)                  // L1 防护 → chain.Head
-	mgr.RegisterMiddleware(trace.New(&cfgMgr))        // trace 透传 → chain.Head
-	mgr.RegisterMiddleware(auth.New(&cfgMgr))         // JWT 认证 → chain.Head
-	mgr.RegisterMiddleware(dispatch.New(cfgMgr))      // L2 路由 → chain.Middle
-	mgr.RegisterMiddleware(rewrite.New(cfgMgr))       // L2 转发前改写 → chain.Middle
-	mgr.RegisterMiddleware(script.New(scriptTimeout)) // Lua 策略 → chain.Middle
+	mgr.RegisterMiddleware(shieldMw)             // L1 防护 → chain.Head
+	mgr.RegisterMiddleware(trace.New(&cfgMgr))   // trace 透传 → chain.Head
+	mgr.RegisterMiddleware(auth.New(&cfgMgr))    // JWT 认证 → chain.Head
+	mgr.RegisterMiddleware(dispatch.New(cfgMgr)) // L2 路由 → chain.Middle
+	mgr.RegisterMiddleware(rewrite.New(cfgMgr))  // L2 转发前改写 → chain.Middle
+
+	// Lua 策略执行超时经配置中心注册（默认 100ms，可经 SCRIPT_TIMEOUT 覆盖）。
+	// 装配期生效：script.New 拷贝超时值，热更改值需重启进程才生效。
+	var scriptTimeoutMS int
+	if err := cfgMgr.Register(&scriptTimeoutMS, "SCRIPT_TIMEOUT", "100", "Lua 脚本执行超时(毫秒)", "装配期生效，热更后需重启"); err != nil {
+		return nil, fmt.Errorf("register SCRIPT_TIMEOUT: %w", err)
+	}
+	mgr.RegisterMiddleware(script.New(time.Duration(scriptTimeoutMS) * time.Millisecond)) // Lua 策略 → chain.Middle
 
 	// 统一数据访问层（§? 数据访问层）：为可插拔组件（obs/mq 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
 	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）/ SQL_DIR（默认 sql，外置脚本目录）。
@@ -236,21 +261,36 @@ func buildServer(args []string) (*Server, error) {
 		log.Info("db: 数据访问层已就绪", "driver", dataDB.Driver())
 	}
 
-	mgr.RegisterMiddleware(obs.New(cfgMgr, dataDB))   // 访问日志/指标 → chain.Tail(+ResponseHook)
-	mgr.RegisterMiddleware(copy.New(cfgMgr))          // 请求抄送 → chain.Tail(+ResponseHook)
-	mgr.RegisterMiddleware(result.New(cfgMgr))        // L3 结果 → chain.Tail(+ResponseHook)
+	mgr.RegisterMiddleware(obs.New(cfgMgr, dataDB)) // 访问日志/指标 → chain.Tail(+ResponseHook)
+	mgr.RegisterMiddleware(copy.New(cfgMgr))        // 请求抄送 → chain.Tail(+ResponseHook)
+	mgr.RegisterMiddleware(result.New(cfgMgr))      // L3 结果 → chain.Tail(+ResponseHook)
 
 	// 独立组件（RegisterComponent）：config/registry/object 无条件注册。
 	mgr.RegisterComponent(config.New(cfgMgr))   // KV 配置服务
 	mgr.RegisterComponent(registry.New(cfgMgr)) // 服务注册中心
-	mgr.RegisterComponent(object.New())         // 对象存储
+	mgr.RegisterComponent(object.New(cfgMgr))   // 对象存储（OBJECT_BASE_DIR 配置根目录）
 
 	// mq 条件装配：MQ_ENABLED=true 时注册；outbox 表建于统一数据访问层业务库（DB_DRIVER/DB_DSN），
 	// 与架构一致（outbox 与业务数据同库，支持 stbiz 本地事务同提交）。
 	// dataDB 未就绪时跳过注册（组件降级，不阻断底座）。
+	// ★ MQ_* 运行参数与 MQ_ENABLED 一起无条件注册（不随开关分支），保证 default.env 全量快照恒含 MQ_ 全组。
 	var mqEnabled bool
 	if err := cfgMgr.Register(&mqEnabled, "MQ_ENABLED", "false", "是否启用 mq 异步消息组件（outbox 表建于统一数据访问层业务库，DB_DRIVER/DB_DSN）"); err != nil {
 		return nil, fmt.Errorf("register MQ_ENABLED: %w", err)
+	}
+	var mqPollIntervalMS, mqMaxRetries, mqBaseBackoffMS int
+	var mqConsumerBaseURL string
+	if err := cfgMgr.Register(&mqPollIntervalMS, "MQ_POLL_INTERVAL", "1000", "mq 轮询间隔(毫秒)", "装配期生效，热更后需重启"); err != nil {
+		return nil, fmt.Errorf("register MQ_POLL_INTERVAL: %w", err)
+	}
+	if err := cfgMgr.Register(&mqMaxRetries, "MQ_MAX_RETRIES", "3", "mq 最大重试次数（超限转死信；0 视为未设置，回落默认 3）", "装配期生效，热更后需重启"); err != nil {
+		return nil, fmt.Errorf("register MQ_MAX_RETRIES: %w", err)
+	}
+	if err := cfgMgr.Register(&mqBaseBackoffMS, "MQ_BASE_BACKOFF", "100", "mq 指数退避基数(毫秒)", "装配期生效，热更后需重启"); err != nil {
+		return nil, fmt.Errorf("register MQ_BASE_BACKOFF: %w", err)
+	}
+	if err := cfgMgr.Register(&mqConsumerBaseURL, "MQ_CONSUMER_BASE_URL", "", "mq 默认消费方地址（未命中 topic 路由时使用）", "装配期生效，热更后需重启"); err != nil {
+		return nil, fmt.Errorf("register MQ_CONSUMER_BASE_URL: %w", err)
 	}
 	if mqEnabled {
 		if dataDB == nil {
@@ -258,8 +298,15 @@ func buildServer(args []string) (*Server, error) {
 		} else {
 			// 复用 dataDB 连接与 SQL 脚本源：同一方言（sql/<dbtype>/ 逐级加载），
 			// mq.OutboxStore 已按方言兼容 LastInsertId（postgres 走 RETURNING）。
+			// 运行参数（上述已无条件注册）注入 Options。
 			mqComp := mq.New(dataDB.EasyDB().GetSqlDB(), "outbox")
 			mqComp.SetSQLSource(dataDB)
+			mqComp.SetOptions(mq.Options{
+				Interval:        time.Duration(mqPollIntervalMS) * time.Millisecond,
+				ConsumerBaseURL: mqConsumerBaseURL,
+				MaxRetries:      mqMaxRetries,
+				BaseBackoff:     time.Duration(mqBaseBackoffMS) * time.Millisecond,
+			})
 			mgr.RegisterComponent(mqComp)
 			log.Info("mq component registered", "driver", dataDB.Driver())
 		}

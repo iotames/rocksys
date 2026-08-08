@@ -198,7 +198,9 @@ func (s *FileStore) SizeBytes() (int64, error) {
 		if !strings.HasPrefix(name, "access-") || !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
-		if info, err := e.Info(); err == nil {
+		// ★ Windows 兼容：句柄打开期间 DirEntry.Info() 返回大小恒为 0（文件系统目录缓存滞后），
+		// 必须直接 os.Stat 目标文件取真实大小。
+		if info, err := os.Stat(filepath.Join(s.dir, name)); err == nil {
 			total += info.Size()
 		}
 	}

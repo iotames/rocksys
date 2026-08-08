@@ -52,6 +52,8 @@ func newTestObs(t *testing.T) (*Obs, *fakeConfMgr) {
 	if err := o.Start(nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// 释放文件句柄（Windows 上句柄不关则 TempDir 清理失败；Close 幂等，与测试内 Shutdown 的 Flush 不冲突）。
+	t.Cleanup(func() { _ = o.sink.Load().(*AsyncStore).Close() })
 	return o, f
 }
 
@@ -463,6 +465,7 @@ func TestAdminLogsFilters(t *testing.T) {
 func TestFileStoreQuery(t *testing.T) {
 	dir := t.TempDir()
 	s := NewFileStore(dir, 30)
+	defer s.Close() // 释放文件句柄（Windows：句柄不关则 TempDir 清理失败）
 	base := time.Now()
 	mk := func(offset time.Duration, path string) *AccessRecord {
 		return &AccessRecord{
@@ -609,7 +612,8 @@ func TestDBStoreTypeNormalize(t *testing.T) {
 	}
 }
 
-func TestStoreHotSwitch(t *testing.T) {	o, dataDB := newTestObsDB(t)
+func TestStoreHotSwitch(t *testing.T) {
+	o, dataDB := newTestObsDB(t)
 	defer dataDB.Close()
 
 	// 默认存储为 db（默认后端）
@@ -665,6 +669,7 @@ func TestStoreHotSwitch(t *testing.T) {	o, dataDB := newTestObsDB(t)
 func TestFileStoreSizeBytes(t *testing.T) {
 	dir := t.TempDir()
 	s := NewFileStore(dir, 30)
+	defer s.Close() // 释放文件句柄（Windows：句柄不关则 TempDir 清理失败）
 	// 目录不存在 → 0
 	if v, err := s.SizeBytes(); err != nil || v != 0 {
 		t.Errorf("空目录 SizeBytes = %d, %v，期望 0", v, err)
@@ -765,4 +770,3 @@ func TestAdminStorage(t *testing.T) {
 		t.Errorf("total 应等于 file+db，实际 %v", got)
 	}
 }
-

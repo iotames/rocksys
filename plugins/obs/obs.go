@@ -157,9 +157,15 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 		dataDB:        dataDB,
 		metrics:       NewMetrics(),
 	}
-	_ = cfgMgr.Register(&o.storeCfg, "OBS_STORE", defaultStore, "访问日志存储后端（默认 db；file 已弃用，将不再被支持）")
-	_ = cfgMgr.Register(&o.logDir, "OBS_LOG_DIR", defaultLogDir, "访问日志目录")
-	_ = cfgMgr.Register(&o.retentionDays, "OBS_RETENTION_DAYS", strconv.Itoa(defaultRetentionDays), "访问日志保留天数")
+	if err := cfgMgr.Register(&o.storeCfg, "OBS_STORE", defaultStore, "访问日志存储后端（默认 db；file 已弃用，将不再被支持）"); err != nil {
+		log.Warn("obs: 注册配置项失败", "name", "OBS_STORE", "err", err)
+	}
+	if err := cfgMgr.Register(&o.logDir, "OBS_LOG_DIR", defaultLogDir, "访问日志目录"); err != nil {
+		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_DIR", "err", err)
+	}
+	if err := cfgMgr.Register(&o.retentionDays, "OBS_RETENTION_DAYS", strconv.Itoa(defaultRetentionDays), "访问日志保留天数"); err != nil {
+		log.Warn("obs: 注册配置项失败", "name", "OBS_RETENTION_DAYS", "err", err)
+	}
 	o.sink.Store(NewAsyncStore(o.buildStore()))
 	return o
 }
