@@ -22,6 +22,7 @@ import (
 	"rocksys/internal/conf"
 	"rocksys/internal/db"
 	"rocksys/internal/hotswap"
+	"rocksys/internal/netutil"
 
 	"github.com/iotames/easyserver/log"
 )
@@ -240,7 +241,7 @@ func (o *Obs) OnResponse(ctx *chain.Context) error {
 		TenantID:   ctx.DF.TenantID(),
 		Path:       ctx.R.URL.Path,
 		Method:     ctx.R.Method,
-		ClientIP:   ctx.R.RemoteAddr,
+		ClientIP:   netutil.GetClientIP(ctx.R),
 		StatusCode: ctx.RespCode,
 		Upstream:   ctx.DF.Target(),
 		ShieldMs:   ctx.DF.ShieldMs(),

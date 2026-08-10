@@ -8,12 +8,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
 	"rocksys/internal/dataflow"
+	"rocksys/internal/netutil"
 
 	"github.com/iotames/easyserver"
 )
@@ -99,7 +99,7 @@ func (e *Engine) Forward(tw http.ResponseWriter, r *http.Request, target string,
 	outReq.Host = dst.Host
 
 	// 自动追加头
-	appendForwardedFor(outReq.Header, clientIP(r))
+	appendForwardedFor(outReq.Header, netutil.GetClientIP(r))
 	outReq.Header.Set("X-Trace-Id", df.TraceID())
 
 	// 转发超时控制
@@ -147,7 +147,7 @@ func (e *Engine) forwardWebSocket(w http.ResponseWriter, r *http.Request, target
 	outReq.URL.Host = dst.Host
 	outReq.RequestURI = ""
 	outReq.Host = dst.Host
-	appendForwardedFor(outReq.Header, clientIP(r))
+	appendForwardedFor(outReq.Header, netutil.GetClientIP(r))
 	outReq.Header.Set("X-Trace-Id", df.TraceID())
 
 	// 直连后端 TCP（ws 需要原始连接，不走 http.Transport 连接池）
@@ -240,18 +240,6 @@ func appendForwardedFor(h http.Header, ip string) {
 		return
 	}
 	h.Set("X-Forwarded-For", ip)
-}
-
-// clientIP 从 RemoteAddr 提取客户端 IP（去除端口）。
-func clientIP(r *http.Request) string {
-	if r == nil || r.RemoteAddr == "" {
-		return ""
-	}
-	host := r.RemoteAddr
-	if i := strings.LastIndex(host, ":"); i >= 0 {
-		host = host[:i]
-	}
-	return host
 }
 
 // copyRespHeader 将 src 响应头复制到 dst（覆盖同名 key）。

@@ -97,7 +97,7 @@ type MiddlewareLifecycle interface {
 | `SHIELD_ALLOW_METHODS` | 空 | HTTP 方法白名单（空=不限） |
 | `SHIELD_MAX_BODY_SIZE` | 0 | 请求体上限字节（0=不限） |
 | `SHIELD_WAF_SQL_INJECTION` / `XSS` / `PATH_TRAVERSAL` / `RISK_PATH` / `CRAWLER_UA` | false | WAF 检测开关 |
-| `SHIELD_RULES_DIR` | rules | WAF 规则外置目录（优先加载，嵌入兜底） |
+| `HOT_SCRIPTS_DIR` | hotscripts | 脚本外挂统一根目录；WAF 规则外挂子目录固定 `rules/`（优先加载，嵌入兜底） |
 
 **示例**：
 

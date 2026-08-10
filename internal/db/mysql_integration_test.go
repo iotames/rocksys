@@ -51,7 +51,7 @@ func TestMySQLDialect(t *testing.T) {
 	if dsn == "" {
 		t.Skip("MYSQL_TEST_DSN 未设置，跳过 MySQL 集成测试")
 	}
-	d, err := db.Open("mysql", dsn, "sql")
+	d, err := db.Open("mysql", dsn)
 	if err != nil {
 		t.Fatalf("Open(mysql) err: %v", err)
 	}

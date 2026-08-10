@@ -1,5 +1,5 @@
 # XSS 特征：每行一个模式，匹配时先做 URL 解码并转小写（子串匹配）。
-# 以 # 开头的行是注释，空行忽略。外置目录（SHIELD_RULES_DIR）同名文件可覆盖本文件。
+# 以 # 开头的行是注释，空行忽略。外挂覆写目录 HOT_SCRIPTS_DIR/rules/ 同名文件可覆盖本文件。
 <script
 </script
 <iframe

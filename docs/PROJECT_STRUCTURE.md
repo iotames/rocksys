@@ -84,7 +84,7 @@ xxx/
 
 - 根目录 `sql/<dbtype>/`：**项目所有数据库查询语句的统一存放目录**（sqlite/mysql/postgres 方言分目录），
   编译期经 `sqlfiles` 包 embed 嵌入二进制，默认零配置可运行。
-- `internal/hotswap/script.go`：`ScriptDir` 逐级加载机制——运行时外置目录（`SQL_DIR`，默认 `sql/`）优先，
+- `internal/hotswap/script.go`：`ScriptDir` 逐级加载机制——运行时外挂统一根目录 `HOT_SCRIPTS_DIR`（默认 `hotscripts/`）下各挂件子目录（`sql/`、`rules/`、`trusted_proxies/`）优先，
   找不到再回退编译期嵌入文件；改 SQL 无需重新编译。
 - `internal/db`：统一数据访问层，数据操作以 easydb 为主，封装 `SQLSource` 接口；
   切换数据库驱动时若 `sql/<dbtype>/` 缺脚本则直接报错。

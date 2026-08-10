@@ -15,6 +15,8 @@ import (
 	"hash/fnv"
 	"net/http"
 	"strings"
+
+	"rocksys/internal/netutil"
 )
 
 // defaultChashKey 默认 chash key 提取方式：客户端 IP。
@@ -24,12 +26,8 @@ const defaultChashKey = "$remote_addr"
 func extractHashKey(req *http.Request, keyBy string) string {
 	switch {
 	case keyBy == "" || keyBy == defaultChashKey:
-		// 取 RemoteAddr 的 IP 部分（去端口），保证同一客户端稳定。
-		addr := req.RemoteAddr
-		if i := strings.LastIndex(addr, ":"); i >= 0 {
-			return addr[:i]
-		}
-		return addr
+		// 取客户端真实 IP，保证同一客户端稳定哈希到同一节点。
+		return netutil.GetClientIP(req)
 	case strings.HasPrefix(keyBy, "$http_"):
 		return req.Header.Get(strings.TrimPrefix(keyBy, "$http_"))
 	case strings.HasPrefix(keyBy, "$cookie_"):

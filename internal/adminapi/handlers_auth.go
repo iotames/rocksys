@@ -10,11 +10,12 @@
 package adminapi
 
 import (
-	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"rocksys/internal/netutil"
 
 	"github.com/iotames/easyserver/httpsvr"
 )
@@ -78,15 +79,6 @@ func (l *loginLimiter) reset(ip string) {
 	delete(l.failures, ip)
 }
 
-// clientIP 从请求中提取客户端 IP（RemoteAddr 的 host 部分）。
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
 // handleAuthStatus 返回管理接口认证状态（WebUI 启动引导用）。
 func (s *AdminServer) handleAuthStatus(ctx httpsvr.Context) {
 	username := ""
@@ -139,7 +131,7 @@ func (s *AdminServer) handleLogin(ctx httpsvr.Context) {
 		_ = ctx.Json(map[string]any{"ok": false, "error": "系统尚未初始化，请先完成注册"}, http.StatusBadRequest)
 		return
 	}
-	ip := clientIP(ctx.Request)
+	ip := netutil.GetClientIP(ctx.Request)
 	if !s.loginLimiter.allow(ip) {
 		_ = ctx.Json(map[string]any{"ok": false, "error": "登录尝试过于频繁，请稍后再试"}, http.StatusTooManyRequests)
 		return

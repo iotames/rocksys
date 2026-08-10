@@ -2,8 +2,8 @@
 // 与 internal/db 加载 sql/<dbtype>/ 同机制，实现"改规则不重新编译"）。
 //
 // 规则文件按行组织：# 开头为注释、空行忽略、其余每行一个模式。
-// 外置目录（SHIELD_RULES_DIR，默认 "rules"）存在同名文件时优先使用；
-// 找不到/内容为空时回退到本包编译期嵌入的 rules/。
+// 外置覆写目录统一为 HOT_SCRIPTS_DIR/rules（默认 hotscripts/rules，相对工作目录），
+// 存在同名文件时优先使用；找不到/内容为空时回退到本包编译期嵌入的 rules/。
 package shield
 
 import (
@@ -41,14 +41,15 @@ type ruleLoader struct {
 	sd *hotswap.ScriptDir
 }
 
-// newRuleLoader 创建加载器。rulesDir 为外置目录（相对工作目录），
-// 目录不存在时自动回退嵌入文件（ScriptDir 语义）。
-func newRuleLoader(rulesDir string) (*ruleLoader, error) {
+// newRuleLoader 创建加载器。外挂覆写目录统一为 HOT_SCRIPTS_DIR/rules
+// （默认 hotscripts/rules，相对工作目录），缺失时自动回退嵌入文件（ScriptDir 语义）。
+// ★ 统一收敛：不再提供独立 SHIELD_RULES_DIR 配置，子目录固定为 "rules"。
+func newRuleLoader() (*ruleLoader, error) {
 	sub, err := fs.Sub(shieldRulesFS, "rules")
 	if err != nil {
 		return nil, fmt.Errorf("shield: 读取内嵌 rules/ 目录失败: %w", err)
 	}
-	return &ruleLoader{sd: hotswap.NewScriptDir(sub, rulesDir)}, nil
+	return &ruleLoader{sd: hotswap.NewScriptDir(sub, "rules")}, nil
 }
 
 // load 读取全部规则文件。

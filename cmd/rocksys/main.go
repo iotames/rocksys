@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,6 +21,7 @@ import (
 	"rocksys/internal/db"
 	"rocksys/internal/engine"
 	"rocksys/internal/hotswap"
+	"rocksys/internal/netutil"
 
 	"github.com/iotames/easydb"
 
@@ -47,13 +47,6 @@ import (
 	_ "github.com/lib/pq"              // 注册 postgres 驱动（DB_DRIVER=postgres）
 	_ "modernc.org/sqlite"
 )
-
-// embedLogTplFS 内嵌 log.tpl（日志输出模板兜底源，作为 hotswap.NewScriptDir 的 embedFS）。
-// ⚠️ //go:embed 只能用于包级 var，不能放函数内局部变量；cmd/rocksys 必须内嵌一份，否则
-// 传 nil fs.FS 给 NewScriptDir 会 panic（模板加载失败回退逻辑只兜 error 不兜 panic）。
-//
-//go:embed log.tpl
-var embedLogTplFS embed.FS
 
 // shutdownTimeout 优雅停机总时限（§7.1 步骤 8）。
 const shutdownTimeout = 30 * time.Second
@@ -163,29 +156,41 @@ func buildServer(args []string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// ── 统一外挂脚本根目录装配（★ 必须在任何 NewScriptDir 调用前完成）────────────────
+	// 全项目"内嵌兜底、外挂覆写"的加载（SQL/WAF 规则/可信代理）统一经
+	// internal/hotswap 收敛入口构造，外挂覆写根目录统一为 HOT_SCRIPTS_DIR
+	// （默认 hotscripts，相对工作目录；各业务固定子目录 sql/rules/trusted_proxies）。
+	// ★ 时序：conf.Load 后立即注册（此时尚无 watcher，Register 广播不会触发日志初始化），
+	// 再注入 hotswap。
+	var hotScriptsDir string
+	if err := cfgMgr.Register(&hotScriptsDir, "HOT_SCRIPTS_DIR", "hotscripts",
+		"外挂脚本统一根目录（相对工作目录；sql/rules/trusted_proxies 等业务外挂子目录均位于其下，内嵌兜底）",
+		"装配期生效，热更后需重启"); err != nil {
+		return nil, fmt.Errorf("register HOT_SCRIPTS_DIR: %w", err)
+	}
+	hotswap.SetHotScriptsDir(hotScriptsDir)
+
 	// ── 日志系统装配（时序硬约束）──────────────────────────────────────
+	// 日志输出模板为 easyserver/log 包内置常量 defaultLogTpl
+	// （time={{.time}} level={{.level}} msg={{.msg}}），不再走外挂机制。
 	// 时序硬约束：须在首次日志调用（下方 log.Info("rocksys starting")）之前、且早于所有
-	// conf.Register（其 publish 会触发 watcher 回调 → log.GetInfo() → 日志初始化）——
-	// 否则模板加载器注入过晚，外挂 log.tpl 静默失效。
+	// conf.Register（其 publish 会触发 watcher 回调 → log.GetInfo() → 日志初始化）。
 
-	// 1. 注入模板加载器（外置优先/内嵌兜底）。直接传 NewScriptDir 构造值，不经 GetScriptDir 单例。
-	log.SetTemplateLoader(hotswap.NewScriptDir(embedLogTplFS, "log"))
-
-	// 2. 文件存档（E1/E2）。
+	// 1. 文件存档（E1/E2）。
 	if cfgMgr.Current().LogToFile {
 		log.SetLogWriterByFile(cfgMgr.Current().LogFile)
 		log.SetMaxSize(cfgMgr.Current().LogMaxSize)
 	}
 
-	// 3. 级别钩子 → 持久化（必须在启动级别之前注册，启动级别变更才会写盘保留）。
+	// 2. 级别钩子 → 持久化（必须在启动级别之前注册，启动级别变更才会写盘保留）。
 	log.SetOnLevelChange(func(level string) {
 		_ = cfgMgr.Set("ROCKSYS_LOG_LEVEL", level)
 	})
 
-	// 4. 启动级别（★ 替换原 log.SetLevel(slogLevel(...))，不保留两处）。
+	// 3. 启动级别（★ 替换原 log.SetLevel(slogLevel(...))，不保留两处）。
 	log.SetLevel(slogLevel(cfgMgr.Current().LogLevel))
 
-	// 5. 订阅配置热更（§2.5）：PUT /admin/config 改级别/文件的唯一生效通道（异步秒级内生效）。
+	// 4. 订阅配置热更（§2.5）：PUT /admin/config 改级别/文件的唯一生效通道（异步秒级内生效）。
 	cfgMgr.Watch(func(cfg *conf.Config) {
 		log.SetLevel(slogLevel(cfg.LogLevel))
 		if cfg.LogToFile && !log.GetInfo().FileOn {
@@ -203,6 +208,19 @@ func buildServer(args []string) (*Server, error) {
 		"upstream", cfgMgr.Current().DefaultUpstream,
 		"listen", cfgMgr.Current().ListenAddr,
 		"admin", cfgMgr.Current().AdminAddr)
+
+	// ── 可信代理列表装配（netutil 依赖，须在首次请求处理前完成）────────────────
+	// hotswap 外挂优先/内嵌兜底（默认 127.0.0.1），启动加载一次快照（改外挂文件需重启）。
+	// TRUSTED_PROXIES_FILE 为相对外置根目录 trusted_proxies 的文件路径，不允许绝对路径。
+	var trustedProxiesFile string
+	if err := cfgMgr.Register(&trustedProxiesFile, "TRUSTED_PROXIES_FILE", "trusted_proxies.txt",
+		"可信代理列表文件（相对 trusted_proxies 外置目录的相对路径，不允许绝对路径；外挂优先，缺失回退内嵌 127.0.0.1）",
+		"装配期生效，热更后需重启"); err != nil {
+		return nil, fmt.Errorf("register TRUSTED_PROXIES_FILE: %w", err)
+	}
+	if err := netutil.LoadTrustedProxies(trustedProxiesFile); err != nil {
+		return nil, fmt.Errorf("netutil.LoadTrustedProxies: %w", err)
+	}
 
 	// 2. 创建转发链（初始为空）
 	ch := chain.New()
@@ -235,11 +253,12 @@ func buildServer(args []string) (*Server, error) {
 	mgr.RegisterMiddleware(script.New(time.Duration(scriptTimeoutMS) * time.Millisecond)) // Lua 策略 → chain.Middle
 
 	// 统一数据访问层（§? 数据访问层）：为可插拔组件（obs/mq 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
-	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）/ SQL_DIR（默认 sql，外置脚本目录）。
+	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）。
+	// SQL 脚本外挂覆写目录统一为 HOT_SCRIPTS_DIR/sql（默认 hotscripts/sql，内嵌 sql/ 兜底；不再有独立 SQL_DIR 配置）。
 	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；obs 的默认 db 存储与 mq 等依赖方因此不可用。
 	// ★ 必须先于 obs 创建：默认 OBS_STORE=db，obs 复用本数据访问层；未就绪时回退 file 并告警（file 已弃用）。
 	var dataDB *db.DB
-	var dbDriver, dbDSN, sqlDir string
+	var dbDriver, dbDSN string
 	if err := cfgMgr.Register(&dbDriver, "DB_DRIVER", "sqlite", "数据库驱动名（sqlite/mysql/postgres）"); err != nil {
 		return nil, fmt.Errorf("register DB_DRIVER: %w", err)
 	}
@@ -251,10 +270,7 @@ func buildServer(args []string) (*Server, error) {
 	); err != nil {
 		return nil, fmt.Errorf("register DB_DSN: %w", err)
 	}
-	if err := cfgMgr.Register(&sqlDir, "SQL_DIR", "sql", "外置 SQL 脚本目录（优先加载，嵌入文件兜底）"); err != nil {
-		return nil, fmt.Errorf("register SQL_DIR: %w", err)
-	}
-	if d, err := db.Open(dbDriver, dbDSN, sqlDir); err != nil {
+	if d, err := db.Open(dbDriver, dbDSN); err != nil {
 		log.Warn("db: 数据访问层初始化失败（不阻断底座）", "driver", dbDriver, "err", err.Error())
 	} else {
 		dataDB = d

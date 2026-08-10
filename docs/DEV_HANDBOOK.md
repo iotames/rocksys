@@ -302,6 +302,8 @@ func parseArgsToMap(args []string) map[string]string
 |  | `ROCKSYS_LOG_TO_FILE` | 日志文件存档开关 | `false` |
 |  | `ROCKSYS_LOG_FILE` | 日志文件路径 | `logs/rocksys.log` |
 |  | `ROCKSYS_LOG_MAX_SIZE` | 日志文件大小上限(MB，0=不限制) | `50` |
+|  | `HOT_SCRIPTS_DIR` | 脚本外挂统一根目录（默认 `hotscripts`）：各挂件外挂子目录固定（`sql/`、`rules/`、`trusted_proxies/`），外挂优先、内嵌兜底 | `hotscripts` |
+|  | `TRUSTED_PROXIES_FILE` | 可信代理列表文件（相对 `HOT_SCRIPTS_DIR/trusted_proxies/` 外置目录的相对路径，不允许绝对路径；外挂优先，缺失回退内嵌 `127.0.0.1`；启动加载一次快照） | `trusted_proxies.txt` |
 
 **挂件配置项（节选，全部经 `Register` 注册）**：
 
@@ -426,6 +428,7 @@ func (e *Engine) Forward(w http.ResponseWriter, r *http.Request, target string, 
 - 超时时返回 `504 Gateway Timeout`。
 - 上游不可达返回 `502 Bad Gateway`。
 - 转发超时使用 `conf.UpstreamTimeout`，通过 `context.WithTimeout` 控制。
+- **追加 `X-Forwarded-For` 的 IP 取自 `netutil.GetClientIP`**（可信代理模型：直连源 IP 命中可信代理列表 `TRUSTED_PROXIES_FILE` 才信任 `X-Real-IP`/`X-Forwarded-For` 转发头，否则直接用直连源 IP；防公网直连伪造，见 §7.1 装配）。
 - WebSocket Upgrade 请求：走 `forwardWebSocket` 隧道分支（直连后端、原样转发握手；101 后劫持客户端连接双向字节对拷）。非 101 响应（后端拒绝升级）按普通响应透传。**w 必须支持 `http.Hijacker`**——ws 请求由 Adapter 绕过缓冲路径直写底层连接。
 - **w 参数说明**：通常为客户端 ResponseWriter。当存在响应处理中间件（Tail 槽位实现 `chain.ResponseHook`）时，Adapter 会传入缓冲 Writer（§4.4 步骤 7a），Forward 无需感知、按普通 writer 写入即可；缓冲与回写由 Adapter 统一处理。
 - 响应体默认不缓存、不解析、不修改（直接流式回传）；仅当 L3 result 等 `ResponseHook` 挂件开启时才进入缓冲路径（§4.6）。
@@ -950,6 +953,8 @@ curl http://127.0.0.1:19527/admin/switch/list
 
 - **职责**：装配全部组件并启动。**唯一可以同时 import `internal/*` 和 `plugins/*` 的包。**
 
+- **可信代理装配（启动时序内，首次请求处理前）**：`TRUSTED_PROXIES_FILE` 经 `cfgMgr.Register` 注册（默认 `trusted_proxies.txt`，相对外置根 `HOT_SCRIPTS_DIR/trusted_proxies/` 的相对路径，**不允许绝对路径**），随后调 `netutil.LoadTrustedProxies` 加载可信代理列表快照（`internal/hotswap.ScriptDir` 外挂优先、内嵌兜底，内嵌默认 `127.0.0.1`；解析失败 fail-fast 中止启动）。此后 `netutil.GetClientIP` 供 obs 访问日志、shield WAF、adminapi 限流、dispatch 一致性哈希、engine 转发追加 XFF 统一使用（收敛单一入口，其他包禁止自行解析转发头）。
+
 ### 7.1 main 函数骨架
 
 ```go
@@ -1303,7 +1308,6 @@ SHIELD_WAF_RISK_PATHS=
 SHIELD_WAF_CRAWLER_UA=false
 SHIELD_ALLOW_METHODS=
 SHIELD_MAX_BODY_SIZE=0
-SHIELD_RULES_DIR=rules
 ```
 
 > 以上配置项由挂件在构造时通过 `cfgMgr.Register(...)` 注册（见 §2.2），注册后自动纳入 .env 读写与热更广播；未注册的 key 在 `/admin/config` 写入时静默无效。
@@ -1341,7 +1345,7 @@ WAF 检测链在 IP 黑白名单之后、路径/UA 规则之前执行，各检�
 - **注入检测用组合特征子串**（如 `union select`、`select * from`）而非单关键词，避免误杀 URL 中的普通单词。
 - **规则全部外置文件**：`plugins/shield/rules/*.txt` 经 `internal/hotswap.ScriptDir` 加载（**外置目录优先、嵌入兜底**，与 `internal/db` 加载 `sql/<dbtype>/` 同机制），**改规则无需重新编译**。
 
-规则文件清单（每行一个模式，`#` 注释、空行忽略；`SHIELD_RULES_DIR` 外置同名文件整体替换嵌入文件）：
+规则文件清单（每行一个模式，`#` 注释、空行忽略；`HOT_SCRIPTS_DIR/rules/` 外置同名文件整体替换嵌入文件）：
 
 | 文件 | 内容 | 对应开关 |
 |------|------|---------|
@@ -1369,7 +1373,7 @@ curl -X PUT http://127.0.0.1:19527/admin/config \
 curl http://localhost:8080/.env
 # → 403 Forbidden
 
-# 外置规则覆盖（不重新编译）：在 SHIELD_RULES_DIR 放同名 crawler_ua.txt 新增自定义 UA
+# 外置规则覆盖（不重新编译）：在 HOT_SCRIPTS_DIR/rules/ 放同名 crawler_ua.txt 新增自定义 UA
 ```
 
 ---
@@ -2133,7 +2137,7 @@ ec.IntListVar(pval *[]int, name string, defval []int, title)  // []int 逗号分
 |--------|--------|------|
 | `DB_DRIVER` | `sqlite` | 数据库驱动名（sqlite/mysql/postgres） |
 | `DB_DSN` | `rocksys.db?_busy_timeout=5000&_journal_mode=WAL` | 连接串（不同驱动取值不同；sqlite 默认已含 busy_timeout=5000 与 WAL，可显式覆盖） |
-| `SQL_DIR` | `sql` | 外置 SQL 脚本目录（优先加载，嵌入兜底） |
+| `HOT_SCRIPTS_DIR` | `hotscripts` | 脚本外挂统一根目录；SQL 方言脚本外挂子目录固定 `sql/`（优先加载，嵌入兜底） |
 
 ### C.2 SQL 脚本目录约定（数据库铁律）
 
@@ -2141,7 +2145,7 @@ ec.IntListVar(pval *[]int, name string, defval []int, title)  // []int 逗号分
 
 - 目录：`sql/<dbtype>/`（如 `sql/sqlite/`、`sql/mysql/`、`sql/postgres/`）。
 - 占位符：参数化查询用 `?`（sqlite/mysql）或 `$1`（postgres）；动态表名等标识符用 `{xxx}`（运行时由组件替换，禁止来自用户输入）。
-- 加载：`internal/hotswap/script.go` 的 `ScriptDir`——外置 `SQL_DIR` 优先，找不到回退编译期 embed。
+- 加载：`internal/hotswap/script.go` 的 `ScriptDir`——外置 `HOT_SCRIPTS_DIR/sql/` 优先，找不到回退编译期 embed。
 - 缺脚本即报错：切换 `DB_DRIVER` 后若 `sql/<dbtype>/` 缺某条查询脚本，`SQL()` 直接返回错误。
 
 **DSN 参数约定（P1：sqlite 自动补参）**：

@@ -10,12 +10,13 @@ import (
 	"testing"
 
 	"rocksys/internal/chain"
+	"rocksys/internal/hotswap"
 )
 
 // testWAF 从内嵌规则文件加载并构建测试用 wafSnapshot。
 func testWAF(t *testing.T) *wafSnapshot {
 	t.Helper()
-	rl, err := newRuleLoader(defaultRulesDir)
+	rl, err := newRuleLoader()
 	if err != nil {
 		t.Fatalf("创建规则加载器失败: %v", err)
 	}
@@ -281,16 +282,22 @@ func TestShield_WAF_CrawlerUA(t *testing.T) {
 }
 
 // 外置规则目录优先：外部 crawler_ua.txt 覆盖内嵌文件，改规则无需重新编译。
+// ★ 统一收敛：外挂规则覆写目录固定为 HOT_SCRIPTS_DIR/rules（测试经 SetHotScriptsDir 隔离外挂根）。
 func TestShield_WAF_RulesDirOverride(t *testing.T) {
+	origExt := hotswap.HotScriptsDir()
+	t.Cleanup(func() { hotswap.SetHotScriptsDir(origExt) })
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "crawler_ua.txt"),
+	hotswap.SetHotScriptsDir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "rules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rules", "crawler_ua.txt"),
 		[]byte("# 自定义爬虫 UA\nmy-custom-bot\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s, _ := newTestShield(t)
 	s.enabled = true
 	s.wafCrawlerOn = true
-	s.rulesDir = dir
 	if err := s.Start(nil); err != nil {
 		t.Fatal(err)
 	}

@@ -15,13 +15,11 @@ import (
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
 	"rocksys/internal/hotswap"
+	"rocksys/internal/netutil"
 )
 
 // bucketsMax 限流桶数量上限，LRU 淘汰防内存膨胀（§9.3）。
 const bucketsMax = 10000
-
-// defaultRulesDir WAF 规则外置目录默认值（相对工作目录；缺失时回退内嵌 rules/）。
-const defaultRulesDir = "rules"
 
 // PathRule 路径/UA 规则（glob 风格，* 通配任意串，? 通配单字符）。
 type PathRule struct {
@@ -57,7 +55,6 @@ type Shield struct {
 	wafRiskPaths      string // SHIELD_WAF_RISK_PATHS（*string）追加风险路径
 	allowMethods      string // SHIELD_ALLOW_METHODS（*string）方法白名单
 	maxBodySize       int    // SHIELD_MAX_BODY_SIZE（*int）请求体上限字节
-	rulesDir          string // SHIELD_RULES_DIR（*string）WAF 规则外置目录（优先加载，嵌入兜底）
 
 	mu       sync.Mutex   // 保护 pathRules 读写
 	snapshot atomic.Value // *shieldSnapshot
@@ -235,7 +232,6 @@ func New(cfgMgr conf.Manager) (*Shield, error) {
 		{&s.wafRiskPaths, "SHIELD_WAF_RISK_PATHS", "", "追加风险路径（逗号分隔，需先开启 SHIELD_WAF_RISK_PATH）"},
 		{&s.allowMethods, "SHIELD_ALLOW_METHODS", "", "HTTP 方法白名单（逗号分隔，空=不限）"},
 		{&s.maxBodySize, "SHIELD_MAX_BODY_SIZE", "0", "请求体大小上限（字节，0=不限）"},
-		{&s.rulesDir, "SHIELD_RULES_DIR", "rules", "WAF 规则外置目录（优先加载，缺失回退内嵌 rules/）"},
 	}
 	for _, it := range items {
 		if err := cfgMgr.Register(it.pval, it.name, it.defval, it.title); err != nil {
@@ -272,12 +268,8 @@ func (s *Shield) Start(cfg any) error {
 		limitBy = "ip"
 	}
 
-	// 加载 WAF 规则文件（外置目录优先、嵌入兜底）。
-	rulesDir := s.rulesDir
-	if rulesDir == "" {
-		rulesDir = defaultRulesDir
-	}
-	loader, err := newRuleLoader(rulesDir)
+	// 加载 WAF 规则文件（外置 HOT_SCRIPTS_DIR/rules 优先、嵌入兜底）。
+	loader, err := newRuleLoader()
 	if err != nil {
 		return err
 	}
@@ -322,7 +314,7 @@ func (s *Shield) Handle(ctx *chain.Context) (next bool) {
 	if snap == nil || !snap.enabled {
 		return true
 	}
-	ip := clientIP(ctx.R)
+	ip := netutil.GetClientIP(ctx.R)
 	if ip == "" {
 		return true
 	}
@@ -398,14 +390,6 @@ func (s *shieldSnapshot) limitKey(ip string) string {
 		return ip
 	}
 	return ip
-}
-
-// clientIP 从 RemoteAddr 提取客户端 IP。
-func clientIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
 
 // matchGlob glob 风格匹配：* 通配任意串（含空串），? 通配单字符。

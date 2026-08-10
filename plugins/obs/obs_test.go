@@ -60,7 +60,7 @@ func newTestObs(t *testing.T) (*Obs, *fakeConfMgr) {
 // newTestObsDB 构造使用 sqlite 数据访问层的 Obs（OBS_STORE=db 场景）。
 func newTestObsDB(t *testing.T) (*Obs, *db.DB) {
 	t.Helper()
-	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs.db"), "")
+	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -519,7 +519,7 @@ func TestFileStoreQuery(t *testing.T) {
 
 // DBStore 写读 + 过滤（sqlite 临时库）。
 func TestDBStoreWriteQuery(t *testing.T) {
-	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs.db"), "")
+	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -569,7 +569,7 @@ func TestDBStoreWriteQuery(t *testing.T) {
 // TestDBStoreTypeNormalize 字符串列内容为纯数字时（如 trace_id="123"）不得被底层
 // decodeAny 强转成数值：查询返回的类型必须与维度注册表一致（DimString→string、DimInt→int64）。
 func TestDBStoreTypeNormalize(t *testing.T) {
-	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs_type.db"), "")
+	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs_type.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -700,7 +700,7 @@ func TestFileStoreSizeBytes(t *testing.T) {
 
 // DBStore.SizeBytes 统计表 + 索引占用（sqlite dbstat）。
 func TestDBStoreSizeBytes(t *testing.T) {
-	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs.db"), "")
+	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

@@ -190,7 +190,7 @@ stbiz_A ──(经 RockBiz SDK)──▶ HTTP 内网调用（默认）/ gRPC（�
 
 > **数据访问层（internal/db + easydb）**：底座本身仍不直连业务数据库（红线不破）。
 > 该层服务的是**可插拔的串行组件**（如 mq 的 outbox 存储）——组件需要持久化时经统一数据访问层
-> 操作，SQL 语句外置到 `sql/<dbtype>/` 目录（外置目录优先、编译期嵌入兜底），切换数据库缺脚本即报错。
+> 操作，SQL 语句外置到 `sql/<dbtype>/` 目录（外挂统一根 `HOT_SCRIPTS_DIR` 下 `sql/` 子目录优先、编译期嵌入兜底），切换数据库缺脚本即报错。
 >
 > **数据库铁律**（详见 `docs/DEV_HANDBOOK.md`）：① SQL 必须落盘 `sql/<dbtype>/`，禁止 Go 内联；② 换库只改 `bin/.env`（`DB_DRIVER`/`DB_DSN`）；③ 纯 SQL 参数化，不用 ORM/对象模型；④ sqlite/mysql/postgres 三方言齐平，缺脚本即报错。
 

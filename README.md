@@ -164,6 +164,10 @@ curl http://127.0.0.1:8080/hello
 | `ROCKSYS_LOG_TO_FILE` | `false` | 日志文件存档开关 |
 | `ROCKSYS_LOG_FILE` | `logs/rocksys.log` | 日志文件路径（相对工作目录） |
 | `ROCKSYS_LOG_MAX_SIZE` | `50` | 日志文件大小上限（整数 MB，0=不限制） |
+| `HOT_SCRIPTS_DIR` | `hotscripts` | 脚本外挂统一根目录：各挂件子目录固定（`sql/`、`rules/`、`trusted_proxies/`），外挂优先、内嵌兜底；SQL/WAF 规则/可信代理改文件无需重新编译 |
+| `TRUSTED_PROXIES_FILE` | `trusted_proxies.txt` | 可信代理列表文件（相对 `HOT_SCRIPTS_DIR/trusted_proxies/` 外置目录，不允许绝对路径；外挂优先，缺失回退内嵌默认 `127.0.0.1`；启动加载一次，改外挂文件需重启） |
+
+**可信代理模型**：获取客户端真实 IP（访问日志/WAF/限流/哈希/转发链路统一经 `netutil.GetClientIP`）——直连源 IP（TCP 层）命中可信代理列表时才信任 `X-Real-IP` / `X-Forwarded-For` 转发头，否则直接返回直连源 IP，防公网直连伪造。转发头解析：`X-Real-IP`（覆写语义，校验合法即用）→ `X-Forwarded-For` 从右往左跳过可信代理取第一个合法 IP → 兜底直连源 IP。列表每行一个 IP 或 CIDR 网段（如 `10.0.0.0/8`），`#` 注释、空行忽略；外挂文件放**工作目录 `hotscripts/trusted_proxies/`** 下（开发规范下即 `bin/hotscripts/trusted_proxies/`，如 `bin/hotscripts/trusted_proxies/trusted_proxies.txt`）。默认仅 `127.0.0.1`；IPv6 本机 Nginx（`::1`）等场景需在外挂文件显式加入。
 
 ### 配置文件示例（`bin/.env`）
 
@@ -178,6 +182,10 @@ ROCKSYS_LOG_TO_FILE = false
 ROCKSYS_LOG_FILE = logs/rocksys.log
 ROCKSYS_LOG_MAX_SIZE = 50
 
+# ===== 网络层：可信代理（客户端真实 IP 获取）=====
+# 相对 HOT_SCRIPTS_DIR/trusted_proxies/ 外置目录的文件路径（不允许绝对路径）；外挂优先，缺失回退内嵌默认 127.0.0.1；启动加载一次
+TRUSTED_PROXIES_FILE = trusted_proxies.txt
+
 # ===== 防护 shield（L1）=====
 SHIELD_ENABLED = true
 SHIELD_IP_BLACKLIST = 10.0.0.5,192.168.1.0/24
@@ -191,7 +199,11 @@ SHIELD_WAF_XSS = true
 SHIELD_WAF_PATH_TRAVERSAL = true
 SHIELD_WAF_RISK_PATH = true
 SHIELD_WAF_CRAWLER_UA = true
-SHIELD_RULES_DIR = rules
+
+# ===== 脚本外挂统一入口 =====
+# 各挂件外挂子目录固定：sql/（数据访问层 SQL）、rules/（WAF 规则）、trusted_proxies/（可信代理）
+# 外挂优先、内嵌兜底；改文件无需重新编译
+HOT_SCRIPTS_DIR = hotscripts
 
 # ===== 分发 dispatch（L2）=====
 # 格式：<prefix>=<spec>[;<spec>...]；节点 <url>[|w=权重]；可选 @间隔@超时@路径 健康检查
@@ -240,7 +252,7 @@ OBJECT_BASE_DIR = ./data/object
 # ===== 数据访问层 =====
 DB_DRIVER = sqlite
 DB_DSN = rocksys.db               # 默认已含 ?_busy_timeout=5000&_journal_mode=WAL，可显式覆盖；mysql/postgres 示例见注释
-SQL_DIR = sql
+# SQL 方言脚本外挂目录固定为 HOT_SCRIPTS_DIR/sql/（见上方脚本外挂统一入口）
 ```
 
 > 每个挂件默认关闭；`bin/.env` 里写配置不等于启用，需在 WebUI「组件」页或 `rockctl switch on` 显式开启。
@@ -387,14 +399,14 @@ sudo systemctl restart rocksys
 - **WebSocket 支持**：Upgrade 握手（101）后进入双向字节隧道，ws 帧原样透传；握手前仍走完整中间件链（认证/限流/trace 照常生效），后端拒绝升级（非 101）按普通响应透传。
 - **大文件上传/下载不中转**：避免二进制流占用代理。
 - **管理接口仅监听回环地址**（默认 `127.0.0.1:19527`），勿对外网暴露。
-- **WAF 规则外置目录**（默认 `rules/`）：改规则无需重新编译，`SHIELD_RULES_DIR` 指定，缺失回退内嵌规则。
-- **SQL 脚本外置目录**（默认 `sql/`）：数据访问层脚本优先加载外置目录，改 SQL 无需重新编译。
+- **WAF 规则外置目录**（`HOT_SCRIPTS_DIR/rules/`，默认 `hotscripts/rules/`）：改规则无需重新编译，外挂优先、缺失回退内嵌规则。
+- **SQL 脚本外置目录**（`HOT_SCRIPTS_DIR/sql/`，默认 `hotscripts/sql/`）：数据访问层脚本优先加载外置目录，改 SQL 无需重新编译。
 - **数据库零配置**：默认 SQLite 本地文件 `rocksys.db`，可经 `DB_DRIVER` / `DB_DSN` 切换 MySQL / PostgreSQL（缺方言脚本即报错）。
 
 ### 数据库铁律
 
 1. **SQL 落盘**：所有数据库操作写成独立 `.sql` 文件，放 `sql/<dbtype>/`（`sql/sqlite/`、`sql/mysql/`、`sql/postgres/`），禁止 Go 代码内联 SQL。
-2. **换库只改 bin/.env**：切换数据库仅改 `DB_DRIVER` / `DB_DSN`（`SQL_DIR` 默认 `sql`），不改代码、不重编译。
+2. **换库只改 bin/.env**：切换数据库仅改 `DB_DRIVER` / `DB_DSN`（SQL 方言脚本外挂目录固定 `HOT_SCRIPTS_DIR/sql/`），不改代码、不重编译。
 3. **纯 SQL 原生**：不用对象模型 / ORM，参数化占位符 `?`（sqlite/mysql）或 `$1`（postgres）；动态标识符 `{xxx}` 禁止来自外部输入。
 4. **方言齐平**：SQL 变更须同步 sqlite/mysql/postgres 三份方言脚本；缺脚本即运行时报错（`internal/db.SQL()` 强制校验），不悄悄降级。
 

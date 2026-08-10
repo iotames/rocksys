@@ -7,7 +7,7 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 - `cmd/rocksys`：主程序入口，装配全部挂件与 admin API；`cmd/rockctl`：控制台工具。
 - `internal/`：内部实现（conf、engine、chain、dataflow、adminapi、db、hotswap、jwtutil、workpool）。
 - `plugins/`：可选挂件，如 auth、dispatch、shield、obs、mq、object、registry、script、rewrite、result、trace、config、copy。
-- `sql/<mysql|postgres|sqlite>/`：数据库三方言 SQL 脚本外置目录。
+- `sql/<mysql|postgres|sqlite>/`：数据库三方言 SQL 脚本编译期内嵌源目录（运行期外挂覆写位于 `HOT_SCRIPTS_DIR/sql/` 下）。
 - `webui/`：纯静态管理控制台，经 `go:embed` 内嵌进二进制。
 - `easyconf/`、`easyserver/`、`easydb/`：独立 git 仓库的地基库，经 `go.mod replace` 本地引用。
 - `docs/`、`ARCHITECTURE.md`：架构与接口文档，接口变更必须同步。

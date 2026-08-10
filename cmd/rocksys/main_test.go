@@ -154,7 +154,7 @@ func TestBuildServer(t *testing.T) {
 		t.Fatalf("read default.env: %v", err)
 	}
 	s := string(def)
-	for _, key := range []string{"DB_DSN", "SCRIPT_TIMEOUT", "REGISTRY_ADDR", "REGISTRY_TTL", "OBJECT_BASE_DIR", "MQ_ENABLED", "MQ_POLL_INTERVAL", "MQ_MAX_RETRIES", "MQ_BASE_BACKOFF", "MQ_CONSUMER_BASE_URL"} {
+	for _, key := range []string{"DB_DSN", "HOT_SCRIPTS_DIR", "TRUSTED_PROXIES_FILE", "SCRIPT_TIMEOUT", "REGISTRY_ADDR", "REGISTRY_TTL", "OBJECT_BASE_DIR", "MQ_ENABLED", "MQ_POLL_INTERVAL", "MQ_MAX_RETRIES", "MQ_BASE_BACKOFF", "MQ_CONSUMER_BASE_URL"} {
 		if !strings.Contains(s, key) {
 			t.Errorf("default.env 应包含全量默认值 %s:\n%s", key, s)
 		}

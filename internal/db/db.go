@@ -31,8 +31,10 @@ type SQLSource interface {
 	SQL(name string) (string, error)
 }
 
-// defaultExternalDir 外置 SQL 目录默认值（相对工作目录，与项目根 sql/ 结构一致）。
-const defaultExternalDir = "sql"
+// scriptSubDir db 业务在 HOT_SCRIPTS_DIR 统一外挂根下的固定子目录：
+// 外挂 SQL 覆写目录 = HOT_SCRIPTS_DIR/sql（默认 hotscripts/sql，相对工作目录），
+// 与嵌入的 sql/ 目录结构一致（sql/<dbtype>/）。★ 统一收敛：不再提供独立 SQL_DIR 配置。
+const scriptSubDir = "sql"
 
 // sqlite DSN 自动补全参数（modernc.org/sqlite 驱动 DSN 参数，见其源码 sqlite.go dsnPick）。
 const (
@@ -85,32 +87,30 @@ var _ SQLSource = (*DB)(nil)
 // Open 打开数据库连接并初始化 SQL 脚本访问。
 //
 // driver：数据库驱动名（sqlite/mysql/postgres 等，须已注册并内嵌 sql/<driver>/ 脚本目录）；
-// dsn：数据库连接串；sqlDir：外置脚本目录（优先），为空时用默认 sql/；
-// 外置目录不存在时，脚本自动回退到编译期嵌入的 sql/。
+// dsn：数据库连接串。外挂 SQL 覆写目录统一为 HOT_SCRIPTS_DIR/sql（见 hotswap 收敛入口），
+// 缺失时脚本自动回退到编译期嵌入的 sql/。
 //
 // 错误语义：驱动未注册、内嵌目录缺少 sql/<driver>/、连接失败均直接报错——
 // 其中"内嵌目录缺少脚本"正是"切换数据库找不到对应脚本即报错"的实现。
-func Open(driver, dsn, sqlDir string) (*DB, error) {
+func Open(driver, dsn string) (*DB, error) {
 	driver = strings.ToLower(strings.TrimSpace(driver))
 	if driver == "" {
 		return nil, fmt.Errorf("db: 数据库驱动名不能为空")
-	}
-
-	if strings.TrimSpace(sqlDir) == "" {
-		sqlDir = defaultExternalDir
 	}
 
 	sub, err := fs.Sub(sqlfiles.FS, "sql")
 	if err != nil {
 		return nil, fmt.Errorf("db: 读取内嵌 sql/ 目录失败: %w", err)
 	}
-	// 校验方言脚本目录：内嵌 sql/<driver>/ 缺失时，若外置目录提供 sql/<driver>/ 则放行
-	// （运行时 SQL() 优先读外置），否则拒绝。至少支持 1 种数据库由 sql/sqlite 保证。
+	// 校验方言脚本目录：内嵌 sql/<driver>/ 缺失时，若外置目录提供
+	// HOT_SCRIPTS_DIR/sql/<driver>/ 则放行（运行时 SQL() 优先读外置），否则拒绝。
+	// 至少支持 1 种数据库由 sql/sqlite 保证。
 	if _, err := fs.ReadDir(sub, driver); err != nil {
-		if _, serr := os.Stat(filepath.Join(sqlDir, driver)); serr != nil {
+		extDriverDir := filepath.Join(hotswap.HotScriptsDir(), scriptSubDir, driver)
+		if _, serr := os.Stat(extDriverDir); serr != nil {
 			return nil, fmt.Errorf(
-				"db: 内嵌 SQL 脚本缺少 sql/%s/ 目录，且外置目录 %s 亦未提供 sql/%s/，无法支持驱动 %s（请补全脚本后重新编译，或在 SQL_DIR 外置目录中提供 sql/%s/）: %w",
-				driver, sqlDir, driver, driver, driver, err)
+				"db: 内嵌 SQL 脚本缺少 sql/%s/ 目录，且外置目录 %s 亦未提供 sql/%s/，无法支持驱动 %s（请补全脚本后重新编译，或在 HOT_SCRIPTS_DIR(%s)/sql/ 外置目录中提供 sql/%s/）: %w",
+				driver, filepath.Join(hotswap.HotScriptsDir(), scriptSubDir), driver, driver, hotswap.HotScriptsDir(), driver, err)
 		}
 	}
 
@@ -130,13 +130,13 @@ func Open(driver, dsn, sqlDir string) (*DB, error) {
 
 	return &DB{
 		edb:     easydb.NewEasyDbBySqlDB(sqldb),
-		scripts: hotswap.NewScriptDir(sub, sqlDir),
+		scripts: hotswap.NewScriptDir(sub, scriptSubDir),
 		driver:  driver,
 	}, nil
 }
 
 // EmbeddedSQLSource 返回仅使用编译期嵌入脚本的 SQLSource（driver 指定方言目录）。
-// 用于测试与"无外置目录"场景。外置目录被设为不存在路径，GetScriptBytes 自动回退嵌入文件。
+// 用于测试与"无外置目录"场景（无外挂覆写，直接回退嵌入文件）。
 func EmbeddedSQLSource(driver string) (SQLSource, error) {
 	driver = strings.ToLower(strings.TrimSpace(driver))
 	if driver == "" {
@@ -150,7 +150,7 @@ func EmbeddedSQLSource(driver string) (SQLSource, error) {
 		return nil, fmt.Errorf("db: 内嵌 SQL 脚本缺少 sql/%s/ 目录: %w", driver, err)
 	}
 	return &DB{
-		scripts: hotswap.NewScriptDir(sub, ".nonexistent-external-sql-dir"),
+		scripts: hotswap.EmbeddedScriptDir(sub),
 		driver:  driver,
 	}, nil
 }

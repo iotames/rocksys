@@ -69,7 +69,7 @@
       else if (orderMap[g.name]) orderMap[g.name].items.push(item);
     });
     const groups = [];
-    const pushed = {}; // 防御：同名分组（如 db 的 DB_/SQL_DIR）只 push 一次
+    const pushed = {}; // 防御：同名分组只 push 一次
     PREFIX_GROUPS.forEach(g => {
       const grp = orderMap[g.name];
       if (grp && grp.items.length && !pushed[g.name]) {

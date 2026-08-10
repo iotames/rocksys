@@ -29,7 +29,7 @@ func TestPostgresDialect(t *testing.T) {
 		t.Skip("PG_TEST_DSN 未设置，跳过 PostgreSQL 集成测试")
 	}
 
-	d, err := db.Open("postgres", dsn, "sql")
+	d, err := db.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("Open(postgres) err: %v", err)
 	}

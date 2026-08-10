@@ -1,7 +1,7 @@
 # 爬虫/扫描器 User-Agent 特征：每行一个模式，匹配时转小写（子串匹配）。
 # 注意：可能误伤合法爬虫（Googlebot 等）与开发调试工具（curl/wget），故默认关闭
 # （SHIELD_WAF_CRAWLER_UA=false）。需要拦截时再开启，并可按需编辑本文件。
-# 以 # 开头的行是注释，空行忽略。外置目录（SHIELD_RULES_DIR）同名文件可覆盖本文件。
+# 以 # 开头的行是注释，空行忽略。外挂覆写目录 HOT_SCRIPTS_DIR/rules/ 同名文件可覆盖本文件。
 bot
 spider
 crawler

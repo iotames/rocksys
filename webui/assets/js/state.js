@@ -66,9 +66,11 @@
     { prefix: 'COPY_',    name: 'copy',    label: '抄送' },
     { prefix: 'RESULT_',  name: 'result',  label: '结果' },
     { prefix: 'AUTH_',    name: 'auth',    label: '认证' },
-    { prefix: 'MQ_',      name: 'mq',      label: '消息' },
-    { prefix: 'DB_',      name: 'db',      label: '数据访问' },
-    // SQL_DIR 特判归入 db 组（见 groupOf），避免同组重复注册产生重复页签
+    { prefix: 'MQ_',       name: 'mq',       label: '消息' },
+    { prefix: 'REGISTRY_', name: 'registry', label: '注册中心' },
+    { prefix: 'OBJECT_',   name: 'object',   label: '对象存储' },
+    { prefix: 'SCRIPT_',   name: 'script',   label: '脚本' },
+    { prefix: 'DB_',       name: 'db',       label: '数据访问' },
   ];
 
   // 枚举值配置项（编辑态渲染下拉而非手填）：key → 可选值数组（首个为默认/推荐）
@@ -88,9 +90,8 @@
     obs: 'OBS_', copy: 'COPY_', result: 'RESULT_', auth: 'AUTH_', mq: 'MQ_',
   };
 
-  // 配置分组归属（SQL_DIR 特判归入数据访问组）
+  // 配置分组归属（按前缀匹配；未匹配落"其他"组）
   function groupOf(key) {
-    if (key === 'SQL_DIR') return { prefix: 'DB_', name: 'db', label: '数据访问' };
     for (let i = 0; i < PREFIX_GROUPS.length; i++) {
       if (key.indexOf(PREFIX_GROUPS[i].prefix) === 0) return PREFIX_GROUPS[i];
     }

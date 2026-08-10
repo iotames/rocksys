@@ -4,7 +4,7 @@
 
 本目录存放 PostgreSQL 方言的数据库查询脚本。加载规则（见 `internal/hotswap/script.go`）：
 
-1. 运行时优先加载外置目录（`SQL_DIR`，默认 `sql/`）中对应的脚本文件，可热修改无需重新编译；
+1. 运行时优先加载外置目录（`HOT_SCRIPTS_DIR/sql/`，默认 `hotscripts/sql/`）中对应的脚本文件，可热修改无需重新编译；
 2. 找不到脚本（或内容为空）时，回退到编译期嵌入二进制的本目录文件；
 3. 切换数据库驱动为 `postgres` 时，如果某条查询在 `sql/postgres/` 下找不到脚本，系统直接报错。
 

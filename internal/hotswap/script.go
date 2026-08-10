@@ -3,6 +3,14 @@
 // 与 internal/hotswap 组件热切不同：本文件负责"纯文本文件（如 SQL）的逐级覆盖加载"，
 // 参考 todo/hotswap/script.go 机制，泛化嵌入源为 fs.FS 接口。
 //
+// ★ 统一收敛红线（车同文，书同轨）：
+//   - 全项目所有"内嵌兜底、外挂文件覆写"的加载（SQL、WAF 规则、可信代理等）
+//     必须统一经本文件的收敛入口 NewScriptDir / EmbeddedScriptDir 构造，禁止在其他包
+//     散点直接构造 ScriptDir。
+//   - 外挂覆写目录统一为配置项 HOT_SCRIPTS_DIR（默认 "hotscripts"，相对工作目录），
+//     各业务使用固定子目录：sql/（数据访问 SQL）、rules/（WAF 规则）、
+//     trusted_proxies/（可信代理）。
+//
 // 加载顺序（逐级覆盖）：
 //  1. 优先从外置目录 dirList 中查找（可热修改，无需重新编译）；
 //  2. 找不到（或文件内容为空/读取失败）时，回退到编译期嵌入的 embedFS。
@@ -27,6 +35,21 @@ type ScriptDir struct {
 var onesd *ScriptDir
 var once sync.Once
 
+// hotScriptsDir 外挂脚本统一根目录（HOT_SCRIPTS_DIR 配置值，默认 "hotscripts"，相对工作目录）。
+// ★ 全项目红线：所有外挂覆写目录统一位于本根目录下，禁止各业务自建外置根。
+var hotScriptsDir = "hotscripts"
+
+// SetHotScriptsDir 装配方注入 HOT_SCRIPTS_DIR 配置值（相对工作目录，默认 "hotscripts"）。
+// 空值忽略（保持默认）；装配期调用一次（测试可调用以隔离外挂目录）。
+func SetHotScriptsDir(dir string) {
+	if dir != "" {
+		hotScriptsDir = dir
+	}
+}
+
+// HotScriptsDir 返回当前外挂脚本统一根目录（HOT_SCRIPTS_DIR，相对工作目录）。
+func HotScriptsDir() string { return hotScriptsDir }
+
 // GetScriptDir 获取脚本目录单例。
 func GetScriptDir(sd *ScriptDir) *ScriptDir {
 	once.Do(func() {
@@ -38,12 +61,27 @@ func GetScriptDir(sd *ScriptDir) *ScriptDir {
 	return onesd
 }
 
-// NewScriptDir 初始化程序运行时所需的外部脚本文件目录。
+// NewScriptDir 初始化程序运行时所需的外部脚本文件目录（★ 全项目统一收敛入口）。
 // 如果在给定的所有目录中找不到所需文件，则从 embedFS 中获取。
-// 如果在 first_dir 找到所需文件，则优先获取，否则继续从 more_dirs 文件列表中依次获取。
-// embedFS 为嵌入文件系统（embed.FS 或其子目录 fs.Sub 均可）。
-func NewScriptDir(embedFS fs.FS, firstDir string, moreDirs ...string) *ScriptDir {
-	return &ScriptDir{embedFS: embedFS, dirList: append([]string{firstDir}, moreDirs...)}
+// embedFS 为嵌入文件系统（embed.FS 或其子目录 fs.Sub 均可），作为内嵌兜底；
+// subDir 为业务固定子目录：外挂覆写目录 = HOT_SCRIPTS_DIR/subDir（相对工作目录，
+// 默认 hotscripts/subDir）。moreDirs 为追加的子目录（同样位于 HOT_SCRIPTS_DIR 下，
+// 按序查找）。查找顺序：外挂目录（HOT_SCRIPTS_DIR/subDir 等）→ 嵌入 embedFS。
+//
+// 典型业务子目录：sql/（数据访问 SQL）、rules/（WAF 规则）、
+// trusted_proxies/（可信代理）。
+func NewScriptDir(embedFS fs.FS, subDir string, moreDirs ...string) *ScriptDir {
+	dirList := make([]string, 0, 1+len(moreDirs))
+	for _, d := range append([]string{subDir}, moreDirs...) {
+		dirList = append(dirList, filepath.Join(hotScriptsDir, d))
+	}
+	return &ScriptDir{embedFS: embedFS, dirList: dirList}
+}
+
+// EmbeddedScriptDir 仅使用编译期嵌入脚本的 ScriptDir（无外挂覆写；
+// 用于测试与"无外置目录"场景，GetScriptBytes 直接回退嵌入文件）。
+func EmbeddedScriptDir(embedFS fs.FS) *ScriptDir {
+	return &ScriptDir{embedFS: embedFS}
 }
 
 // OkDir 检查 d 是否为存在的目录。

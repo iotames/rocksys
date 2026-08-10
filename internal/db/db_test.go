@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	sqlfiles "rocksys"
+	"rocksys/internal/hotswap"
 
 	_ "modernc.org/sqlite"
 )
@@ -43,7 +44,7 @@ func TestEmbeddedSQLSourceMissing(t *testing.T) {
 
 // TestOpenUnsupportedDriver 驱动未内嵌脚本目录时，Open 阶段即报错（不静默降级）。
 func TestOpenUnsupportedDriver(t *testing.T) {
-	if _, err := Open("oracle", "", ""); err == nil {
+	if _, err := Open("oracle", ""); err == nil {
 		t.Error("oracle 未内嵌 sql/oracle/ 目录，Open 应报错")
 	}
 }
@@ -53,7 +54,7 @@ func TestOpenAndSQL(t *testing.T) {
 	dir := t.TempDir()
 	dsn := filepath.Join(dir, "test.db")
 
-	d, err := Open("sqlite", dsn, "sql")
+	d, err := Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("Open err: %v", err)
 	}
@@ -130,12 +131,18 @@ func TestSplitSQLStatements(t *testing.T) {
 	}
 }
 
-// TestExternalSQLDirOverride SQL_DIR 外置目录优先：覆盖内容生效、缺文件回退内嵌、
+// TestExternalSQLDirOverride HOT_SCRIPTS_DIR/sql 外挂目录优先：覆盖内容生效、缺文件回退内嵌、
 // 空文件回退内嵌（ScriptDir 逐级加载语义，见 internal/hotswap/script.go）。
+// ★ 统一收敛：外挂 SQL 覆写目录固定为 HOT_SCRIPTS_DIR/sql（测试经 hotswap.SetHotScriptsDir 隔离外挂根）。
 func TestExternalSQLDirOverride(t *testing.T) {
-	dir := t.TempDir()
+	// 注入临时外挂根，隔离测试；结束恢复默认 hotscripts。
+	origExt := hotswap.HotScriptsDir()
+	t.Cleanup(func() { hotswap.SetHotScriptsDir(origExt) })
+	ext := t.TempDir()
+	hotswap.SetHotScriptsDir(ext)
+
 	mk := func(name, content string) {
-		p := filepath.Join(dir, "sql", "sqlite", name)
+		p := filepath.Join(ext, scriptSubDir, "sqlite", name)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatalf("MkdirAll: %v", err)
 		}
@@ -146,7 +153,7 @@ func TestExternalSQLDirOverride(t *testing.T) {
 
 	// 1) 外置覆盖 mq_insert.sql → SQL() 返回外置内容
 	mk("mq_insert.sql", "INSERT INTO external_table (a) VALUES (1)")
-	d, err := Open("sqlite", filepath.Join(t.TempDir(), "x.db"), filepath.Join(dir, "sql"))
+	d, err := Open("sqlite", filepath.Join(t.TempDir(), "x.db"))
 	if err != nil {
 		t.Fatalf("Open err: %v", err)
 	}
@@ -180,23 +187,29 @@ func TestExternalSQLDirOverride(t *testing.T) {
 }
 
 // TestOpenExternalDialectDirFallback 内嵌缺方言目录但外置提供时，Open 应放行
-// （兑现"SQL_DIR 外置兜底"承诺）；两者皆无时拒绝。
+// （兑现"外挂 sql/ 兜底"承诺）；两者皆无时拒绝。
 func TestOpenExternalDialectDirFallback(t *testing.T) {
 	// 注册假驱动 "oracletest"，模拟"驱动已注册但内嵌缺方言目录"（真实驱动均有内嵌目录）。
 	sql.Register("oracletest", fakeDriver{})
+
+	origExt := hotswap.HotScriptsDir()
+	t.Cleanup(func() { hotswap.SetHotScriptsDir(origExt) })
+
+	// 外置提供 HOT_SCRIPTS_DIR/sql/oracletest/ 目录（内嵌无此方言）→ 放行
 	dir := t.TempDir()
-	// 外置提供 sql/oracletest/ 目录（内嵌无此方言）→ 放行
-	if err := os.MkdirAll(filepath.Join(dir, "oracletest"), 0o755); err != nil {
+	hotswap.SetHotScriptsDir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, scriptSubDir, "oracletest"), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	d, err := Open("oracletest", filepath.Join(t.TempDir(), "x.db"), dir)
+	d, err := Open("oracletest", filepath.Join(t.TempDir(), "x.db"))
 	if err != nil {
 		t.Fatalf("外置目录提供 sql/oracletest/ 时应放行: %v", err)
 	}
 	_ = d.Close()
 
 	// 外置亦无 oracletest → 拒绝
-	if _, err := Open("oracletest", filepath.Join(t.TempDir(), "x.db"), filepath.Join(t.TempDir(), "nonexistent")); err == nil {
+	hotswap.SetHotScriptsDir(filepath.Join(t.TempDir(), "nonexistent"))
+	if _, err := Open("oracletest", filepath.Join(t.TempDir(), "x.db")); err == nil {
 		t.Error("内嵌与外置均无 sql/oracletest/ 时 Open 应拒绝")
 	}
 }
@@ -299,7 +312,7 @@ func TestEnsureSQLitePragmaEmpty(t *testing.T) {
 
 // TestOpenSQLiteAutoPragma 集成：Open 后 PRAGMA journal_mode=wal、busy_timeout=5000。
 func TestOpenSQLiteAutoPragma(t *testing.T) {
-	d, err := Open("sqlite", filepath.Join(t.TempDir(), "x.db"), "sql")
+	d, err := Open("sqlite", filepath.Join(t.TempDir(), "x.db"))
 	if err != nil {
 		t.Fatalf("Open err: %v", err)
 	}

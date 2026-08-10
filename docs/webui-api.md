@@ -186,7 +186,9 @@
 | `REGISTRY_` | 注册中心 |
 | `OBJECT_` | 对象存储 |
 | `SCRIPT_` | 脚本（Lua 策略执行超时） |
-| `DB_` / `SQL_DIR` | 数据访问 |
+| `DB_` | 数据访问 |
+
+> `HOT_SCRIPTS_DIR`、`TRUSTED_PROXIES_FILE` 等非组件前缀配置在 WebUI 归入『其他』组（前端按前缀匹配分组，未匹配即其他）。
 
 **展示规则**：
 - 敏感项：`key` 含 `SECRET` / `TOKEN` / `PASSWORD` 时默认掩码，可切换明文。
