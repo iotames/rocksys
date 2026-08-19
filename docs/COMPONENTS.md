@@ -75,7 +75,7 @@ type MiddlewareLifecycle interface {
   - `GET /admin/config`、`PUT /admin/config`、`GET /admin/config/list`：底座/热改/全量配置项清单（供 WebUI 分组展示）
   - `POST /admin/script/publish|rollback`、`GET /admin/script/list`：脚本发布/回滚/版本历史
   - `GET /admin/metrics`、`GET /admin/logs`：观测指标与日志（obs 挂件端点注入）
-- **WebUI 托管**：`RegisterWebUI(fsys fs.FS)` 注册内嵌静态资源（根路径 `/` 返回 index.html，`/assets/...` 返回各静态文件）。控制台为纯静态单页（ElementUI 风格、无框架），`webui/embed.go` 用 `//go:embed index.html assets` 打包进二进制，访问 `http://<admin-addr>/` 打开。
+- **WebUI 托管**：`RegisterWebUI(fsys fs.FS)` 注册静态资源（根路径 `/` 返回 index.html，`/assets/...` 返回各静态文件），**每请求实时 `fs.ReadFile` 读取、不缓存**。控制台为纯静态单页（ElementUI 风格、无框架），静态资源双模式：生产由 `webui/embed.go` 用 `//go:embed index.html assets` 内嵌进二进制；开发（`-tags dev`）由 `webui/embed_dev.go` 用 `os.DirFS("../webui")` 实时读源码目录，改前端文件刷新即见、免重新编译。访问 `http://<admin-addr>/` 打开。
 
 ---
 

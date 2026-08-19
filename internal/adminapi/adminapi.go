@@ -182,9 +182,13 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodGet, PathVersion, check(s.handleVersion))
 }
 
-// RegisterWebUI 注册内嵌 WebUI 静态资源（管理控制台）。
-// fsys 为嵌入的静态资源（含 index.html 与 assets/ 等），为每个文件注册一个精确 GET 路由：
+// RegisterWebUI 注册 WebUI 静态资源（管理控制台）。
+// fsys 为静态资源文件系统（含 index.html 与 assets/ 等；生产为 webui.FS embed.FS，
+// 开发模式 -tags dev 为 os.DirFS 文件系统），为每个文件注册一个精确 GET 路由：
 // embed 中 "index.html" → GET "/"；其余文件 → "/<相对路径>"（如 "/assets/js/main.js"）。
+// ★ 文件内容在每次请求时经 fs.ReadFile 实时读取（不缓存）：
+//   - 生产 embed.FS：读的是内存数据，性能可忽略；
+//   - 开发 os.DirFS：读的是磁盘，改前端代码刷新浏览器即见（免编译热重载）。
 func (s *AdminServer) RegisterWebUI(fsys fs.FS) error {
 	return fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -193,16 +197,19 @@ func (s *AdminServer) RegisterWebUI(fsys fs.FS) error {
 		if d.IsDir() {
 			return nil
 		}
-		data, err := fs.ReadFile(fsys, path)
-		if err != nil {
-			return err
-		}
 		urlPath := "/" + path
 		if path == "index.html" {
 			urlPath = "/"
 		}
 		contentType := contentTypeByExt(path)
 		s.srv.AddHandler(http.MethodGet, urlPath, func(ctx httpsvr.Context) {
+			data, err := fs.ReadFile(fsys, path)
+			if err != nil {
+				ctx.Writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				ctx.Writer.WriteHeader(http.StatusNotFound)
+				_, _ = ctx.Writer.Write([]byte("404: " + path))
+				return
+			}
 			ctx.Writer.Header().Set("Content-Type", contentType)
 			ctx.Writer.WriteHeader(http.StatusOK)
 			_, _ = ctx.Writer.Write(data)

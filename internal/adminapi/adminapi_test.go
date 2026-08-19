@@ -231,7 +231,8 @@ func TestHandleVersion(t *testing.T) {
 	}
 }
 
-// TestRegisterWebUI 验证内嵌静态资源托管注册（index.html 根路径 + assets 静态文件）。
+// TestRegisterWebUI 验证静态资源托管注册（index.html 根路径 + assets 静态文件）。
+// ★ 每请求实时读取：注册后修改文件内容，下一次请求应返回新内容（开发模式热重载语义）。
 func TestRegisterWebUI(t *testing.T) {
 	fsys := fstest.MapFS{
 		"index.html":        {Data: []byte("<!doctype html><html></html>")},
@@ -242,7 +243,43 @@ func TestRegisterWebUI(t *testing.T) {
 	if err := s.RegisterWebUI(fsys); err != nil {
 		t.Fatalf("RegisterWebUI: %v", err)
 	}
-	// 每个文件注册为精确 GET 路由，无报错即成功。真实 HTTP 链路由集成验证覆盖。
+
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		s.srv.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// 根路径返回 index.html
+	rec := get("/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / 状态码 = %d, 期望 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("GET / Content-Type = %q, 期望 text/html", ct)
+	}
+	if got := rec.Body.String(); got != "<!doctype html><html></html>" {
+		t.Errorf("GET / body = %q, 期望 index.html 内容", got)
+	}
+
+	// 静态文件路由
+	rec = get("/assets/js/main.js")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /assets/js/main.js 状态码 = %d, 期望 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "console.log('ok')" {
+		t.Errorf("GET /assets/js/main.js body = %q, 期望原内容", got)
+	}
+
+	// ★ 实时读取：修改文件后，下一次请求返回新内容（无需重启/重编译）
+	fsys["index.html"] = &fstest.MapFile{Data: []byte("<!doctype html><html><body>updated</body></html>")}
+	rec = get("/")
+	if got := rec.Body.String(); got != "<!doctype html><html><body>updated</body></html>" {
+		t.Errorf("修改文件后 GET / body = %q, 期望新内容（每请求实时读取）", got)
+	}
+
+	// 空资源注册应成功
 	if err := s.RegisterWebUI(fstest.MapFS{}); err != nil {
 		t.Fatalf("RegisterWebUI 空资源应成功: %v", err)
 	}

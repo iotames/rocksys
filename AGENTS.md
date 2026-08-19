@@ -17,10 +17,40 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 
 - `make deps`：同步地基库（目录缺失时从 GitHub clone）。
 - `make build`：构建 `bin/rocksys`，版本号取当前 git 最新 tag。
+- `make release`：发布打包 = build + 拷贝外挂资源到 `bin/hotscripts/`（`sql/`、`rules/`、`trusted_proxies/`，运行期外挂优先、内嵌兜底，改文件无需重编译）。
+- `make dev`：`-tags dev` 编译并在 bin/ 运行（WebUI 前端免编译热重载，见下节）。
 - `make cross-build`：交叉编译 linux amd64/arm64、windows amd64。
 - `make test`：运行 `go test ./...`。
 - `make vet`：运行 `go vet ./...`。
 - `make run`：构建并运行。
+
+> **Makefile 仅支持 Linux**（纯 Unix 语法，Windows 原生 cmd 不支持；Windows 下需经 WSL2：`cd /mnt/d/.../rocksys && make xxx`）。make 是为**人类**便捷设计的封装；**AI 智能体一律使用原生命令行（`go build` / `go test` / `go vet`），不要依赖 make** —— 见下节规范。
+
+## 开发模式：WebUI 前端免编译热重载（-tags dev）
+
+WebUI 默认经 `go:embed` 编译期内嵌进二进制（`webui/embed.go`，约束 `//go:build !dev`），改前端必须重新编译。开发模式用 build tag `dev` 切换到 `os.DirFS("../webui")` 实时读磁盘（`webui/embed_dev.go`，约束 `//go:build dev`），改 `webui/` 下任意文件（`index.html`、`assets/`）**刷新浏览器即见，无需重新编译、无需重启**。生产构建（不加 dev tag）完全不受影响。唯一注意：**新增**前端文件需重启一次（路由在启动时注册），改动已有文件即改即生效。
+
+### AI 智能体命令规范（强制）
+
+智能体天生擅长命令行，**优先使用原生命令行而非 make**（make 面向人类且仅支持 Linux，智能体须保证跨平台、可复现）：
+
+```bash
+# ① 日常开发 / 改前端：开发模式编译（推荐，免编译验证前端）
+go build -tags dev -o bin/rocksys ./cmd/rocksys
+#   （版本注入可省略，--version 显示 dev；如需注入见 Makefile LD_FLAGS）
+
+# ② 运行（★红线：工作目录必须 = bin/，运行时文件落 bin/，严禁项目根目录执行）
+cd bin && ./rocksys
+
+# ③ 验证前端改动：浏览器刷新 http://127.0.0.1:19527/（管理/WebUI 地址）即见，无需重新编译
+
+# ④ 发布：生产构建（不带 dev tag，WebUI 内嵌进二进制）
+go build -o bin/rocksys ./cmd/rocksys
+
+# ⑤ 测试 / 静态检查（与 make test / make vet 等价）
+go test ./...
+go vet ./...
+```
 
 ## Coding Style & Naming Conventions
 
@@ -61,3 +91,5 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 
 - 提交须先经用户明确确认，绝不自行执行 git 写操作。
 - 任务有歧义时先提问澄清；复杂任务先出方案，认可后实施。
+- 构建/测试一律用**原生命令行**（`go build` / `go test` / `go vet`），不要调用 make（Makefile 仅支持 Linux，且 make 是面向人类的封装；智能体直接用 go 命令保证跨平台可复现）。
+- 开发/修改 WebUI 前端时默认用 `-tags dev` 编译（`go build -tags dev -o bin/rocksys ./cmd/rocksys`），改 `webui/` 文件后无需重新编译即可验证；发布走无 tag 生产构建。
