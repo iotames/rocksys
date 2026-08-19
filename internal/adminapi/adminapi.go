@@ -30,6 +30,7 @@ const (
 	PathSwitchList = "/admin/switch/list"
 	PathConfig     = "/admin/config"
 	PathConfigList = "/admin/config/list"
+	PathVersion    = "/admin/version"
 )
 
 // 认证端点路径（§8.4）：登录/注册/重置/状态，均免鉴权（前置条件由 handler 校验）。
@@ -62,6 +63,9 @@ type AdminServer struct {
 	users        *userStore         // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
 	auth         *adminAuth         // 管理接口鉴权器
 	loginLimiter *loginLimiter      // 登录失败限流器（按 IP）
+	version      string             // 构建期版本号（与 --version 同源，经 SetVersionInfo 注入）
+	buildTime    string             // 构建时间
+	goVersion    string             // 编译用 Go 版本
 }
 
 // New 创建独立的管理接口服务器并注册全部内建端点（§8.1/§8.4）。
@@ -175,6 +179,7 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodPost, "/admin/log/output", check(s.handleLogOutput))
 	s.srv.AddHandler(http.MethodGet, "/admin/log/tail", check(s.handleLogTail))
 	s.srv.AddHandler(http.MethodGet, "/admin/log/stream", check(s.handleLogStream))
+	s.srv.AddHandler(http.MethodGet, PathVersion, check(s.handleVersion))
 }
 
 // RegisterWebUI 注册内嵌 WebUI 静态资源（管理控制台）。
@@ -331,6 +336,23 @@ func (s *AdminServer) handleConfigPut(ctx httpsvr.Context) {
 // handleConfigList 查看全部已注册配置项元数据（底座 + 各挂件，供 WebUI 分组展示）。
 func (s *AdminServer) handleConfigList(ctx httpsvr.Context) {
 	_ = writeJSON(ctx.Writer, s.confMgr.List(), http.StatusOK)
+}
+
+// SetVersionInfo 注入构建期版本信息（与 --version 命令同源，由 cmd/rocksys 装配时传入），
+// 供 GET /admin/version 返回（WebUI 左上角品牌区展示）。装配期调用，运行期只读。
+func (s *AdminServer) SetVersionInfo(version, buildTime, goVersion string) {
+	s.version = version
+	s.buildTime = buildTime
+	s.goVersion = goVersion
+}
+
+// handleVersion 返回构建期版本信息（与 --version 命令输出同源，保证两处一致）。
+func (s *AdminServer) handleVersion(ctx httpsvr.Context) {
+	_ = writeJSON(ctx.Writer, map[string]any{
+		"version":    s.version,
+		"build_time": s.buildTime,
+		"go_version": s.goVersion,
+	}, http.StatusOK)
 }
 
 // writeJSON 将任意值以 JSON 写回客户端（用于 map 与数组响应）。

@@ -212,6 +212,25 @@ func TestHandleConfigList(t *testing.T) {
 	}
 }
 
+// TestHandleVersion 验证版本信息端点：SetVersionInfo 注入值与 --version 同源，
+// 返回 version/build_time/go_version 三字段。
+func TestHandleVersion(t *testing.T) {
+	s := New("127.0.0.1:19527", nil, nil, nil)
+	s.SetVersionInfo("v0.0.1-dev", "2026-08-19T16:11:46+08:00", "go1.25.3")
+	ctx := newCtx(http.MethodGet, PathVersion, "")
+	s.handleVersion(ctx)
+	out := decode(t, ctx)
+	if out["version"] != "v0.0.1-dev" {
+		t.Errorf("version 不符: %v", out["version"])
+	}
+	if out["build_time"] != "2026-08-19T16:11:46+08:00" {
+		t.Errorf("build_time 不符: %v", out["build_time"])
+	}
+	if out["go_version"] != "go1.25.3" {
+		t.Errorf("go_version 不符: %v", out["go_version"])
+	}
+}
+
 // TestRegisterWebUI 验证内嵌静态资源托管注册（index.html 根路径 + assets 静态文件）。
 func TestRegisterWebUI(t *testing.T) {
 	fsys := fstest.MapFS{

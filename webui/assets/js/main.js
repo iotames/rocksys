@@ -97,6 +97,14 @@
     refreshPage(currentRoute(), { manual: true }).then(() => setRefreshing(false), () => setRefreshing(false));
   }
 
+  // 左上角品牌区版本号（GET /admin/version，与 rocksys --version 同源；失败静默不阻塞控制台）
+  function fetchVersion() {
+    Rock.api.get('/admin/version').then(function (info) {
+      const el = $('#brand-version');
+      if (el && info && info.version) el.textContent = info.version;
+    }).catch(function () { /* 版本号不可用时保持空 */ });
+  }
+
   // 自动刷新（作用于概览 / 组件 / 指标）
   let autoTimer = null;
   function restartAutoRefresh() {
@@ -134,6 +142,7 @@
     bindToolbar();
     initRoute();
     restartAutoRefresh();
+    fetchVersion();
     // 主题切换：同步下拉框并绑定切换事件
     if (Rock.theme) Rock.theme.bind();
     // 认证引导：检测管理接口状态，未登录/未初始化时显示认证视图

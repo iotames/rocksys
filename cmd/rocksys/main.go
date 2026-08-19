@@ -338,6 +338,8 @@ func buildServer(args []string) (*Server, error) {
 		adminEDB = dataDB.EasyDB()
 	}
 	adminSrv := adminapi.New(cfgMgr.Current().AdminAddr, cfgMgr, mgr, adminEDB)
+	// 注入构建期版本信息（--version 同源，经 -ldflags 注入 main 包变量），供 WebUI 左上角展示。
+	adminSrv.SetVersionInfo(Version, BuildTime, GoVersion)
 	if dataDB != nil {
 		adminSrv.SetSQLSource(dataDB) // 用户存储 SQL 脚本源（sql/<dbtype>/admin_users_*.sql）
 	}
