@@ -50,7 +50,19 @@
 
 完整上手指引（构建 / 开发模式免编译改前端 / 运行 / 打开 WebUI / 验证代理）见 **[docs/QUICKSTART.md](docs/QUICKSTART.md)**。
 
-最小上手路径：`make build` 构建 `bin/rocksys` → `cd bin && ./rocksys --upstream http://127.0.0.1:9000` → 浏览器打开 `http://127.0.0.1:19527/`。改前端代码用 `-tags dev` 编译可免编译立即验证。
+编译 - 运行 - 浏览器打开 `http://127.0.0.1:19527/`
+
+```bash
+# 编译
+go build -o bin/rocksys ./cmd/rocksys
+
+# 运行
+# 显式指定三个地址（最清晰）：
+#   --listen    :8080                  代理对外端口（客户端访问 http://<host>:8080/）
+#   --upstream  http://127.0.0.1:9000  被代理的后端（业务服务）
+#   --admin     127.0.0.1:19527        管理/WebUI 地址（浏览器打开 http://127.0.0.1:19527/）
+cd bin && ./rocksys --listen :8080 --upstream http://127.0.0.1:9000 --admin 127.0.0.1:19527
+```
 
 ---
 
