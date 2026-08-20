@@ -40,6 +40,23 @@
 | 14 | POST | `/admin/auth/login` | 登录，签发 JWT |
 | 15 | POST | `/admin/auth/reset` | 重置管理员凭证（忘记密码） |
 | 16 | GET | `/admin/warnings` | 数据清理未开启警告（常驻横幅数据源，与登录响应同源） |
+| 17 | GET | `/admin/version` | 构建版本信息（左侧版本展示） |
+| 18 | GET | `/admin/logs/storage` | 访问日志存储总占用 |
+| 19 | POST | `/admin/logs/prune` | 手动清理访问日志（保留期外） |
+| 20 | GET | `/admin/shield/metrics` | WAF 近 1 分钟实时计数（内存滑动窗口，无需查库） |
+| 21 | GET | `/admin/shield/events` | WAF 拦截明细（JSONL，时间/类别/IP 过滤） |
+| 22 | GET | `/admin/shield/stats` | WAF 聚合统计（按日 × 类别 + Top IP） |
+| 23 | POST | `/admin/shield/prune` | 手动清理拦截明细（保留期外） |
+| 24 | GET / POST | `/admin/shield/blacklist` | 黑名单列表（GET，分页/过滤）/ 新增（POST） |
+| 25 | POST | `/admin/shield/blacklist/update` | 更新黑名单条目（title/block_type/expires_at） |
+| 26 | POST | `/admin/shield/blacklist/delete` | 软删黑名单条目（可恢复） |
+| 27 | POST | `/admin/shield/blacklist/restore` | 恢复软删黑名单条目 |
+| 28 | POST | `/admin/shield/blacklist/import` | 批量导入黑名单（body 纯文本，每行一个 IP/CIDR） |
+| 29 | GET / POST | `/admin/shield/whitelist` | 白名单列表（GET）/ 新增（POST） |
+| 30 | POST | `/admin/shield/whitelist/update` | 更新白名单条目（title） |
+| 31 | POST | `/admin/shield/whitelist/delete` | 软删白名单条目（可恢复） |
+| 32 | POST | `/admin/shield/whitelist/restore` | 恢复软删白名单条目 |
+| 33 | POST | `/admin/shield/whitelist/import` | 批量导入白名单 |
 
 ---
 
@@ -427,6 +444,32 @@
 
 ---
 
+### 3.18 shield 管理端点组 — WAF 监控统计 + 动态黑白名单
+
+**WAF 监控统计**（metrics/events/stats/prune，实现见 `plugins/shield/admin.go`）：
+
+| 端点 | 说明 |
+|------|------|
+| `GET /admin/shield/metrics` | 近 1 分钟实时计数（内存滑动窗口，DB 未配置也可用）；响应 `{window_seconds,total,by_type,written,dropped}` |
+| `GET /admin/shield/events` | 拦截明细（JSONL）；query：`from`/`to`（日期或分钟精度）、`block_type`（1-10）、`client_ip`、`limit` |
+| `GET /admin/shield/stats` | 聚合统计；响应 `{days,total,daily:[{day,block_type,cnt}],top_ips:[{client_ip,cnt}]}` |
+| `POST /admin/shield/prune` | 手动清理拦截明细；body `{"days":N}`（0-3650，缺省用配置默认值）；响应 `{"ok":true,"deleted":N}` |
+
+**动态黑白名单**（WAF 方案 DB 化，DB 未配置时端点统一 503；副作用一律 POST）：
+
+| 端点 | 方法 / 语义 |
+|------|------|
+| `/admin/shield/blacklist` | GET 列表（query：`ip` 模糊、`block_type`、`valid_only`、`limit`、`offset`；响应 `{total,rows}`）；POST 新增（body `{"ip","title","block_type","expires_at"}`，expires_at 为 RFC3339 可空） |
+| `/admin/shield/blacklist/update` | POST 更新（body `{"id","title","block_type","expires_at"}`） |
+| `/admin/shield/blacklist/delete` | POST 软删（body `{"id"}`；可恢复） |
+| `/admin/shield/blacklist/restore` | POST 恢复软删（body `{"id"}`） |
+| `/admin/shield/blacklist/import` | POST 批量导入：**body 为纯文本**（每行一个精确 IP/CIDR，兼容外挂文件格式；兼容 JSON 字符串编码），query 可选 `title`/`block_type`；响应 `{"ok":true,"imported":N,"skipped":N}` |
+| `/admin/shield/whitelist` 及 update/delete/restore/import | 白名单同构（无 block_type/expires_at 字段） |
+
+> 全部变更写库后**即时重建拦截快照**（不等 TTL 兜底）；数据表见 `docs/DATA_DICT.md` §2.5-2.7；存量迁移手册见 `docs/WAF_BLACKLIST_MIGRATION.md`。
+
+---
+
 ## 4. 数据字典（前端展示映射）
 
 ### 4.1 组件中文名与环节（见 §3.1 表）
@@ -457,5 +500,6 @@
 | 1.1 | 2026-08-08 | 鉴权行为更新：回环地址一律免鉴权；非回环地址下静态预共享 token（`ROCKSYS_ADMIN_TOKEN`）与登录 JWT 双轨并行、任一通过即放行；WebUI 移除手动输入「访问凭证」，统一账号密码登录 |
 | 1.2 | 2026-08-19 | 新增 `GET /admin/version`（WebUI 左上角品牌区展示版本号，与 `rocksys --version` 同源） |
 | 1.3 | 2026-08-20 | 登录响应新增 `warnings` 字段 + 新增 `GET /admin/warnings`（数据清理未开启警告，WebUI 常驻置顶横幅数据源） |
+| 1.4 | 2026-08-21 | 端点总览补齐 WAF 监控统计与动态黑白名单端点（`/admin/shield/*` 14 个 + `/admin/logs/prune` + `/admin/logs/storage`），新增 §3.18 shield 管理端点组详解 |
 
 > 契约原则：只增不改删；新增字段不影响旧字段语义。

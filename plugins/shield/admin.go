@@ -10,8 +10,10 @@ package shield
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"rocksys/internal/hotswap"
@@ -25,6 +27,18 @@ const (
 	PathShieldStats   = "/admin/shield/stats"
 	PathShieldMetrics = "/admin/shield/metrics"
 	PathShieldPrune   = "/admin/shield/prune"
+
+	// 动态 IP 黑白名单管理（WAF 方案 §6.1；副作用一律 POST，防本机恶意页面无凭证触发）。
+	PathBlacklist        = "/admin/shield/blacklist"
+	PathBlacklistUpdate  = "/admin/shield/blacklist/update"
+	PathBlacklistDelete  = "/admin/shield/blacklist/delete"
+	PathBlacklistRestore = "/admin/shield/blacklist/restore"
+	PathBlacklistImport  = "/admin/shield/blacklist/import"
+	PathWhitelist        = "/admin/shield/whitelist"
+	PathWhitelistUpdate  = "/admin/shield/whitelist/update"
+	PathWhitelistDelete  = "/admin/shield/whitelist/delete"
+	PathWhitelistRestore = "/admin/shield/whitelist/restore"
+	PathWhitelistImport  = "/admin/shield/whitelist/import"
 )
 
 // AdminHandler shield 插件端点 handler。
@@ -231,6 +245,293 @@ func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "deleted": n})
+}
+
+// ── 动态 IP 黑白名单管理端点（WAF 方案 §6.1）────────────────────────
+// 路径与语义（副作用一律 POST，GET 无副作用防本机恶意页面无凭证触发）：
+//
+//	GET  /admin/shield/blacklist         列表（query: ip 模糊 / block_type / valid_only / limit / offset）
+//	POST /admin/shield/blacklist         新增（body: ip/title/block_type/expires_at）
+//	POST /admin/shield/blacklist/update  更新（body: id/title/block_type/expires_at）
+//	POST /admin/shield/blacklist/delete  软删（body: id）
+//	POST /admin/shield/blacklist/restore 恢复（body: id）
+//	POST /admin/shield/blacklist/import  批量导入（body: text 每行一个 IP/CIDR + title/block_type）
+//	/admin/shield/whitelist 同构（无 block_type/expires_at）
+//
+// 全部变更写库成功后主动重建快照（立即生效，不等 TTL 兜底）。
+
+// 黑白名单端点入口（main.go 装配引用；返回 http.HandlerFunc 供 RegisterPlugin）。
+func (h *AdminHandler) Blacklist() http.HandlerFunc { return h.listOrAdd(true) }
+func (h *AdminHandler) BlacklistUpdate() http.HandlerFunc {
+	return h.postOnly(func(w http.ResponseWriter, r *http.Request) { h.updateIPList(w, r, true) })
+}
+func (h *AdminHandler) BlacklistDelete() http.HandlerFunc {
+	return h.postOnly(func(w http.ResponseWriter, r *http.Request) { h.deleteIPList(w, r, true) })
+}
+func (h *AdminHandler) BlacklistRestore() http.HandlerFunc {
+	return h.postOnly(func(w http.ResponseWriter, r *http.Request) { h.restoreIPList(w, r, true) })
+}
+func (h *AdminHandler) BlacklistImport() http.HandlerFunc {
+	return h.postOnly(func(w http.ResponseWriter, r *http.Request) { h.importIPList(w, r, true) })
+}
+func (h *AdminHandler) Whitelist() http.HandlerFunc { return h.listOrAdd(false) }
+func (h *AdminHandler) WhitelistUpdate() http.HandlerFunc {
+	return h.postOnly(func(w http.ResponseWriter, r *http.Request) { h.updateIPList(w, r, false) })
+}
+func (h *AdminHandler) WhitelistDelete() http.HandlerFunc {
+	return h.postOnly(func(w http.ResponseWriter, r *http.Request) { h.deleteIPList(w, r, false) })
+}
+func (h *AdminHandler) WhitelistRestore() http.HandlerFunc {
+	return h.postOnly(func(w http.ResponseWriter, r *http.Request) { h.restoreIPList(w, r, false) })
+}
+func (h *AdminHandler) WhitelistImport() http.HandlerFunc {
+	return h.postOnly(func(w http.ResponseWriter, r *http.Request) { h.importIPList(w, r, false) })
+}
+
+// listOrAdd 列表（GET）/ 新增（POST）共用 handler（RegisterPlugin 同 path 注册两方法）。
+func (h *AdminHandler) listOrAdd(isBlack bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.shield == nil {
+			http.Error(w, "shield 未注册", http.StatusServiceUnavailable)
+			return
+		}
+		if !h.shield.IPListEnabled(isBlack) {
+			http.Error(w, "IP 黑白名单未启用（DB 未配置）", http.StatusServiceUnavailable)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			h.listIPList(w, r, isBlack)
+		case http.MethodPost:
+			h.addIPList(w, r, isBlack)
+		default:
+			http.Error(w, "仅支持 GET/POST", http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// postOnly 仅 POST 副作用端点（update/delete/restore/import）。
+func (h *AdminHandler) postOnly(fn func(w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
+			return
+		}
+		if h.shield == nil {
+			http.Error(w, "shield 未注册", http.StatusServiceUnavailable)
+			return
+		}
+		if !h.shield.IPListEnabled(false) && !h.shield.IPListEnabled(true) {
+			http.Error(w, "IP 黑白名单未启用（DB 未配置）", http.StatusServiceUnavailable)
+			return
+		}
+		fn(w, r)
+	}
+}
+
+// listIPList 列表：分页 + ip 模糊 / block_type（黑）/ valid_only 过滤。
+func (h *AdminHandler) listIPList(w http.ResponseWriter, r *http.Request, isBlack bool) {
+	q := r.URL.Query()
+	f := ListFilter{IP: q.Get("ip"), Limit: 500}
+	if v := q.Get("block_type"); v != "" && isBlack {
+		bt, err := strconv.Atoi(v)
+		if err != nil || bt < 0 || bt > blockTypeCount {
+			http.Error(w, "block_type 应为 0-10 的整数", http.StatusBadRequest)
+			return
+		}
+		f.BlockType = BlockType(bt)
+	}
+	if v := q.Get("valid_only"); v == "1" || v == "true" {
+		f.ValidOnly = true
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			http.Error(w, "limit 应为正整数", http.StatusBadRequest)
+			return
+		}
+		f.Limit = n
+	}
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			http.Error(w, "offset 应为非负整数", http.StatusBadRequest)
+			return
+		}
+		f.Offset = n
+	}
+	rows, total, err := h.shield.ListIPList(isBlack, f)
+	if err != nil {
+		log.Error("shield: 黑白名单列表查询失败", "kind", ipListKindName(isBlack), "err", err.Error())
+		http.Error(w, "列表查询失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"total": total, "rows": rows})
+}
+
+// addIPList 新增（body: ip/title/block_type/expires_at；白名单忽略后两者）。
+func (h *AdminHandler) addIPList(w http.ResponseWriter, r *http.Request, isBlack bool) {
+	var body struct {
+		IP        string `json:"ip"`
+		Title     string `json:"title"`
+		BlockType int    `json:"block_type"`
+		ExpiresAt string `json:"expires_at"` // RFC3339；空 = 永久
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	if body.IP == "" {
+		http.Error(w, "ip 必填（精确 IP 或 CIDR）", http.StatusBadRequest)
+		return
+	}
+	exp, err := parseExpiresAt(body.ExpiresAt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id, err := h.shield.AddIPList(isBlack, body.IP, body.Title, BlockType(body.BlockType), exp)
+	if err != nil {
+		writeListErr(w, isBlack, "新增", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": id})
+}
+
+// updateIPList 更新（body: id/title/block_type/expires_at）。
+func (h *AdminHandler) updateIPList(w http.ResponseWriter, r *http.Request, isBlack bool) {
+	var body struct {
+		ID        int64  `json:"id"`
+		Title     string `json:"title"`
+		BlockType int    `json:"block_type"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	if body.ID <= 0 {
+		http.Error(w, "id 必填", http.StatusBadRequest)
+		return
+	}
+	exp, err := parseExpiresAt(body.ExpiresAt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.shield.UpdateIPList(isBlack, body.ID, body.Title, BlockType(body.BlockType), exp); err != nil {
+		writeListErr(w, isBlack, "更新", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// deleteIPList 软删（body: id）。
+func (h *AdminHandler) deleteIPList(w http.ResponseWriter, r *http.Request, isBlack bool) {
+	var body struct {
+		ID int64 `json:"id"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	if body.ID <= 0 {
+		http.Error(w, "id 必填", http.StatusBadRequest)
+		return
+	}
+	if err := h.shield.SoftDeleteIPList(isBlack, body.ID); err != nil {
+		writeListErr(w, isBlack, "删除", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// restoreIPList 恢复软删（body: id）。
+func (h *AdminHandler) restoreIPList(w http.ResponseWriter, r *http.Request, isBlack bool) {
+	var body struct {
+		ID int64 `json:"id"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	if body.ID <= 0 {
+		http.Error(w, "id 必填", http.StatusBadRequest)
+		return
+	}
+	if err := h.shield.RestoreIPList(isBlack, body.ID); err != nil {
+		writeListErr(w, isBlack, "恢复", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// importIPList 批量导入：body 为纯文本（每行一个精确 IP/CIDR，兼容外挂文件格式），
+// query 可选 title / block_type（黑名单默认 1）。
+func (h *AdminHandler) importIPList(w http.ResponseWriter, r *http.Request, isBlack bool) {
+	b, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "读取请求体失败", http.StatusBadRequest)
+		return
+	}
+	text := string(b)
+	// 兼容两种客户端：curl 纯文本（每行一个 IP）与前端 api.post 的 JSON 字符串编码。
+	if len(text) > 0 {
+		var s string
+		if json.Unmarshal(b, &s) == nil {
+			text = s
+		}
+	}
+	if len(strings.TrimSpace(text)) == 0 {
+		http.Error(w, "text 必填（每行一个精确 IP 或 CIDR）", http.StatusBadRequest)
+		return
+	}
+	bt := 1
+	if v := r.URL.Query().Get("block_type"); v != "" && isBlack {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > blockTypeCount {
+			http.Error(w, "block_type 应为 1-10 的整数", http.StatusBadRequest)
+			return
+		}
+		bt = n
+	}
+	lines := strings.Split(text, "\n")
+	imported, skipped, err := h.shield.ImportIPList(isBlack, lines, r.URL.Query().Get("title"), BlockType(bt))
+	if err != nil {
+		writeListErr(w, isBlack, "导入", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "imported": imported, "skipped": skipped})
+}
+
+// parseExpiresAt 解析过期时间（RFC3339；空 = 永久）。
+func parseExpiresAt(s string) (*time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil, errors.New("expires_at 应为 RFC3339 时间（如 2026-09-01T00:00:00Z），空 = 永久")
+	}
+	return &t, nil
+}
+
+// writeListErr 统一黑白名单操作错误响应：DB 未启用 503、参数类 400、内部错误 500 通用文案。
+func writeListErr(w http.ResponseWriter, isBlack bool, op string, err error) {
+	switch {
+	case errors.Is(err, ErrIPListDisabled):
+		http.Error(w, "IP 黑白名单未启用（DB 未配置）", http.StatusServiceUnavailable)
+	case errors.Is(err, ErrIPExists):
+		http.Error(w, "ip 已存在（可删除后重录或直接恢复）", http.StatusBadRequest)
+	case errors.Is(err, ErrInvalidIP):
+		http.Error(w, "ip 应为精确 IP 或 CIDR", http.StatusBadRequest)
+	default:
+		log.Error("shield: 黑白名单操作失败", "kind", ipListKindName(isBlack), "op", op, "err", err.Error())
+		http.Error(w, ipListKindName(isBlack)+op+"失败", http.StatusInternalServerError)
+	}
 }
 
 // ── 时间参数解析（与 obs admin.go parseTimeRange 同语义，插件间不互相依赖）──

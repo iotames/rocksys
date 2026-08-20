@@ -93,12 +93,15 @@ type MiddlewareLifecycle interface {
 | 配置 | 默认 | 说明 |
 |------|------|------|
 | `SHIELD_ENABLED` | true | 是否启用（挂件开启时生效） |
-| `SHIELD_IP_WHITELIST` | 空 | 白名单（逗号分隔，支持精确 IP 与 CIDR） |
-| IP 黑名单（外挂文件） | — | `rules/ip_blacklist.txt`：每行一个精确 IP/CIDR，外挂优先、≤3s 热更；不再走 .env 配置 |
+| `SHIELD_IP_WHITELIST` | 空 | 白名单（逗号分隔，支持精确 IP 与 CIDR）；与 DB 表 `ip_whitelist` 取并集 |
+| IP 黑名单 | — | **DB 表 `ip_blacklist`（管理面录入/导入，动态）∪ 外挂 `rules/ip_blacklist.txt`（静态兑底）**，取并集；DB 未启用时仅外挂生效；热路径只读内存快照（TTL 60s 刷新），管理面见「黑白名单」Tab 与 `docs/WAF_BLACKLIST_MIGRATION.md` |
 | `SHIELD_RATE_LIMIT_RPS` / `BURST` | 0 / 0 | 限流速率与突发容量（0=不限流） |
+| `SHIELD_RATE_LIMIT_BY` | ip | 限流维度（当前仅支持 ip） |
 | `SHIELD_ALLOW_METHODS` | 空 | HTTP 方法白名单（空=不限） |
 | `SHIELD_MAX_BODY_SIZE` | 0 | 请求体上限字节（0=不限） |
 | `SHIELD_WAF_SQL_INJECTION` / `XSS` / `PATH_TRAVERSAL` / `RISK_PATH` / `CRAWLER_UA` | false | WAF 检测开关 |
+| `SHIELD_WAF_RISK_PATHS` | 空 | 追加风险路径（逗号分隔，需先开启 `SHIELD_WAF_RISK_PATH`） |
+| `SHIELD_EVENT_*` | 见 default.env | 拦截事件落库配置（`LOG_ENABLED`/`RETENTION_DAYS`/`PRUNE_ENABLED`/`TABLE`/`BUFFER`/`FLUSH_ROWS`/`FLUSH_INTERVAL`，共 7 项） |
 | `HOT_SCRIPTS_DIR` | hotscripts | 脚本外挂统一根目录；WAF 规则外挂子目录固定 `rules/`（优先加载，嵌入兜底） |
 
 **示例**：

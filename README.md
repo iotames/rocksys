@@ -136,6 +136,32 @@ curl "http://127.0.0.1:19527/admin/logs?from=2026-08-04&to=2026-08-04"
 
 核心要点：管理接口仅监听回环、严禁暴露外网（远程用 SSH 隧道）；升级替换二进制 + `systemctl restart` 即完成（SIGTERM 排空，在途请求不丢失）；转发层无状态，可多副本水平扩展。
 
+### Nginx 反代部署（HTTPS / FastCGI 场景）
+
+rockSys 是纯 HTTP 反代（**不支持 HTTPS 监听、不支持 FastCGI**），公网 HTTPS 由 Nginx 终结，rockSys 作中间防护层；Nginx 转发必须用 `proxy_pass`（`fastcgi_pass` 的 FastCGI 报文 rockSys 无法解析；php-fpm 后端由 Nginx 在 rockSys 之后继续 fastcgi 转发）。
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;   # rockSys 入口
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;                     # 客户端真实 IP
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; # 代理链路
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+**数据库 `client_ip` 取值（可信代理模型）**：TCP 直连源 IP（`RemoteAddr`）未命中可信代理列表 → 直接用，不信任转发头；命中 → 依次取 `X-Real-IP`（合法即用）→ `X-Forwarded-For`（从右往左跳过可信代理，取第一个合法且不可信 IP）→ 兜底直连 IP。
+
+**默认可信代理仅 `127.0.0.1`**（内嵌兜底；外挂文件 `bin/hotscripts/trusted_proxies/trusted_proxies.txt` 优先，每行一个 IP 或 CIDR，改后 ≤3s 热更）。Nginx 与 rockSys 同机（经 127.0.0.1 转发）无需配置；Nginx 在容器/他机时须把其 IP 加入该文件，否则取到的是 Nginx 的 IP：
+
+```
+# Nginx 在 docker 容器时，加入容器 IP 或网段
+172.18.0.2
+# 或整个网段：172.18.0.0/16
+```
+
+**rockSys 启动**：`cd bin && ./rocksys --listen 127.0.0.1:8080 --upstream http://<后端HTTP服务> --admin 127.0.0.1:19527`
+
 ---
 
 ## 故障与降级

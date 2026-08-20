@@ -1150,6 +1150,18 @@ func (s *AdminServer) RegisterPlugin(path string, h func(http.ResponseWriter, *h
 | PUT | `/admin/config` | `{"ROCKSYS_UPSTREAM":"http://..."}` | `{"ok":true}` | 热改配置（★ key 必须为注册名全名，即环境变量名；短 key 会被 easyconf 静默忽略） |
 | POST | `/admin/script/publish` | `{"name":"rule1","source":"..."}` | `{"ok":true,"version":1}` | 发布 Lua 脚本 |
 | POST | `/admin/script/rollback` | `{"name":"rule1","version":0}` | `{"ok":true}` | 回滚脚本 |
+| GET | `/admin/shield/metrics` | — | `{"window_seconds":60,"total":N,"by_type":{...}}` | WAF 近 1 分钟实时计数（内存，无需查库） |
+| GET | `/admin/shield/events` | — | JSONL | 拦截明细（from/to/block_type/client_ip/limit 过滤） |
+| GET | `/admin/shield/stats` | — | `{"days":N,"total":N,"daily":[...],"top_ips":[...]}` | WAF 聚合统计 |
+| POST | `/admin/shield/prune` | `{"days":N}` | `{"ok":true,"deleted":N}` | 手动清理拦截明细（保留期外） |
+| GET / POST | `/admin/shield/blacklist` | POST `{"ip","title","block_type","expires_at"}` | `{"total":N,"rows":[...]}` / `{"ok":true,"id":N}` | 黑名单列表 / 新增 |
+| POST | `/admin/shield/blacklist/update` | `{"id","title","block_type","expires_at"}` | `{"ok":true}` | 更新黑名单条目 |
+| POST | `/admin/shield/blacklist/delete` | `{"id"}` | `{"ok":true}` | 软删黑名单（可恢复） |
+| POST | `/admin/shield/blacklist/restore` | `{"id"}` | `{"ok":true}` | 恢复软删黑名单 |
+| POST | `/admin/shield/blacklist/import` | 纯文本（每行一个 IP/CIDR） | `{"ok":true,"imported":N,"skipped":N}` | 批量导入黑名单 |
+| GET / POST | `/admin/shield/whitelist` 及 `update`/`delete`/`restore`/`import` | 同构（无 block_type/expires_at） | 同上 | 白名单管理 |
+
+> 完整端点清单与参数详解见 `docs/webui-api.md` §2（端点总览）与 §3.18（shield 端点组）；鉴权见 §8.3。
 
 ### 8.2 rockctl CLI 子命令映射
 
@@ -1313,6 +1325,26 @@ SHIELD_MAX_BODY_SIZE=0
 
 > 以上配置项由挂件在构造时通过 `cfgMgr.Register(...)` 注册（见 §2.2），注册后自动纳入 .env 读写与热更广播；未注册的 key 在 `/admin/config` 写入时静默无效。
 > WAF 配置项为 `*bool`/`*string`/`*int`（easyconf Register 支持类型）。
+
+### 9.4.1 动态 IP 黑白名单（DB 化，WAF 方案）
+
+DB 就绪（`DB_DRIVER`/`DB_DSN`）时自动建表并接入拦截链路（三表：`ip_blacklist` / `ip_whitelist` / `attack_archive`，见 `docs/DATA_DICT.md` §2.5-2.7）：
+
+- **来源合并**：黑名单 = DB 表 ∪ 外挂 `rules/ip_blacklist.txt`；白名单 = DB 表 ∪ `.env` `SHIELD_IP_WHITELIST`，均取并集，白名单优先；
+- **性能红线**：请求热路径零 DB 查询——快照（含 DB 数据）由启动/管理面变更/TTL（60s）重建，命中计数异步攒批落库；
+- **管理面**：`/admin/shield/blacklist`（GET 列表 / POST 新增）、`/update`、`/delete`（软删）、`/restore`、`/import`（批量导入，body 纯文本每行一个 IP/CIDR）；whitelist 同构；变更即时生效（主动重建快照）；DB 未配置时端点 503；
+- **存量迁移**：外挂 403 条风险 IP 导入 DB 的操作手册见 `docs/WAF_BLACKLIST_MIGRATION.md`（导入后建议外挂瘦身为最小种子集，DB 为唯一权威）。
+
+### 9.4.2 未来方向（WAF 方案 §8 留档，实施完成后记录备查）
+
+- **自动收录：高频请求自动拉黑**——按时间窗统计 IP 请求数（如按日 Top IP），超阈值自动入黑名单（需防误伤与阈值策略）；
+- **自动收录：规则命中自动拉黑**——URL/UA 规则命中 N 次后自动拉黑该 IP；
+- **每日请求统计报表**——按日聚合 Top IP / 拦截类别分布；
+- **429 限流式封禁**——黑名单命中按策略返回 429 而非固定 403；
+- **TTL 刷新参数化**——当前默认 60s（`dbTTLInterval`，plugins/shield/shield.go），后续可配（CDN 前置可调小、网关可调大）；
+- **攻击证据归档逻辑**——`attack_archive` 表已建（仅建表），后续接入自动/人工归档触发与查询；
+- **白名单配置迁移入表**——当前 `.env` 与表并存，后续可迁移收敛；
+- **黑名单过期自动清理**——后台定时清理 `expires_at` 过期条目（索引已备）。
 
 ### 9.5 验收
 

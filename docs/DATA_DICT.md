@@ -11,13 +11,16 @@
 - 统一数据访问层：`internal/db`（`DB_DRIVER`/`DB_DSN` 配置，见 `docs/CONFIGURATION.md`）；
 - SQL 脚本三方言齐平：`sql/sqlite/`、`sql/postgres/`、`sql/mysql/`（`internal/db/db_test.go` 的 `TestScriptParity` 强制校验文件集一致）；
 - 表名/库名等动态标识符用 `{table}` 占位符（运行时由组件替换，**禁止来自外部用户输入**）；
-- 全项目共 **4 张业务表**，分属 4 个组件：
+- 全项目共 **7 张业务表**，分属 4 个组件：
   | 表名 | 归属组件 | 条件装配 |
   |---|---|---|
   | `shield_event` | shield（WAF 防护） | 恒建（DB 就绪即建） |
   | `access_log` | obs（访问日志/指标） | 恒建（DB 就绪即建） |
   | `admin_users` | adminapi（管理接口鉴权） | 恒建（DB 就绪即建） |
   | `outbox` | mq（异步消息） | `MQ_ENABLED=true` 才建 |
+  | `ip_blacklist` | shield（WAF 防护） | 恒建（DB 就绪即建） |
+  | `ip_whitelist` | shield（WAF 防护） | 恒建（DB 就绪即建） |
+  | `attack_archive` | shield（WAF 防护） | 恒建（DB 就绪即建） |
 
 **通用约定**
 - 字段命名统一 `snake_case`；
@@ -35,6 +38,9 @@
 | `access_log` | 访问日志表 | obs | 存**放行**请求的访问明细与耗时指标 | `sql/{sqlite,postgres,mysql}/access_log_create_table.sql` |
 | `admin_users` | 管理接口超级管理员表 | adminapi | 管理后台登录鉴权用户存储（密码不存明文） | `sql/{sqlite,postgres,mysql}/admin_users_create_table.sql` |
 | `outbox` | mq 异步消息 outbox 表 | mq | 本地先落库、后台轮询投递（outbox 模式）；`MQ_ENABLED=true` 时装配 | `sql/{sqlite,postgres,mysql}/mq_create_table.sql` |
+| `ip_blacklist` | 动态 IP 黑名单表 | shield | 管理面录入/批量导入的拉黑条目（与外挂 `rules/ip_blacklist.txt` 取并集；热路径只读内存快照） | `sql/{sqlite,postgres,mysql}/ip_blacklist_create_table.sql` |
+| `ip_whitelist` | 动态 IP 白名单表 | shield | 管理面录入的白名单条目（与 `.env` 配置 `SHIELD_IP_WHITELIST` 取并集；白名单优先于黑名单） | `sql/{sqlite,postgres,mysql}/ip_whitelist_create_table.sql` |
+| `attack_archive` | 攻击证据归档表 | shield | 攻击证据归档（本期仅建表，归档逻辑见 WAF 方案 §8） | `sql/{sqlite,postgres,mysql}/attack_archive_create_table.sql` |
 
 ---
 
@@ -122,15 +128,65 @@
 
 ---
 
+### 2.5 ip_blacklist — 动态 IP 黑名单表（9 列）
+
+**说明**：管理面录入/批量导入的动态黑名单（持久化权威），与外挂 `rules/ip_blacklist.txt` 取**并集**；
+请求热路径只读内存快照（性能红线：热路径零 DB 查询），本表仅管理操作/启动加载/后台刷新访问。
+`block_type` 复用 §3.1 枚举（仅管理面过滤/统计，非运行时匹配依据）；运行时只按 `ip` 精确/CIDR 匹配。
+软删除/过期语义：`deleted_at` 非 NULL 或 `expires_at` 已过期（UTC now）的条目不参与匹配。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `ip` | IP/CIDR | 精确 IP 或 CIDR（唯一约束，重复导入幂等拒绝） | `192.168.1.100`、`10.0.0.0/8` | TEXT / TEXT / VARCHAR(45) | — |
+| `title` | 备注 | 拉黑原因备注 | `Azure 云段扫描器` | TEXT / TEXT / VARCHAR(64) | `''` |
+| `block_type` | 拉黑类别 | 拉黑原因类别（复用 §3.1 枚举，仅管理面过滤统计） | `7`（SQL注入） | INTEGER / SMALLINT / SMALLINT | `1` |
+| `hit_count` | 命中计数 | 命中拦截计数（异步累加，观测/排序用） | `12` | INTEGER / INT / INT | `0` |
+| `expires_at` | 过期时间 | 过期时间（UTC）；NULL=永久，过期条目不参与匹配 | `2026-09-01T00:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除，不参与匹配 | `2026-08-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `created_at` | 创建时间 | 创建时间（UTC） | `2026-08-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `updated_at` | 更新时间 | 最后更新时间（UTC） | `2026-08-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+### 2.6 ip_whitelist — 动态 IP 白名单表（6 列）
+
+**说明**：管理面录入的动态白名单（持久化权威），与 `.env` 配置 `SHIELD_IP_WHITELIST` 取**并集**；
+请求热路径只读内存快照；**白名单优先于黑名单**（命中直接放行短路）。软删除语义同 2.5。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `ip` | IP/CIDR | 精确 IP 或 CIDR（唯一约束，重复导入幂等拒绝） | `10.0.0.5` | TEXT / TEXT / VARCHAR(45) | — |
+| `title` | 备注 | 备注 | `办公出口段` | TEXT / TEXT / VARCHAR(64) | `''` |
+| `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除，不参与匹配 | `2026-08-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `created_at` | 创建时间 | 创建时间（UTC） | `2026-08-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `updated_at` | 更新时间 | 最后更新时间（UTC） | `2026-08-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+### 2.7 attack_archive — 攻击证据归档表（7 列）
+
+**说明**：攻击证据归档（本期仅建表，归档触发/查询逻辑留待 WAF 方案 §8 后续迭代）；数据不自动清理（审计留存）。
+`block_type` 复用 §3.1 枚举。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `client_ip` | 来源 IP | 来源 IP | `192.168.1.10` | TEXT / TEXT / VARCHAR(45) | `''` |
+| `request_uri` | 请求 URI | 请求 URI（含查询串） | `/login?id=1' OR '1'='1` | TEXT / TEXT / VARCHAR(1000) | `''` |
+| `request_headers` | 请求头 | 完整请求头 JSON（攻击证据） | `{"Host":"example.com"}` | TEXT / TEXT / TEXT | `'{}'` |
+| `block_type` | 拦截类别 | 拦截类别（复用 §3.1 枚举） | `7`（SQL注入） | INTEGER / SMALLINT / SMALLINT | `1` |
+| `remark` | 归档备注 | 归档备注 | `2026-08-20 SQL 注入批量探测` | TEXT / TEXT / VARCHAR(64) | `''` |
+| `created_at` | 归档时间 | 归档时间（UTC） | `2026-08-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+---
+
 ## 3. 枚举与取值附录
 
-### 3.1 block_type — 拦截类别（shield_event.block_type）
+### 3.1 block_type — 拦截类别（shield_event.block_type / ip_blacklist.block_type / attack_archive.block_type）
 
 数值稳定、只增不改（`plugins/shield/block_type.go` 为权威定义）。
 
 | 值 | 中文名 | 说明 | 拦截响应码 |
 |---|---|---|---|
-| 1 | IP黑名单 | IP 黑名单命中（外挂文件 `rules/ip_blacklist.txt`） | 403 |
+| 1 | IP黑名单 | IP 黑名单命中（外挂文件 `rules/ip_blacklist.txt` ∪ DB 表 `ip_blacklist`） | 403 |
 | 2 | 限流 | 令牌桶限流 | 429 |
 | 3 | 方法不允许 | 方法白名单 | 403 |
 | 4 | 请求体超限 | 请求体超限 | 413 |

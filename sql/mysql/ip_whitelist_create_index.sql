@@ -1,0 +1,5 @@
+-- IP 白名单表索引（多条语句由组件拆分逐条执行）。
+-- 注意：MySQL 的 CREATE INDEX 不支持 IF NOT EXISTS，重复执行报
+-- "Duplicate key name"——组件对索引创建做幂等容错（该错误忽略）。
+-- ip 唯一性由建表 UNIQUE KEY 保证（重复导入幂等）；白名单按 ip 精确/CIDR 匹配，
+-- 数据量小且无过滤/清理场景，无需额外索引。

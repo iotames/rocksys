@@ -309,6 +309,17 @@ func buildServer(args []string) (*Server, error) {
 	if dataDB != nil {
 		recorder = shield.NewEventRecorder(cfgMgr, dataDB)
 		shieldMw.SetEventRecorder(recorder) // 拦截点 → Record()（nil 安全，重复注入以最后一次为准）
+
+		// WAF 方案：动态 IP 黑白名单 DB 化（管理面 CRUD/导入 + 拦截链路快照合并）。
+		// 注入即建表 + 重建快照 + 启动 TTL 兜底刷新（60s）；nil 场景由 SetIPListStores 内部跳过。
+		shieldMw.SetIPListStores(
+			shield.NewIPListStore(dataDB.EasyDB(), dataDB, true),
+			shield.NewIPListStore(dataDB.EasyDB(), dataDB, false),
+		)
+		// 攻击证据归档表（WAF 方案 §4.3：本期仅建表，无业务逻辑）。
+		if err := shield.EnsureAttackArchiveTable(dataDB.EasyDB(), dataDB); err != nil {
+			log.Warn("shield: 攻击证据归档表初始化失败（本期仅建表，不影响防护）", "err", err.Error())
+		}
 	}
 
 	mgr.RegisterMiddleware(obs.New(cfgMgr, dataDB)) // 访问日志/指标 → chain.Tail(+ResponseHook)
@@ -415,6 +426,27 @@ func buildServer(args []string) (*Server, error) {
 	}
 	if err := adminSrv.RegisterPlugin(shield.PathShieldPrune, shieldAdmin.Prune); err != nil {
 		return nil, fmt.Errorf("register shield prune: %w", err)
+	}
+	// 动态 IP 黑白名单管理（WAF 方案 §6.1）：列表 GET + 新增 POST 共用 path；
+	// 更新/软删/恢复/导入为独立 POST 端点。DB 未配置时端点统一 503。
+	for _, ep := range []struct {
+		path string
+		h    http.HandlerFunc
+	}{
+		{shield.PathBlacklist, shieldAdmin.Blacklist()},
+		{shield.PathBlacklistUpdate, shieldAdmin.BlacklistUpdate()},
+		{shield.PathBlacklistDelete, shieldAdmin.BlacklistDelete()},
+		{shield.PathBlacklistRestore, shieldAdmin.BlacklistRestore()},
+		{shield.PathBlacklistImport, shieldAdmin.BlacklistImport()},
+		{shield.PathWhitelist, shieldAdmin.Whitelist()},
+		{shield.PathWhitelistUpdate, shieldAdmin.WhitelistUpdate()},
+		{shield.PathWhitelistDelete, shieldAdmin.WhitelistDelete()},
+		{shield.PathWhitelistRestore, shieldAdmin.WhitelistRestore()},
+		{shield.PathWhitelistImport, shieldAdmin.WhitelistImport()},
+	} {
+		if err := adminSrv.RegisterPlugin(ep.path, ep.h); err != nil {
+			return nil, fmt.Errorf("register shield %s: %w", ep.path, err)
+		}
 	}
 
 	// 5b. WebUI 管理控制台静态资源（内嵌单页，根路径 / 打开）。

@@ -326,6 +326,38 @@
         break;
       }
 
+      // ---- 黑白名单管理 Tab（WAF 方案 §6.2）----
+      case 'waf-tab':
+        views.waf.ipListSwitchTab(el.getAttribute('data-tab') || 'stats');
+        break;
+      case 'waf-iplist-kind':
+        views.waf.ipListSwitchKind(el.getAttribute('data-kind') || 'black');
+        break;
+      case 'waf-iplist-query':
+        views.waf.ipListQuery();
+        break;
+      case 'waf-iplist-reset':
+        views.waf.ipListReset();
+        break;
+      case 'waf-iplist-reload':
+        views.waf.ipListQuery();
+        break;
+      case 'waf-iplist-page':
+        views.waf.ipListPage(Number(el.getAttribute('data-dir')) || 0);
+        break;
+      case 'waf-iplist-add':
+        views.waf.ipListAdd();
+        break;
+      case 'waf-iplist-del':
+        views.waf.ipListDelete(el.getAttribute('data-id'));
+        break;
+      case 'waf-iplist-restore':
+        views.waf.ipListRestore(el.getAttribute('data-id'));
+        break;
+      case 'waf-iplist-import':
+        views.waf.ipListImport();
+        break;
+
       // ---- 数据清理警告横幅 ----
       case 'prune-dismiss':
         dismissPruneBanner();

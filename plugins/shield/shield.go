@@ -67,13 +67,45 @@ type Shield struct {
 	// recorder 落库记录器（可选，setter 注入，nil 时 Record 静默 no-op）。
 	counter  *eventCounter
 	recorder *EventRecorder
+
+	// 动态 IP 黑白名单（DB 持久化，WAF 方案 §5.3）：
+	// ipBlackDB/ipWhiteDB 数据访问层（setter 注入，nil = DB 未配置，回落仅外挂/.env）；
+	// dbHits 黑名单命中计数攒批（id → 原子增量，TTL 循环定时 flush 落库，热路径零 DB 查询）；
+	// TTL 兜底刷新（默认 60s）：覆盖管理面变更通知缺失的异常场景，顺带 flush hit_count。
+	ipBlackDB ipListStore // DB 黑名单数据访问（nil = 未注入，回落仅外挂文件）
+	ipWhiteDB ipListStore // DB 白名单数据访问（nil = 未注入，回落仅 .env 配置）
+	dbHits    sync.Map // int64 条目 id → *atomic.Int64 增量
+	ttlMu     sync.Mutex
+	ttlStopCh chan struct{}
+	ttlStart  bool
 }
 
+// ipListStore 动态黑白名单数据访问接口（实现见 IPListStore；测试可注入计数包装
+// 断言热路径零 DB 查询——WAF 方案 §5.3 验证要求）。管理面 CRUD 亦经本接口。
+type ipListStore interface {
+	Table() string
+	EnsureTable() error
+	QueryActive(now time.Time) ([]ActiveIP, error)
+	AddHitCount(id int64, delta int) error
+	Insert(ip, title string, blockType BlockType, expiresAt *time.Time, now time.Time) (int64, error)
+	Update(id int64, title string, blockType BlockType, expiresAt *time.Time, now time.Time) error
+	SoftDelete(id int64, now time.Time) error
+	Restore(id int64, now time.Time) error
+	Import(ips []string, title string, blockType BlockType, now time.Time) (imported, skipped int, err error)
+	List(f ListFilter, now time.Time) (rows []map[string]any, total int64, err error)
+}
+
+// dbTTLInterval DB 黑白名单快照兜底刷新间隔（WAF 方案 §5.3；§8 记后续参数化）。
+const dbTTLInterval = 60 * time.Second
+
 // shieldSnapshot 不可变运行态快照（整体重建后原子替换）。
+// dbBlackIDs 精确 IP → DB 黑名单条目 id（命中时异步累加 hit_count；
+// 仅精确 IP 命中可归因单条，CIDR 子网命中不累加）。
 type shieldSnapshot struct {
 	enabled     bool
 	ipBlacklist *ipSet
 	ipWhitelist *ipSet
+	dbBlackIDs  map[string]int64
 	pathRules   []PathRule
 	limitBy     string
 	limiter     *RateLimiter
@@ -328,10 +360,37 @@ func (s *Shield) Start(cfg any) error {
 		return err
 	}
 
+	// 动态黑白名单合并：DB 表 ∪ 外挂/.env（WAF 方案 §5.3）。
+	// ★ DB 查询仅在快照重建时发生（启动/管理面变更/TTL 兜底），请求热路径零 DB 查询。
+	// DB 未注入或查询失败：回退仅外挂/.env，告警不阻断（防护不因 DB 异常降级为无）。
+	blackList := rs.IPBlacklist
+	dbBlackIDs := map[string]int64{}
+	if s.ipBlackDB != nil {
+		if actives, err := s.ipBlackDB.QueryActive(time.Now()); err != nil {
+			log.Warn("shield: 加载 DB 黑名单失败，仅外挂文件生效", "err", err.Error())
+		} else {
+			for _, a := range actives {
+				blackList = append(blackList, a.IP)
+				dbBlackIDs[a.IP] = a.ID
+			}
+		}
+	}
+	whiteList := splitList(s.ipWhitelist)
+	if s.ipWhiteDB != nil {
+		if actives, err := s.ipWhiteDB.QueryActive(time.Now()); err != nil {
+			log.Warn("shield: 加载 DB 白名单失败，仅 .env 配置生效", "err", err.Error())
+		} else {
+			for _, a := range actives {
+				whiteList = append(whiteList, a.IP)
+			}
+		}
+	}
+
 	snap := &shieldSnapshot{
 		enabled:     s.enabled,
-		ipBlacklist: newIPSet(rs.IPBlacklist), // 外挂 rules/ip_blacklist.txt（精确 IP/CIDR，≤3s 热更）
-		ipWhitelist: newIPSet(splitList(s.ipWhitelist)),
+		ipBlacklist: newIPSet(blackList), // 外挂 rules/ip_blacklist.txt ∪ DB 表（精确 IP/CIDR）
+		ipWhitelist: newIPSet(whiteList), // .env SHIELD_IP_WHITELIST ∪ DB 表
+		dbBlackIDs:  dbBlackIDs,
 		pathRules:   rules,
 		limitBy:     limitBy,
 		limiter:     newRateLimiter(s.rps, s.burst),
@@ -354,8 +413,101 @@ func (s *Shield) Start(cfg any) error {
 	return nil
 }
 
-// Stop 清理资源（本挂件无特别资源）。
-func (s *Shield) Stop() error { return nil }
+// SetIPListStores 注入动态黑白名单数据访问层（main.go 装配，DB 就绪后调用）。
+// nil 安全：任一 store 为 nil 表示该表未配置（回落仅外挂/.env）。
+// 注入后立即重建一次快照（DB 数据即时生效，不等 TTL），并启动 TTL 兜底刷新循环。
+// ★ 请求热路径零 DB 查询：store 仅在快照重建（本方法/管理面变更/TTL）与 hit_count flush 时访问。
+func (s *Shield) SetIPListStores(black, white ipListStore) {
+	s.ipBlackDB = black
+	s.ipWhiteDB = white
+	if black == nil && white == nil {
+		return
+	}
+	// 幂等建表：失败告警不阻断（表缺失时查询失败 → 快照回退外挂/.env，防护不降级）。
+	for _, st := range []ipListStore{black, white} {
+		if st == nil {
+			continue
+		}
+		if err := st.EnsureTable(); err != nil {
+			log.Warn("shield: 黑白名单表初始化失败（拦截仍正常，仅外挂/.env 生效）", "table", st.Table(), "err", err.Error())
+		}
+	}
+	if err := s.Start(nil); err != nil {
+		log.Warn("shield: 注入 DB 黑白名单后重建快照失败", "err", err.Error())
+	}
+	s.startTTLLoop()
+}
+
+// Rebuild 主动重建快照（管理面增删改/导入成功后调用，DB 数据立即生效）。
+func (s *Shield) Rebuild() error { return s.Start(nil) }
+
+// bumpHit 黑名单精确命中 → 内存攒批计数（热路径，非阻塞；TTL 循环定时 flush 落库）。
+func (s *Shield) bumpHit(id int64) {
+	v, _ := s.dbHits.LoadOrStore(id, &atomic.Int64{})
+	v.(*atomic.Int64).Add(1)
+}
+
+// startTTLLoop 启动 TTL 兜底刷新循环（幂等）：定时 flush hit_count + 重建快照。
+func (s *Shield) startTTLLoop() {
+	s.ttlMu.Lock()
+	defer s.ttlMu.Unlock()
+	if s.ttlStart {
+		return
+	}
+	s.ttlStart = true
+	s.ttlStopCh = make(chan struct{})
+	go s.dbTTLLoop(s.ttlStopCh)
+}
+
+// dbTTLLoop 兜底刷新：覆盖"管理面变更未主动重建"的异常场景，顺带 flush hit_count。
+func (s *Shield) dbTTLLoop(stop <-chan struct{}) {
+	ticker := time.NewTicker(dbTTLInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.flushHitCounts()
+			if err := s.Start(nil); err != nil {
+				log.Warn("shield: TTL 刷新 DB 黑白名单快照失败，保留旧快照", "err", err.Error())
+			}
+		}
+	}
+}
+
+// flushHitCounts 将攒批的黑名单命中计数批量落库（Swap 归零防重复累加；
+// 写失败回补计数，下轮再试——统计类指标容忍极小误差）。
+func (s *Shield) flushHitCounts() {
+	if s.ipBlackDB == nil {
+		return
+	}
+	s.dbHits.Range(func(k, v any) bool {
+		id := k.(int64)
+		c := v.(*atomic.Int64)
+		delta := c.Swap(0)
+		if delta == 0 {
+			return true
+		}
+		if err := s.ipBlackDB.AddHitCount(id, int(delta)); err != nil {
+			log.Warn("shield: 黑名单命中计数落库失败，回补计数下轮重试", "id", id, "err", err.Error())
+			c.Add(delta)
+		}
+		return true
+	})
+}
+
+// Stop 清理资源：停止 TTL 兜底刷新循环（mgr.Shutdown 统一调用）。
+func (s *Shield) Stop() error {
+	s.ttlMu.Lock()
+	ch := s.ttlStopCh
+	s.ttlStopCh = nil
+	s.ttlMu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+	return nil
+}
 
 // Handle 处理请求（§9.2 流程）。
 // 返回 true 表示继续转发链；返回 false 表示已写入响应并中断链。
@@ -373,6 +525,9 @@ func (s *Shield) Handle(ctx *chain.Context) (next bool) {
 	}
 	if snap.ipBlacklist.contains(ip) {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		if id, ok := snap.dbBlackIDs[ip]; ok { // DB 精确条目命中 → 异步累加 hit_count（攒批，不阻塞）
+			s.bumpHit(id)
+		}
 		s.recordEvent(ctx, BlockIPBlacklist, "ip_blacklist") // 拦截监控：记录后中断链
 		return false
 	}
