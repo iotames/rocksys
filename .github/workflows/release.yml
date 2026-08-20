@@ -1,0 +1,44 @@
+name: release
+
+# GitFlow 发布：推送 v* 版本 tag 时，自动构建三平台发布包并发布 GitHub Release。
+# 版本号取 tag 名（如 v1.5.0 → 产物 rocksys-v1.5.0-<os>-<arch>.zip）。
+# 上传动作与 iotames/v2raypool 生产验证过的模式一致（svenstaro/upload-release-action，
+# release 不存在时自动创建）。前置：仓库 Settings → Actions → General → Workflow
+# permissions 勾选 "Read and write permissions"（GITHUB_TOKEN 写 Release 所需，本项目已配置）。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    # 需要写权限才能自动创建 Release / 上传 zip 资产
+    permissions:
+      contents: write
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 完整历史，供 git describe 取版本号
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # make zip = deps（clone 地基库，三个均为 public）+ cross-build（三平台）
+      # + release-assets（外挂资源）+ 打包 zip
+      - name: Build and Package
+        run: make zip
+
+      - name: Upload files to GitHub release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: bin/rocksys-*.zip
+          file_glob: true
+          tag: ${{ github.ref }}
+          overwrite: true

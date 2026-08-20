@@ -13,6 +13,7 @@
 #   make deps        # 同步依赖仓库
 #   make build       # 构建 bin/rocksys
 #   make cross-build # 交叉编译生产产物（bin/rocksys-<os>-<arch>[.exe]，含 linux amd64/arm64、windows amd64）
+#   make zip         # 三平台发布包打包：cross-build + 外挂资源 → bin/rocksys-<版本>-<os>-<arch>.zip（可上传 GitHub Release）
 #   make release     # 发布打包：编译二进制 + 拷贝外挂资源到 bin/hotscripts/（SQL/WAF规则/可信代理，可运行时热修改）
 #   make dev         # 开发模式：-tags dev 编译并在 bin/ 运行（WebUI 前端免编译热重载，改文件刷新即见）
 #   make test        # 运行全部测试
@@ -44,7 +45,7 @@ LD_FLAGS := -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)
 # windows 目标产物自动追加 .exe 后缀
 CROSS_TARGETS := linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: all deps build cross-build release dev test vet gen-env run clean
+.PHONY: all deps build cross-build zip release dev test vet gen-env run clean
 
 all: build
 
@@ -73,20 +74,41 @@ cross-build: deps
 	done
 	@echo "==> 交叉编译产物:"; ls -lh bin/rocksys-*
 
-# 发布打包：编译二进制 + 拷贝外挂资源到 bin/hotscripts/（HOT_SCRIPTS_DIR 默认值）。
+# 拷贝外挂资源到 bin/hotscripts/（HOT_SCRIPTS_DIR 默认值），供 release/zip 复用。
 # 外挂资源源 → 目标（运行期外挂优先、内嵌兜底，改文件无需重新编译）：
 #   sql/                              → bin/hotscripts/sql/          （mysql/postgres/sqlite 三方言 SQL 脚本）
 #   plugins/shield/rules/             → bin/hotscripts/rules/         （WAF 规则 5 个 txt 文件）
 #   internal/netutil/trusted_proxies.txt → bin/hotscripts/trusted_proxies/（可信代理列表）
-release: build
+release-assets:
 	@echo "==> 拷贝外挂资源到 bin/hotscripts/"
 	@mkdir -p bin/hotscripts/sql bin/hotscripts/rules bin/hotscripts/trusted_proxies
 	@cp -r sql/* bin/hotscripts/sql/
 	@cp -r plugins/shield/rules/* bin/hotscripts/rules/
 	@cp internal/netutil/trusted_proxies.txt bin/hotscripts/trusted_proxies/
 	@echo "==> 发布包就绪"
-	@echo "  二进制: bin/rocksys"
 	@echo "  外挂资源: $$(find bin/hotscripts -type f | wc -l | tr -d ' ') 个文件（位于 bin/hotscripts/）"
+
+release: build release-assets
+	@echo "  二进制: bin/rocksys"
+
+# 三平台发布包打包：在 cross-build 裸产物 + 外挂资源基础上，为每个平台生成 zip。
+# 产物：bin/rocksys-<版本>-<os>-<arch>.zip，解压即用（目录内含二进制 + hotscripts/ 外挂资源），
+# 适合上传 GitHub Release（配合 .github/workflows/release.yml 打 tag 自动发布）。
+zip: cross-build release-assets
+	@for t in $(CROSS_TARGETS); do \
+		os=$${t%/*}; arch=$${t#*/}; \
+		ext=""; \
+		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
+		dir="rocksys-$(VERSION)-$$os-$$arch"; \
+		rm -rf "bin/$$dir"; \
+		mkdir -p "bin/$$dir"; \
+		cp "bin/rocksys-$$os-$$arch$$ext" "bin/$$dir/rocksys$$ext"; \
+		cp -r bin/hotscripts "bin/$$dir/"; \
+		cd bin && rm -f "$$dir.zip" && zip -rq "$$dir.zip" "$$dir" && cd ..; \
+		rm -rf "bin/$$dir"; \
+		echo "==> 打包完成: bin/$$dir.zip"; \
+	done
+	@ls -lh bin/rocksys-$(VERSION)-*.zip
 
 # 开发模式：-tags dev 编译并在 bin/ 目录运行（工作目录=bin/）。
 # WebUI 由 go:embed 切换到 os.DirFS("../webui") 实时读磁盘，改前端代码刷新浏览器即见，

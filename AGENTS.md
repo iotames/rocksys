@@ -20,6 +20,7 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 - `make release`：发布打包 = build + 拷贝外挂资源到 `bin/hotscripts/`（`sql/`、`rules/`、`trusted_proxies/`，运行期外挂优先、内嵌兜底，改文件无需重编译）。
 - `make dev`：`-tags dev` 编译并在 bin/ 运行（WebUI 前端免编译热重载，见下节）。
 - `make cross-build`：交叉编译 linux amd64/arm64、windows amd64。
+- `make zip`：三平台发布包打包（cross-build + 外挂资源）→ `bin/rocksys-<版本>-<os>-<arch>.zip`，供 GitHub Release 发布（配合 `.github/workflows/release.yml` 推 `v*` tag 自动构建发布）。
 - `make test`：运行 `go test ./...`。
 - `make vet`：运行 `go vet ./...`。
 - `make run`：构建并运行。
