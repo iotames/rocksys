@@ -8,5 +8,5 @@ CREATE TABLE IF NOT EXISTS {table} (
     status      VARCHAR(16) NOT NULL DEFAULT 'pending',
     retry_count INT NOT NULL DEFAULT 0,
     last_error  VARCHAR(1024) NOT NULL DEFAULT '',
-    created_at  VARCHAR(40) NOT NULL
+    created_at  DATETIME(3) NOT NULL
 ) DEFAULT CHARSET=utf8mb4

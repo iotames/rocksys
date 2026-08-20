@@ -39,6 +39,7 @@
 | 13 | POST | `/admin/auth/register` | 首次注册超级管理员 |
 | 14 | POST | `/admin/auth/login` | 登录，签发 JWT |
 | 15 | POST | `/admin/auth/reset` | 重置管理员凭证（忘记密码） |
+| 16 | GET | `/admin/warnings` | 数据清理未开启警告（常驻横幅数据源，与登录响应同源） |
 
 ---
 
@@ -386,7 +387,7 @@
 
 **请求：** `{"username":"admin","password":"Admin@12345"}`
 
-**成功 `200`：** `{"ok":true,"token":"<jwt>","expires_in":43200}`，前端将 token 存本地，后续请求带 `Authorization: Bearer <token>`。
+**成功 `200`：** `{"ok":true,"token":"<jwt>","expires_in":43200,"warnings":["拦截记录清理未开启，shield_event 表可能持续膨胀"]}`，前端将 token 存本地，后续请求带 `Authorization: Bearer <token>`；`warnings` 为数据清理未开启提醒（`SHIELD_EVENT_PRUNE_ENABLED` / `OBS_LOG_PRUNE_ENABLED` 为 false 时出现，组件未装配则无对应项，恒为数组），WebUI 用于渲染常驻置顶横幅（详见 §3.17）。
 **失败 `401`：** 用户名或密码错误。
 **失败 `429`：** 登录尝试过于频繁（5 分钟窗口失败 5 次锁定 5 分钟）。
 
@@ -411,6 +412,18 @@
 | `version` | string | 版本号（当前 git 最新 tag，无 tag 时 `dev`；tag 后有提交时 `tag-dev`，如 `v0.0.1-dev`） |
 | `build_time` | string | 构建时间（如 `2026-08-19T16:11:46+08:00`） |
 | `go_version` | string | 编译用 Go 版本（如 `go1.25.3`） |
+
+### 3.17 GET /admin/warnings — 数据清理未开启警告
+
+返回数据清理未开启提醒（与 `POST /admin/auth/login` 响应 `warnings` 字段同源，均为 `pruneWarnings()` 扫描结果）。WebUI 在应用启动与登录后调用，用于渲染**常驻置顶横幅**（登录态为 localStorage token、无会话内缓存，刷新页面后经本端点重拉，配置变更实时反映）。鉴权与其余内建端点一致（回环免鉴权 / token 或登录 JWT）。
+
+**响应 `200`：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `warnings` | string[] | 数据清理未开启提醒：`SHIELD_EVENT_PRUNE_ENABLED=false` → 拦截明细膨胀提醒；`OBS_LOG_PRUNE_ENABLED=false` → 访问日志膨胀提醒；组件未装配则无对应项；无警告时为空数组 `[]` |
+
+**示例：** `{"warnings":["拦截记录清理未开启，shield_event 表可能持续膨胀（可在配置页开启 SHIELD_EVENT_PRUNE_ENABLED）","访问日志清理未开启，access_log 表可能持续膨胀（可在配置页开启 OBS_LOG_PRUNE_ENABLED）"]}`
 
 ---
 
@@ -443,5 +456,6 @@
 | 1.0 | 2026-08-04 | 初稿：覆盖 11 个端点，含新增 `GET /admin/config/list`、`GET /admin/script/list`（用于 WebUI 配置分组与脚本版本历史） |
 | 1.1 | 2026-08-08 | 鉴权行为更新：回环地址一律免鉴权；非回环地址下静态预共享 token（`ROCKSYS_ADMIN_TOKEN`）与登录 JWT 双轨并行、任一通过即放行；WebUI 移除手动输入「访问凭证」，统一账号密码登录 |
 | 1.2 | 2026-08-19 | 新增 `GET /admin/version`（WebUI 左上角品牌区展示版本号，与 `rocksys --version` 同源） |
+| 1.3 | 2026-08-20 | 登录响应新增 `warnings` 字段 + 新增 `GET /admin/warnings`（数据清理未开启警告，WebUI 常驻置顶横幅数据源） |
 
 > 契约原则：只增不改删；新增字段不影响旧字段语义。

@@ -134,7 +134,7 @@ func (s *OutboxStore) EnsureTable() error {
 // PostgreSQL 驱动（lib/pq）不支持 Result.LastInsertId，故方言判断后走
 // mq_insert_returning_id.sql（RETURNING id）取自增 id；其余方言用普通 INSERT + LastInsertId。
 func (s *OutboxStore) Insert(topic, payload string) (int64, error) {
-	created := time.Now().UTC().Format(time.RFC3339)
+	created := time.Now().UTC()
 	if da, ok := s.sqls.(interface{ Driver() string }); ok && da.Driver() == "postgres" {
 		ret, err := s.sqlText("mq_insert_returning_id.sql")
 		if err != nil {
@@ -175,13 +175,11 @@ func (s *OutboxStore) FetchPending(limit int) ([]Message, error) {
 	msgs := make([]Message, 0, 8)
 	for rows.Next() {
 		var m Message
-		var created string
+		var created time.Time
 		if err := rows.Scan(&m.ID, &m.Topic, &m.Payload, &m.Status, &m.RetryCount, &created); err != nil {
 			return nil, err
 		}
-		if t, err := time.Parse(time.RFC3339, created); err == nil {
-			m.CreatedAt = t
-		}
+		m.CreatedAt = created
 		msgs = append(msgs, m)
 	}
 	return msgs, rows.Err()

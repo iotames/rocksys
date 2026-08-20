@@ -85,7 +85,7 @@ func (s *DBStore) Write(batch []*AccessRecord) error {
 			continue // 单条扩展字段序列化失败单独丢弃
 		}
 		if _, err := s.edb.Exec(ins,
-			r.Time.UTC().Format(time.RFC3339),
+			r.Time.UTC(),
 			r.TraceID, r.TenantID, r.Path, r.Method, r.ClientIP, r.StatusCode,
 			r.Upstream, r.ShieldMs, r.BizMs, r.TotalMs, r.ReqBytes, r.RespBytes,
 			extra,
@@ -107,7 +107,7 @@ func (s *DBStore) Query(q Query) ([]map[string]any, error) {
 		limit = defaultQueryLimit
 	}
 	args := []any{
-		q.From.UTC().Format(time.RFC3339), q.To.UTC().Format(time.RFC3339),
+		q.From.UTC(), q.To.UTC(),
 		q.Path, q.Path, q.PathLike, q.PathLike, q.TraceID, q.TraceID,
 		limit,
 	}
@@ -148,6 +148,8 @@ func toString(v any) string {
 		return s
 	case []byte:
 		return string(s)
+	case time.Time:
+		return s.UTC().Format(time.RFC3339)
 	case int64:
 		return strconv.FormatInt(s, 10)
 	case int:
@@ -175,6 +177,25 @@ func (s *DBStore) SizeBytes() (int64, error) {
 		return toInt64(v), nil
 	}
 	return 0, nil
+}
+
+// Prune 清理保留期外的访问日志，返回删除行数（幂等可重复执行）。
+// retentionDays <= 0 时回落默认保留 7 天。参数为截止时刻 time.Time（DB 原生时间类型列）。
+func (s *DBStore) Prune(retentionDays int) (int64, error) {
+	del, err := s.sqlText("access_log_prune.sql")
+	if err != nil {
+		return 0, err
+	}
+	if retentionDays <= 0 {
+		retentionDays = 7
+	}
+	cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	res, err := s.edb.Exec(del, cutoff.UTC())
+	if err != nil {
+		return 0, fmt.Errorf("obs: 清理访问日志失败: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // toInt64 将数据库标量（int64/float64/string/[]byte）归一为 int64。

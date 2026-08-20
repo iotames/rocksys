@@ -1,7 +1,7 @@
 -- 访问日志表（幂等建表，MySQL 方言）。{table} 为运行时表名占位符（非用户输入，安全）。
 CREATE TABLE IF NOT EXISTS {table} (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    time        VARCHAR(40) NOT NULL,
+    time        DATETIME(3) NOT NULL,
     trace_id    VARCHAR(255) NOT NULL,
     tenant_id   VARCHAR(255) NOT NULL DEFAULT '',
     path        VARCHAR(2048) NOT NULL,

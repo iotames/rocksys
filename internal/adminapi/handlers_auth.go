@@ -160,7 +160,41 @@ func (s *AdminServer) handleLogin(ctx httpsvr.Context) {
 		"ok":         true,
 		"token":      token,
 		"expires_in": int(jwtTTL.Seconds()),
+		"warnings":   s.pruneWarnings(), // 数据清理未开启警告（WebUI 登录后展示横幅引导开启）
 	}, http.StatusOK)
+}
+
+// pruneWarnings 数据清理未开启的登录警告（docs/WAF_MONITOR_STATS.md 登录警告机制）。
+// 经配置中心 List() 扫描已注册的 prune 开关（internal 层不反向依赖 plugins 包，
+// 但下方键名与插件注册项耦合，插件改名/新增需同步维护）：
+//   - SHIELD_EVENT_PRUNE_ENABLED=false → 拦截明细（shield_event 表）清理未开启警告；
+//   - OBS_LOG_PRUNE_ENABLED=false      → 访问日志（access_log 表）清理未开启警告。
+//
+// 配置项未注册（对应组件未装配）时不产生警告；恒返回非 nil 切片（JSON 序列化为 [] 而非 null）。
+func (s *AdminServer) pruneWarnings() []string {
+	warnings := []string{}
+	if s.confMgr == nil {
+		return warnings
+	}
+	for _, it := range s.confMgr.List() {
+		if it.Current != "false" {
+			continue
+		}
+		switch it.Key {
+		case "SHIELD_EVENT_PRUNE_ENABLED":
+			warnings = append(warnings, "拦截记录清理未开启，shield_event 表可能持续膨胀（可在配置页开启 SHIELD_EVENT_PRUNE_ENABLED）")
+		case "OBS_LOG_PRUNE_ENABLED":
+			warnings = append(warnings, "访问日志清理未开启，access_log 表可能持续膨胀（可在配置页开启 OBS_LOG_PRUNE_ENABLED）")
+		}
+	}
+	return warnings
+}
+
+// handleWarnings GET /admin/warnings → 数据清理未开启警告（与登录响应 warnings 同源）。
+// 供 WebUI 常驻置顶横幅在页面刷新/重新登录后重新拉取（登录态为 localStorage token，
+// 无会话内缓存，必须经只读端点获取实时状态）。鉴权经 requireAuth（与其余内建端点一致）。
+func (s *AdminServer) handleWarnings(ctx httpsvr.Context) {
+	_ = writeJSON(ctx.Writer, map[string]any{"warnings": s.pruneWarnings()}, http.StatusOK)
 }
 
 // handleReset 重置管理员凭证（忘记密码：运维已将 ADMIN_INITIALIZED 改为 false）。

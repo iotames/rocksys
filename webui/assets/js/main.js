@@ -14,7 +14,7 @@
   const store = Rock.state.store;
   const views = Rock.views;
 
-  const ROUTES = { overview: 1, components: 1, config: 1, scripts: 1, metrics: 1, logs: 1, syslogs: 1 };
+  const ROUTES = { overview: 1, components: 1, config: 1, scripts: 1, metrics: 1, waf: 1, logs: 1, syslogs: 1 };
 
   function currentRoute() {
     const h = location.hash.replace(/^#\/?/, '');
@@ -31,7 +31,7 @@
     $$('.menu-item[data-route]').forEach(a => {
       a.classList.toggle('active', a.getAttribute('data-route') === route);
     });
-    const inObs = route === 'metrics' || route === 'logs' || route === 'syslogs';
+    const inObs = route === 'metrics' || route === 'waf' || route === 'logs' || route === 'syslogs';
     const grp = $('#menu-group-obs');
     if (grp) grp.classList.toggle('open', inObs || grp.classList.contains('open'));
   }
@@ -41,6 +41,7 @@
     overview:   { fetch: () => views.overview.load({}), lazy: false },
     components: { fetch: () => views.components.load({}), lazy: false },
     metrics:    { fetch: () => views.metrics.load({}), lazy: false },
+    waf:        { fetch: () => views.waf.load({}), lazy: true },
     config:     { fetch: () => views.config.load({}), lazy: true },
     scripts:    { fetch: () => views.scripts.load({}), lazy: true },
     logs:       { fetch: () => views.logs.loadPage({ force: true }), lazy: true },
@@ -69,9 +70,11 @@
     if (p.lazy) {
       if ((route === 'config' && store.configListLoaded) ||
           (route === 'scripts' && store.scriptsLoaded) ||
-          (route === 'logs' && store.logsLoaded)) {
+          (route === 'logs' && store.logsLoaded) ||
+          (route === 'waf' && store.wafLoaded)) {
         if (route === 'config') views.config.render();
         else if (route === 'scripts') views.scripts.render();
+        else if (route === 'waf') views.waf.render();
         else views.logs.render();
       } else {
         p.fetch();
@@ -105,6 +108,34 @@
     }).catch(function () { /* 版本号不可用时保持空 */ });
   }
 
+  // 数据清理未开启警告（常驻置顶横幅，docs/WAF_MONITOR_STATS.md 登录警告机制）：
+  // 启动/登录后经 GET /admin/warnings 拉取（刷新页面不丢失、配置变更实时反映），
+  // 与登录响应 warnings 同源。401（未登录）静默——登录流程成功后再渲染。
+  function loadPruneWarnings() {
+    Rock.api.get('/admin/warnings').then(function (r) {
+      const ws = (r && Array.isArray(r.warnings)) ? r.warnings.filter(function (w) { return !!w; }) : [];
+      store.loginWarnings = ws.length ? ws : null;
+      renderPruneBanner();
+    }).catch(function () { /* 未登录/网络异常静默，横幅保持隐藏 */ });
+  }
+
+  // 渲染常驻横幅：loginWarnings 非空显示置顶警告（可关闭），空则隐藏
+  function renderPruneBanner() {
+    const el = $('#prune-banner');
+    if (!el) return;
+    const ws = store.loginWarnings || [];
+    if (!ws.length) { el.classList.add('hidden'); return; }
+    const txt = $('#prune-banner-text');
+    if (txt) txt.innerHTML = ws.map(function (w) { return '<span>' + Rock.util.esc(w) + '</span>'; }).join('');
+    el.classList.remove('hidden');
+  }
+
+  // 关闭常驻横幅（仅本次会话：置空后隐藏；刷新页面重新拉取显示）
+  function dismissPruneBanner() {
+    store.loginWarnings = null;
+    renderPruneBanner();
+  }
+
   // 自动刷新（作用于概览 / 组件 / 指标）
   let autoTimer = null;
   function restartAutoRefresh() {
@@ -114,7 +145,7 @@
     if (v > 0) {
       autoTimer = setInterval(() => {
         const r = currentRoute();
-        if (r === 'overview' || r === 'components' || r === 'metrics') {
+        if (r === 'overview' || r === 'components' || r === 'metrics' || r === 'waf') {
           refreshPage(r, { silent: true });
         }
       }, v);
@@ -143,6 +174,7 @@
     initRoute();
     restartAutoRefresh();
     fetchVersion();
+    loadPruneWarnings();
     // 主题切换：同步下拉框并绑定切换事件
     if (Rock.theme) Rock.theme.bind();
     // 认证引导：检测管理接口状态，未登录/未初始化时显示认证视图
@@ -153,6 +185,7 @@
     // 窗口尺寸变化时重绘图表
     window.addEventListener('resize', Rock.util.debounce(function () {
       if (currentRoute() === 'metrics') views.metrics.drawChart();
+      if (currentRoute() === 'waf' && views.waf) views.waf.drawDailyChart();
     }, 200));
   }
 
@@ -270,6 +303,34 @@
         views.metrics.load({ manual: true });
         break;
 
+      // ---- 拦截统计（WAF 监控）----
+      case 'waf-reload':
+        views.waf.load({ manual: true });
+        break;
+      case 'waf-query':
+        views.waf.queryEvents();
+        break;
+      case 'waf-reset':
+        views.waf.resetFilter();
+        break;
+      case 'waf-prune-events':
+        views.waf.pruneEvents();
+        break;
+      case 'waf-prune-logs':
+        views.waf.pruneLogs();
+        break;
+      case 'waf-expand': {
+        // data-idx 为行展开键（time|trace_id|ip 字符串）
+        const wkey = el.getAttribute('data-idx') || '';
+        views.waf.toggleExpand(wkey);
+        break;
+      }
+
+      // ---- 数据清理警告横幅 ----
+      case 'prune-dismiss':
+        dismissPruneBanner();
+        break;
+
       // ---- 日志 ----
       case 'logs-reload':
         views.logs.query();
@@ -327,6 +388,9 @@
     refreshPage,
     restartAutoRefresh,
     manualRefresh,
+    loadPruneWarnings,
+    renderPruneBanner,
+    dismissPruneBanner,
   };
 })();
 

@@ -96,6 +96,33 @@ func (h *AdminHandler) Storage(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(h.obs.StorageSize())
 }
 
+// Prune POST /admin/logs/prune → 手动触发访问日志清理（按保留天数删 access_log 旧记录）。
+// 请求体（可选）：{"days":7}——清理 N 天前的记录，缺省用配置的 OBS_LOG_RETENTION_DAYS。
+// 响应：{"ok":true,"deleted":N}。与 shield_event 清理（POST /admin/shield/prune）各管各的。
+func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
+	if h.obs == nil {
+		http.Error(w, "obs 未注册", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Days int `json:"days"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body) // 空请求体合法（用配置默认值）
+	}
+	if body.Days < 0 || body.Days > 3650 {
+		http.Error(w, "days 应为 0-3650 的整数", http.StatusBadRequest)
+		return
+	}
+	n, err := h.obs.PruneLog(body.Days)
+	if err != nil {
+		http.Error(w, "prune 失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "deleted": n})
+}
+
 // 时间参数支持的两种格式。
 const (
 	timeFmtMinute = "2006-01-02T15:04" // 精确到分

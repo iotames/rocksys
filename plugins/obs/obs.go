@@ -11,6 +11,7 @@ package obs
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ const (
 	defaultLogDir        = "logs"
 	defaultRetentionDays = 30
 	defaultStore         = "db" // 访问日志存储后端（默认）：db | file（已弃用）
+	defaultLogPruneDays  = 7    // access_log 表默认保留天数（自动清理开启后生效）
 )
 
 // 指标窗口：1 分钟滑动窗口 × 100 桶（每桶 0.6s）。
@@ -133,8 +135,16 @@ type Obs struct {
 	cfg           conf.Manager
 	storeCfg      string // *string 注册：OBS_STORE（db|file，默认 db；file 已弃用）
 	logDir        string // *string 注册：OBS_LOG_DIR
-	retentionDays int    // *int 注册：OBS_RETENTION_DAYS
+	retentionDays int    // *int 注册：OBS_RETENTION_DAYS（仅 file 后端清理用，file 已弃用）
 	dataDB        *db.DB // 统一数据访问层：默认 db 后端依赖（nil 时回退 file 并告警）
+
+	// access_log 自动清理（DB 后端专用，见 docs/WAF_MONITOR_STATS.md 数据保留）：
+	// 默认不开启，未开启时登录管理后台有警告提示。
+	pruneLogEnabled bool // *bool 注册：OBS_LOG_PRUNE_ENABLED
+	pruneLogDays    int  // *int 注册：OBS_LOG_RETENTION_DAYS
+	pruneMu         sync.Mutex
+	pruneRunning    bool
+	pruneStop       chan struct{}
 
 	sink    atomic.Value // *AsyncStore：当前存储后端（异步写入包装），热切换时原子替换
 	metrics *Metrics
@@ -167,6 +177,12 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	if err := cfgMgr.Register(&o.retentionDays, "OBS_RETENTION_DAYS", strconv.Itoa(defaultRetentionDays), "访问日志保留天数"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_RETENTION_DAYS", "err", err)
 	}
+	if err := cfgMgr.Register(&o.pruneLogEnabled, "OBS_LOG_PRUNE_ENABLED", "false", "是否开启访问日志（access_log 表）自动清理（默认不开启；未开启时登录管理后台有警告提示）"); err != nil {
+		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_PRUNE_ENABLED", "err", err)
+	}
+	if err := cfgMgr.Register(&o.pruneLogDays, "OBS_LOG_RETENTION_DAYS", strconv.Itoa(defaultLogPruneDays), "访问日志保留天数（自动清理开启后生效；DB 后端专用，与已弃用 file 后端的 OBS_RETENTION_DAYS 相互独立）"); err != nil {
+		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_RETENTION_DAYS", "err", err)
+	}
 	o.sink.Store(NewAsyncStore(o.buildStore()))
 	return o
 }
@@ -182,8 +198,10 @@ func (o *Obs) Handle(ctx *chain.Context) (next bool) { return false }
 
 // Start 按当前配置重建存储后端（热更 OBS_STORE/OBS_LOG_DIR/留存天数 / Enable 时调用）。
 // 原子替换 AsyncStore：旧后端排空缓冲后关闭，新请求写入新后端。
+// 同时确保 access_log 自动清理循环在运行（幂等；Disable 后再 Enable 可恢复）。
 func (o *Obs) Start(cfg any) error {
 	o.rebuildStore()
+	o.startPruneLoop()
 	return nil
 }
 
@@ -191,7 +209,9 @@ func (o *Obs) Start(cfg any) error {
 func (o *Obs) Stop() error { return o.Shutdown(context.Background()) }
 
 // Shutdown flush 内存缓冲区中未写入的日志，然后关闭存储（进程退出前必须调用）。
+// 同时停止 access_log 自动清理循环。
 func (o *Obs) Shutdown(ctx context.Context) error {
+	o.stopPruneLoop()
 	return o.sink.Load().(*AsyncStore).Flush(ctx)
 }
 
@@ -294,4 +314,82 @@ func (o *Obs) rebuildStore() {
 		log.Warn("obs: 旧存储排空失败", "err", err.Error())
 	}
 	_ = old.Close()
+}
+
+// ── access_log 自动清理（DB 后端专用，见 docs/WAF_MONITOR_STATS.md 数据保留）──────
+
+// startPruneLoop 启动自动清理循环（幂等，锁保护）。首次延迟 1 分钟（避开启动高峰），
+// 此后每 24h 执行一次；OBS_LOG_PRUNE_ENABLED=false 时跳过执行（默认不开启）。
+func (o *Obs) startPruneLoop() {
+	o.pruneMu.Lock()
+	defer o.pruneMu.Unlock()
+	if o.pruneRunning {
+		return
+	}
+	o.pruneRunning = true
+	o.pruneStop = make(chan struct{})
+	go o.pruneLoop(o.pruneStop)
+}
+
+// stopPruneLoop 停止自动清理循环（幂等）。
+func (o *Obs) stopPruneLoop() {
+	o.pruneMu.Lock()
+	defer o.pruneMu.Unlock()
+	if !o.pruneRunning {
+		return
+	}
+	o.pruneRunning = false
+	close(o.pruneStop)
+}
+
+// pruneLoop 清理循环主体：定时执行，收到停止信号退出。
+func (o *Obs) pruneLoop(stop <-chan struct{}) {
+	first := time.NewTimer(time.Minute)
+	defer first.Stop()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-first.C:
+			o.pruneOnce()
+		case <-ticker.C:
+			o.pruneOnce()
+		case <-stop:
+			return
+		}
+	}
+}
+
+// pruneOnce 执行一次清理：开关开启且当前为 db 后端时，清理保留期外的 access_log 记录。
+// file 后端（已弃用）自带按天清理，跳过；数据访问层未就绪跳过。
+func (o *Obs) pruneOnce() {
+	if !o.pruneLogEnabled {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(o.storeCfg), "file") {
+		return
+	}
+	if o.dataDB == nil {
+		return
+	}
+	n, err := NewDBStore(o.dataDB, accessLogTable).Prune(o.pruneLogDays)
+	if err != nil {
+		log.Warn("obs: 访问日志自动清理失败", "err", err.Error())
+		return
+	}
+	if n > 0 {
+		log.Info("obs: 访问日志自动清理完成", "deleted", n, "retention_days", o.pruneLogDays)
+	}
+}
+
+// PruneLog 手动触发访问日志清理（admin 端点 POST /admin/logs/prune 用）。
+// retentionDays <= 0 时用配置的 OBS_LOG_RETENTION_DAYS。仅 DB 后端可清理。
+func (o *Obs) PruneLog(retentionDays int) (int64, error) {
+	if o.dataDB == nil {
+		return 0, errors.New("obs: 数据访问层未就绪，无法清理")
+	}
+	if retentionDays <= 0 {
+		retentionDays = o.pruneLogDays
+	}
+	return NewDBStore(o.dataDB, accessLogTable).Prune(retentionDays)
 }

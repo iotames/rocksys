@@ -62,6 +62,12 @@ type Shield struct {
 	snapshot atomic.Value // *shieldSnapshot
 
 	hub *hotswap.ScriptHub // 外挂规则统一内容中枢（nil = 未注入，规则回落 ScriptDir 直读）
+
+	// WAF 拦截监控统计（docs/WAF_MONITOR_STATS.md）：
+	// counter 常驻内存滑动窗口计数（无 DB 也工作，供实时看板）；
+	// recorder 落库记录器（可选，setter 注入，nil 时 Record 静默 no-op）。
+	counter  *eventCounter
+	recorder *EventRecorder
 }
 
 // shieldSnapshot 不可变运行态快照（整体重建后原子替换）。
@@ -218,7 +224,7 @@ func (rl *RateLimiter) evict() {
 // 规则子目录（rules/）注册进中枢并订阅，外挂规则文件变更 ≤3s 自动重建快照；
 // 未注入（nil/缺省）时规则读取回落 ScriptDir 直读（与旧行为一致，测试兼容）。
 func New(cfgMgr conf.Manager, hubs ...*hotswap.ScriptHub) (*Shield, error) {
-	s := &Shield{cfg: cfgMgr}
+	s := &Shield{cfg: cfgMgr, counter: &eventCounter{}}
 	if len(hubs) > 0 {
 		s.hub = hubs[0]
 	}
@@ -282,6 +288,17 @@ func (s *Shield) SetPathRules(rules []PathRule) {
 	s.mu.Unlock()
 	_ = s.Start(nil)
 }
+
+// SetEventRecorder 注入拦截事件记录器（DB 就绪后由 main.go 装配调用，
+// 见 docs/WAF_MONITOR_STATS.md）。未注入时拦截照常，只不落库（Record nil 安全 no-op）。
+// 装配期调用（监听启动前），运行期只读，无需加锁。
+func (s *Shield) SetEventRecorder(r *EventRecorder) { s.recorder = r }
+
+// Recorder 返回拦截事件记录器（未注入时为 nil，admin 端点据此返回 503）。
+func (s *Shield) Recorder() *EventRecorder { return s.recorder }
+
+// Counter 返回内存滑动窗口计数器（常驻，无 DB 也工作）。
+func (s *Shield) Counter() *eventCounter { return s.counter }
 
 // Name 返回中间件名称。
 func (s *Shield) Name() string { return "shield" }
@@ -358,15 +375,17 @@ func (s *Shield) Handle(ctx *chain.Context) (next bool) {
 	}
 	if snap.ipBlacklist.contains(ip) {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		s.recordEvent(ctx, BlockIPBlacklist, "ip_blacklist") // 拦截监控：记录后中断链
 		return false
 	}
 	// ★ WAF 安全检测（§9.6，默认全部关闭；开启后位于 IP 检查之后、路径/UA 规则之前）
-	if !runWAF(ctx, snap.waf) {
+	if !s.runWAF(ctx, snap.waf) {
 		return false
 	}
 	deny, allow := snap.matchRules(ctx.R.URL.Path, ctx.R.UserAgent())
 	if deny {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		s.recordEvent(ctx, BlockPathRuleDeny, "path_rule") // 拦截监控：记录后中断链
 		return false
 	}
 	if allow {
@@ -376,9 +395,18 @@ func (s *Shield) Handle(ctx *chain.Context) (next bool) {
 	if !ok {
 		ctx.W.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(wait.Seconds())), 10))
 		http.Error(ctx.W, "too many requests", http.StatusTooManyRequests)
+		s.recordEvent(ctx, BlockRateLimit, "rate_limit") // 拦截监控：记录后中断链
 		return false
 	}
 	return true
+}
+
+// recordEvent 记录一次拦截：内存滑动窗口计数常开（无 DB 也工作，供实时看板），
+// 落库经 recorder（nil 安全 no-op，未注入 DB 时不记录）。热路径调用：
+// 内部只做计数 + 非阻塞入队（通道满丢弃），绝不阻塞转发。
+func (s *Shield) recordEvent(ctx *chain.Context, bt BlockType, ruleHit string) {
+	s.counter.Add(bt, time.Now())
+	s.recorder.Record(ctx, bt, ruleHit)
 }
 
 func (s *Shield) current() *shieldSnapshot {
@@ -461,7 +489,8 @@ var _ hotswap.MiddlewareLifecycle = (*Shield)(nil)
 // 检测顺序：方法白名单 → 体积限制 → 风险路径 → 路径遍历 → SQL 注入 → XSS → 爬虫 UA。
 // 除方法白名单/体积限制按配置值决定外，其余检测项各自独立开关（全部默认关闭）。
 // waf 为 nil（快照未构建）时直接放行。
-func runWAF(ctx *chain.Context, waf *wafSnapshot) bool {
+// 拦截监控：每个拦截点在写响应后调用 recordEvent 记录（不改拦截判定，仅追加记录）。
+func (s *Shield) runWAF(ctx *chain.Context, waf *wafSnapshot) bool {
 	if waf == nil {
 		return true
 	}
@@ -469,37 +498,44 @@ func runWAF(ctx *chain.Context, waf *wafSnapshot) bool {
 	if len(waf.allowMethods) > 0 {
 		if _, ok := waf.allowMethods[strings.ToUpper(ctx.R.Method)]; !ok {
 			http.Error(ctx.W, "method not allowed", http.StatusForbidden)
+			s.recordEvent(ctx, BlockMethodNotAllowed, "method_whitelist")
 			return false
 		}
 	}
 	// 2. 请求体大小预检（仅 ContentLength；-1 表示 chunked/未知，跳过，见 §9.6 边界）
 	if waf.maxBodySize > 0 && ctx.R.ContentLength > waf.maxBodySize {
 		http.Error(ctx.W, "request body too large", http.StatusRequestEntityTooLarge)
+		s.recordEvent(ctx, BlockBodyTooLarge, "max_body_size")
 		return false
 	}
 	// 3. 风险路径（文件风险路径 + 配置追加）
 	if waf.riskPathEnabled && len(waf.riskPaths) > 0 && waf.matchRiskPath(ctx.R.URL.Path) {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		s.recordEvent(ctx, BlockRiskPath, "risk_path")
 		return false
 	}
 	// 4. 路径遍历（原始转义路径 + 解码路径双路）
 	if waf.pathTravEnabled && waf.hasPathTraversal(ctx.R.URL.EscapedPath(), ctx.R.URL.Path) {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		s.recordEvent(ctx, BlockPathTraversal, "path_traversal")
 		return false
 	}
 	// 5. SQL 注入
 	if waf.sqlEnabled && waf.hasSQL(ctx.R.URL.Path, ctx.R.URL.RawQuery) {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		s.recordEvent(ctx, BlockSQLInjection, "sql_pattern")
 		return false
 	}
 	// 6. XSS
 	if waf.xssEnabled && waf.hasXSS(ctx.R.URL.RawQuery) {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		s.recordEvent(ctx, BlockXSS, "xss_pattern")
 		return false
 	}
 	// 7. 爬虫/扫描器 UA
 	if waf.crawlerEnabled && waf.hasCrawlerUA(ctx.R.UserAgent()) {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
+		s.recordEvent(ctx, BlockCrawlerUA, "crawler_ua")
 		return false
 	}
 	return true

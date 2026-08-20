@@ -68,7 +68,8 @@ type Server struct {
 	eng      *engine.Engine
 	mgr      *hotswap.Manager
 	adminSrv *adminapi.AdminServer
-	dataDB   *db.DB // 统一数据访问层（DB_DRIVER/DB_DSN），mq 等插件复用；nil 表示未启用
+	dataDB   *db.DB                 // 统一数据访问层（DB_DRIVER/DB_DSN），mq 等插件复用；nil 表示未启用
+	recorder *shield.EventRecorder // WAF 拦截事件记录器（dataDB 就绪时创建，setter 注入 shield；nil 表示未启用）
 }
 
 func main() {
@@ -132,6 +133,10 @@ func main() {
 	// 8b. 关闭挂件（逆序：先停 obs flush 日志，再停 hotswap 排空组件，最后停配置热更）
 	_ = srv.mgr.Shutdown(ctx)
 	_ = srv.cfgMgr.Shutdown(ctx)
+	// WAF 拦截事件记录器：停机前 flush 缓冲通道内剩余事件（防丢），须先于 dataDB 关闭。
+	if srv.recorder != nil {
+		srv.recorder.Stop()
+	}
 	if srv.dataDB != nil {
 		_ = srv.dataDB.Close() // mq/obs/admin 均复用 dataDB 连接，一并关闭
 	}
@@ -293,6 +298,19 @@ func buildServer(args []string) (*Server, error) {
 		log.Info("db: 数据访问层已就绪", "driver", dataDB.Driver())
 	}
 
+	// ── WAF 拦截监控统计（docs/WAF_MONITOR_STATS.md）──────────────────────
+	// 拦截请求在 shield 处短路（obs 在 Tail 槽位看不到），故记录器必须在 shield 拦截点采集。
+	// 装配方式：DB 就绪后经 setter 注入（shield.New 签名不变，保持挂件独立性）；
+	// dataDB 未就绪时跳过——内存滑动窗口计数仍可用，仅明细落库/查询端点降级。
+	var recorder *shield.EventRecorder
+	// ★ 有意无条件装配（与 SHIELD_ENABLED 解耦）：SHIELD_ENABLED 支持配置热更，
+	// 若仅在启用时才创建 recorder，热更 false→true 后 recorder 不会出现，故始终装配；
+	// shield 禁用时仅两个空转 goroutine（flush/prune）+ 空表，成本可忽略。
+	if dataDB != nil {
+		recorder = shield.NewEventRecorder(cfgMgr, dataDB)
+		shieldMw.SetEventRecorder(recorder) // 拦截点 → Record()（nil 安全，重复注入以最后一次为准）
+	}
+
 	mgr.RegisterMiddleware(obs.New(cfgMgr, dataDB)) // 访问日志/指标 → chain.Tail(+ResponseHook)
 	mgr.RegisterMiddleware(copy.New(cfgMgr))        // 请求抄送 → chain.Tail(+ResponseHook)
 	mgr.RegisterMiddleware(result.New(cfgMgr))      // L3 结果 → chain.Tail(+ResponseHook)
@@ -379,6 +397,25 @@ func buildServer(args []string) (*Server, error) {
 	if err := adminSrv.RegisterPlugin("/admin/logs/storage", obsAdmin.Storage); err != nil {
 		return nil, fmt.Errorf("register obs storage: %w", err)
 	}
+	if err := adminSrv.RegisterPlugin("/admin/logs/prune", obsAdmin.Prune); err != nil {
+		return nil, fmt.Errorf("register obs logs prune: %w", err)
+	}
+
+	// shield 管理端点（WAF 监控统计）：metrics 实时计数 / events 明细 / stats 聚合 / prune 手动清理。
+	// handler 经 mgr.GetMiddleware("shield") 拿实例，recorder 未注入时相应端点自动 503。
+	shieldAdmin := shield.NewAdminHandler(mgr)
+	if err := adminSrv.RegisterPlugin(shield.PathShieldMetrics, shieldAdmin.Metrics); err != nil {
+		return nil, fmt.Errorf("register shield metrics: %w", err)
+	}
+	if err := adminSrv.RegisterPlugin(shield.PathShieldEvents, shieldAdmin.Events); err != nil {
+		return nil, fmt.Errorf("register shield events: %w", err)
+	}
+	if err := adminSrv.RegisterPlugin(shield.PathShieldStats, shieldAdmin.Stats); err != nil {
+		return nil, fmt.Errorf("register shield stats: %w", err)
+	}
+	if err := adminSrv.RegisterPlugin(shield.PathShieldPrune, shieldAdmin.Prune); err != nil {
+		return nil, fmt.Errorf("register shield prune: %w", err)
+	}
 
 	// 5b. WebUI 管理控制台静态资源（内嵌单页，根路径 / 打开）。
 	if err := adminSrv.RegisterWebUI(webui.FS); err != nil {
@@ -402,6 +439,7 @@ func buildServer(args []string) (*Server, error) {
 		mgr:      mgr,
 		adminSrv: adminSrv,
 		dataDB:   dataDB,
+		recorder: recorder,
 	}, nil
 }
 

@@ -41,6 +41,9 @@ const (
 	PathReset      = "/admin/auth/reset"
 )
 
+// PathWarnings 数据清理未开启警告端点（与登录响应 warnings 同源，供前端常驻横幅刷新后重拉）。
+const PathWarnings = "/admin/warnings"
+
 const (
 	// authorizationHeader 鉴权请求头名称。
 	authorizationHeader = "Authorization"
@@ -180,6 +183,7 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodGet, "/admin/log/tail", check(s.handleLogTail))
 	s.srv.AddHandler(http.MethodGet, "/admin/log/stream", check(s.handleLogStream))
 	s.srv.AddHandler(http.MethodGet, PathVersion, check(s.handleVersion))
+	s.srv.AddHandler(http.MethodGet, PathWarnings, check(s.handleWarnings))
 }
 
 // RegisterWebUI 注册 WebUI 静态资源（管理控制台）。

@@ -1,7 +1,7 @@
 -- 访问日志表（幂等建表，PostgreSQL 方言）。{table} 为运行时表名占位符（非用户输入，安全）。
 CREATE TABLE IF NOT EXISTS {table} (
     id          BIGSERIAL PRIMARY KEY,
-    time        TEXT NOT NULL,
+    time        TIMESTAMPTZ NOT NULL,
     trace_id    TEXT NOT NULL,
     tenant_id   TEXT NOT NULL DEFAULT '',
     path        TEXT NOT NULL,

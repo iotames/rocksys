@@ -4,6 +4,6 @@ CREATE TABLE IF NOT EXISTS {table} (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    created_at    DATETIME NOT NULL,
+    updated_at    DATETIME NOT NULL
 )

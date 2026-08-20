@@ -21,6 +21,14 @@
     metrics: null,                 // GET /admin/metrics 最新指标
     metricsError: null,            // 'obs' = 观测未开启
     metricsHistory: [],            // 趋势采样历史 [{t, qps, p50, p95, p99, err}]
+    wafMetrics: null,              // GET /admin/shield/metrics 近 1 分钟拦截计数（内存窗口）
+    wafMetricsError: null,
+    wafStats: null,                // GET /admin/shield/stats 按日聚合 + Top IP
+    wafStatsError: null,
+    wafEvents: [],                 // 拦截明细行（/admin/shield/events JSONL）
+    wafEventsError: null,
+    wafLoaded: false,              // 拦截统计页是否已加载（懒加载缓存判定）
+    loginWarnings: null,           // 登录响应 warnings（prune 未开启等持久化膨胀提醒）
     logs: [],                      // 访问日志行（obs /admin/logs）
     logsLoaded: false,
     logsError: null,

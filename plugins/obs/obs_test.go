@@ -606,7 +606,7 @@ func TestDBStoreTypeNormalize(t *testing.T) {
 			t.Errorf("%s 应为 int64，got %T(%v)", k, row[k], row[k])
 		}
 	}
-	// 时间列保持 string（RFC3339）
+	// 时间列经 normalizeRowTypes 归一为 RFC3339 字符串（DB 侧原生类型，读取时 toString 转换）
 	if _, ok := row[DimTime].(string); !ok {
 		t.Errorf("time 应为 string，got %T(%v)", row[DimTime], row[DimTime])
 	}
@@ -768,5 +768,47 @@ func TestAdminStorage(t *testing.T) {
 	}
 	if got["total_bytes"].(float64) != got["file_bytes"].(float64)+got["db_bytes"].(float64) {
 		t.Errorf("total 应等于 file+db，实际 %v", got)
+	}
+}
+
+// DBStore.Prune 保留期清理（docs/WAF_MONITOR_STATS.md 常规日志 7 天机制底层）：
+// 保留期外删除、保留期内保留、重复执行幂等。
+func TestDBStorePrune(t *testing.T) {
+	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs_prune.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+	st := NewDBStore(d, "")
+	if err := st.EnsureTable(); err != nil {
+		t.Fatalf("EnsureTable: %v", err)
+	}
+	old := time.Now().Add(-10 * 24 * time.Hour)
+	now := time.Now()
+	if err := st.Write([]*AccessRecord{
+		{Time: old, TraceID: "old-1", Path: "/old", Method: http.MethodGet, StatusCode: 200, TotalMs: 1},
+		{Time: old, TraceID: "old-2", Path: "/old", Method: http.MethodGet, StatusCode: 200, TotalMs: 1},
+		{Time: now, TraceID: "new-1", Path: "/new", Method: http.MethodGet, StatusCode: 200, TotalMs: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 保留 1 天：10 天前的 2 条删除
+	n, err := st.Prune(1)
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("应删除 2 条，实际 %d", n)
+	}
+	rows, err := st.Query(Query{From: old.Add(-time.Hour), To: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0][DimTraceID] != "new-1" {
+		t.Errorf("应剩 1 条 new-1，实际 %v", rows)
+	}
+	// 幂等：再次执行删除 0 条
+	if n, _ := st.Prune(1); n != 0 {
+		t.Errorf("重复 Prune 应删除 0 条，实际 %d", n)
 	}
 }

@@ -132,6 +132,13 @@
     <span>管理接口不可达，已保留上次数据（最后更新 <b id="banner-last-updated">--</b>）</span>
   </div>
 
+  <!-- ============ 全局横幅：数据清理未开启警告（常驻置顶，可关闭，刷新后重拉显示） ============ -->
+  <div id="prune-banner" class="banner banner-warning hidden">
+    <span class="banner-ico">⚠</span>
+    <span class="prune-banner-text" id="prune-banner-text"></span>
+    <button class="banner-close" data-act="prune-dismiss" title="关闭本次提醒（刷新页面后重新显示）">✕</button>
+  </div>
+
   <!-- ============ 主体布局：侧边栏 + 主内容 ============ -->
   <div class="layout">
     <!-- 左侧侧边栏 -->
@@ -180,6 +187,12 @@
               </svg>
               <span>指标</span>
             </a>
+            <a class="menu-item menu-sub-item" data-route="waf" href="#/waf" title="WAF 拦截统计：实时计数 / 按日趋势 / Top 攻击源 / 明细">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/><path d="M12 8v4"/><circle cx="12" cy="15" r="0.5" fill="currentColor"/>
+              </svg>
+              <span>拦截统计</span>
+            </a>
             <a class="menu-item menu-sub-item" data-route="logs" href="#/logs">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>
@@ -205,6 +218,7 @@
       <section class="page hidden" id="page-config"></section>
       <section class="page hidden" id="page-scripts"></section>
       <section class="page hidden" id="page-metrics"></section>
+      <section class="page hidden" id="page-waf"></section>
       <section class="page hidden" id="page-logs"></section>
       <section class="page hidden" id="page-syslogs"></section>
     </main>
@@ -234,6 +248,7 @@
 <script src="./assets/js/views/config.js"></script>
 <script src="./assets/js/views/scripts.js"></script>
 <script src="./assets/js/views/metrics.js"></script>
+<script src="./assets/js/views/waf.js"></script>
 <script src="./assets/js/views/logs.js"></script>
 <script src="./assets/js/views/syslogs.js"></script>
 <script src="./assets/js/views/auth.js"></script>

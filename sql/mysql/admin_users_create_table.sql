@@ -4,6 +4,6 @@ CREATE TABLE IF NOT EXISTS {table} (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
     username      VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
-    created_at    VARCHAR(40) NOT NULL,
-    updated_at    VARCHAR(40) NOT NULL
+    created_at    DATETIME(3) NOT NULL,
+    updated_at    DATETIME(3) NOT NULL
 ) DEFAULT CHARSET=utf8mb4

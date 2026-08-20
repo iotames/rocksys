@@ -7,5 +7,5 @@ CREATE TABLE IF NOT EXISTS {table} (
     status      TEXT NOT NULL DEFAULT 'pending',
     retry_count INT NOT NULL DEFAULT 0,
     last_error  TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL
+    created_at  TIMESTAMPTZ NOT NULL
 )

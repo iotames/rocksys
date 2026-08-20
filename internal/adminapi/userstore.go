@@ -41,8 +41,8 @@ type adminUser struct {
 	ID           int64  `db:"id"`
 	Username     string `db:"username"`
 	PasswordHash string `db:"password_hash"`
-	CreatedAt    string `db:"created_at"`
-	UpdatedAt    string `db:"updated_at"`
+	CreatedAt    time.Time `db:"created_at"`
+	UpdatedAt    time.Time `db:"updated_at"`
 }
 
 // userStore 管理接口用户存储：封装 easydb 操作 admin_users 表。
@@ -139,7 +139,7 @@ func (s *userStore) save(username, passwordHash string) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 	if existing != nil {
 		upd, err := s.sqlText("admin_users_update.sql")
 		if err != nil {

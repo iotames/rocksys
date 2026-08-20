@@ -3,6 +3,8 @@
 .crush/
 .vscode/
 .omo/
+.codegraph/
+.tmp-sqltest/
 
 # 配置测试副作用
 .env

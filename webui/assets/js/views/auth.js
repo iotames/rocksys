@@ -91,6 +91,11 @@
       .then(function (r) {
         if (r && r.token) {
           api.setToken(r.token);
+          // 后端 pruneWarnings：清理机制未开启的持久化膨胀提醒（全局常驻置顶横幅 + 登录即时 toast）
+          const ws = (r && Array.isArray(r.warnings)) ? r.warnings.filter(function (w) { return !!w; }) : [];
+          Rock.state.store.loginWarnings = ws.length ? ws : null;
+          ws.forEach(function (w) { ui.toast(w, 'warning', 6000); });
+          if (Rock.main && Rock.main.renderPruneBanner) Rock.main.renderPruneBanner();
           ui.toast('登录成功', 'success');
           enterConsole();
         } else {

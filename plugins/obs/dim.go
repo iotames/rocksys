@@ -20,7 +20,7 @@ type DimType string
 const (
 	DimString   DimType = "string"   // 字符串
 	DimInt      DimType = "int"      // 整数
-	DimDatetime DimType = "datetime" // 时间（RFC3339）
+	DimDatetime DimType = "datetime" // 时间（DB 原生类型：PG TIMESTAMPTZ / MySQL DATETIME(3) / SQLite DATETIME；读取时 toString 归一为 RFC3339 字符串）
 )
 
 // DimKind 维度存储形态。
