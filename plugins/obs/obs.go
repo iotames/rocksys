@@ -138,7 +138,7 @@ type Obs struct {
 	retentionDays int    // *int 注册：OBS_RETENTION_DAYS（仅 file 后端清理用，file 已弃用）
 	dataDB        *db.DB // 统一数据访问层：默认 db 后端依赖（nil 时回退 file 并告警）
 
-	// access_log 自动清理（DB 后端专用，见 docs/WAF_MONITOR_STATS.md 数据保留）：
+	// access_log 自动清理（DB 后端专用，数据保留见 DATA_DICT 维护约定）：
 	// 默认不开启，未开启时登录管理后台有警告提示。
 	pruneLogEnabled bool // *bool 注册：OBS_LOG_PRUNE_ENABLED
 	pruneLogDays    int  // *int 注册：OBS_LOG_RETENTION_DAYS
@@ -316,7 +316,7 @@ func (o *Obs) rebuildStore() {
 	_ = old.Close()
 }
 
-// ── access_log 自动清理（DB 后端专用，见 docs/WAF_MONITOR_STATS.md 数据保留）──────
+// ── access_log 自动清理（DB 后端专用，数据保留见 DATA_DICT 维护约定）──────
 
 // startPruneLoop 启动自动清理循环（幂等，锁保护）。首次延迟 1 分钟（避开启动高峰），
 // 此后每 24h 执行一次；OBS_LOG_PRUNE_ENABLED=false 时跳过执行（默认不开启）。

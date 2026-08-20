@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"rocksys/internal/hotswap"
+
+	"github.com/iotames/easyserver/log"
 )
 
 // AdminHandler obs 插件端点 handler（§8.1 插件端点注册机制）。
@@ -75,7 +77,8 @@ func (h *AdminHandler) Logs(w http.ResponseWriter, r *http.Request) {
 		Limit:    defaultQueryLimit,
 	})
 	if err != nil {
-		http.Error(w, "logs 查询失败: "+err.Error(), http.StatusInternalServerError)
+		log.Error("obs: logs 查询失败", "err", err.Error())
+		http.Error(w, "logs 查询失败", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
@@ -100,6 +103,12 @@ func (h *AdminHandler) Storage(w http.ResponseWriter, r *http.Request) {
 // 请求体（可选）：{"days":7}——清理 N 天前的记录，缺省用配置的 OBS_LOG_RETENTION_DAYS。
 // 响应：{"ok":true,"deleted":N}。与 shield_event 清理（POST /admin/shield/prune）各管各的。
 func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
+	// 仅 POST（RegisterPlugin 同时注册 GET+POST，挂件 handler 自行校验方法；
+	// GET 无副作用，防止本机恶意页面无凭证触发清理）。
+	if r.Method != http.MethodPost {
+		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
+		return
+	}
 	if h.obs == nil {
 		http.Error(w, "obs 未注册", http.StatusServiceUnavailable)
 		return
@@ -116,7 +125,8 @@ func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := h.obs.PruneLog(body.Days)
 	if err != nil {
-		http.Error(w, "prune 失败: "+err.Error(), http.StatusInternalServerError)
+		log.Error("obs: prune 失败", "err", err.Error())
+		http.Error(w, "prune 失败", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

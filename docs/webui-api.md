@@ -336,7 +336,7 @@
 | resp_bytes | int | 响应流量（字节） |
 | （扩展维度） | 不定 | 负载维度（如 `request_body`），由 obs 维度注册表定义，平铺输出 |
 
-**数据来源**：当前启用的 obs 存储后端（默认 `OBS_STORE=db` 查 `access_log` 表；`OBS_STORE=file` 读 `logs/access-YYYY-MM-DD.jsonl`，已弃用），切换后端后只查当前后端。**返回按完成时间倒序（最新在前），最多 `2000` 条**；耗时排序由 WebUI 端对已加载数据本地排序。
+**数据来源**：当前启用的 obs 存储后端（默认 `OBS_STORE=db` 查 `access_log` 表；`OBS_STORE=file` 读 `logs/access-YYYY-MM-DD.jsonl`，已弃用），切换后端后只查当前后端。`access_log` 表字段定义见 `docs/DATA_DICT.md`。**返回按完成时间倒序（最新在前），最多 `2000` 条**；耗时排序由 WebUI 端对已加载数据本地排序。
 
 **失败 `400`**：时间格式非法（应为 `YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`）/ `from` 晚于 `to`，响应体文本为错误原因。
 **失败 `503`**：观测组件未注册。

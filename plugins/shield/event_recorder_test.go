@@ -1,4 +1,4 @@
-// 拦截监控统计单元测试（docs/WAF_MONITOR_STATS.md）：
+// 拦截监控统计单元测试（覆盖内存滑动窗口计数器、拦截类别枚举、记录器异步落库/查询/清理与降级丢弃）。
 // 覆盖内存滑动窗口计数器、拦截类别枚举、记录器异步落库/查询/清理与降级丢弃。
 package shield
 
@@ -352,9 +352,10 @@ func TestAdminShieldMetrics(t *testing.T) {
 }
 
 // Events/Stats：recorder 未注入（DB 未配置）时返回 503 降级提示。
+// Prune 另行单独断言（GET 已被方法校验拒绝，降级须用 POST 验证）。
 func TestAdminShieldDegraded(t *testing.T) {
 	h := &AdminHandler{shield: &Shield{counter: &eventCounter{}}}
-	for _, fn := range []func(http.ResponseWriter, *http.Request){h.Events, h.Stats, h.Prune} {
+	for _, fn := range []func(http.ResponseWriter, *http.Request){h.Events, h.Stats} {
 		rec := httptest.NewRecorder()
 		fn(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
 		if rec.Code != http.StatusServiceUnavailable {
@@ -363,6 +364,17 @@ func TestAdminShieldDegraded(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "未启用") && !strings.Contains(rec.Body.String(), "未注册") {
 			t.Errorf("503 响应应包含降级说明，body=%q", rec.Body.String())
 		}
+	}
+	// Prune：POST 且 recorder 未注入 → 503 降级；GET → 405 方法拒绝。
+	rec := httptest.NewRecorder()
+	h.Prune(rec, httptest.NewRequest(http.MethodPost, "/x", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Prune POST 未注入 recorder 应返回 503，实际 %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	h.Prune(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("Prune GET 应返回 405，实际 %d", rec.Code)
 	}
 }
 
@@ -400,6 +412,13 @@ func TestAdminShieldPrune(t *testing.T) {
 	r.Stop()
 	h := &AdminHandler{shield: &Shield{counter: &eventCounter{}, recorder: r}}
 
+	// GET 必须被方法校验拒绝（无副作用），不得触发清理。
+	grec := httptest.NewRecorder()
+	h.Prune(grec, httptest.NewRequest(http.MethodGet, PathShieldPrune, nil))
+	if grec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET 应返回 405，实际 %d（body=%q）", grec.Code, grec.Body.String())
+	}
+
 	req := httptest.NewRequest(http.MethodPost, PathShieldPrune, nil)
 	rec := httptest.NewRecorder()
 	h.Prune(rec, req)
@@ -412,5 +431,26 @@ func TestAdminShieldPrune(t *testing.T) {
 	}
 	if got["ok"] != true || got["deleted"].(float64) != 1 {
 		t.Errorf("ok/deleted = %v/%v，期望 true/1", got["ok"], got["deleted"])
+	}
+}
+
+// 500 错误不应回显底层错误细节（err.Error 仅写服务端日志，防 SQL/驱动内部信息泄露）。
+func TestAdminShieldErrorNoDetail(t *testing.T) {
+	r, _ := newTestRecorder(t)
+	r.Stop()
+	// 篡改表名使后续 SQL 必然语法错误（模拟查询/清理失败路径）。
+	r.tableName = "bad;table"
+	h := &AdminHandler{shield: &Shield{counter: &eventCounter{}, recorder: r}}
+
+	for _, fn := range []func(http.ResponseWriter, *http.Request){h.Events, h.Stats, h.Prune} {
+		rec := httptest.NewRecorder()
+		fn(rec, httptest.NewRequest(http.MethodPost, "/x", nil))
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("SQL 失败应返回 500，实际 %d（body=%q）", rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, "bad") || strings.Contains(body, "syntax") || strings.Contains(body, "Error") {
+			t.Errorf("500 响应不应回显底层错误细节，body=%q", body)
+		}
 	}
 }

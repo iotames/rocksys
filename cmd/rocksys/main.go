@@ -298,7 +298,7 @@ func buildServer(args []string) (*Server, error) {
 		log.Info("db: 数据访问层已就绪", "driver", dataDB.Driver())
 	}
 
-	// ── WAF 拦截监控统计（docs/WAF_MONITOR_STATS.md）──────────────────────
+	// ── WAF 拦截监控统计 ───────────────────────────────────────────────
 	// 拦截请求在 shield 处短路（obs 在 Tail 槽位看不到），故记录器必须在 shield 拦截点采集。
 	// 装配方式：DB 就绪后经 setter 注入（shield.New 签名不变，保持挂件独立性）；
 	// dataDB 未就绪时跳过——内存滑动窗口计数仍可用，仅明细落库/查询端点降级。

@@ -1,4 +1,4 @@
-// shield 插件管理端点（WAF 监控统计，见 docs/WAF_MONITOR_STATS.md）。
+// shield 插件管理端点（WAF 监控统计；数据字典见 docs/DATA_DICT.md）。
 //
 // 端点由 cmd/rocksys 装配时经 adminapi.RegisterPlugin 注入（仿 obs 三端点）：
 //   - GET  /admin/shield/events  拦截明细查询（JSONL，支持时间/类别/IP 过滤）
@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"rocksys/internal/hotswap"
+
+	"github.com/iotames/easyserver/log"
 )
 
 // 管理端点路径常量（main.go 装配引用）。
@@ -114,7 +116,8 @@ func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 		Limit:     limit,
 	})
 	if err != nil {
-		http.Error(w, "events 查询失败: "+err.Error(), http.StatusInternalServerError)
+		log.Error("shield: events 查询失败", "err", err.Error())
+		http.Error(w, "events 查询失败", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
@@ -164,12 +167,14 @@ func (h *AdminHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	from := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	daily, err := rec.StatsDaily(from)
 	if err != nil {
-		http.Error(w, "stats 查询失败: "+err.Error(), http.StatusInternalServerError)
+		log.Error("shield: stats 查询失败", "err", err.Error())
+		http.Error(w, "stats 查询失败", http.StatusInternalServerError)
 		return
 	}
 	topIPs, err := rec.StatsTopIP(from, top)
 	if err != nil {
-		http.Error(w, "stats 查询失败: "+err.Error(), http.StatusInternalServerError)
+		log.Error("shield: stats 查询失败", "err", err.Error())
+		http.Error(w, "stats 查询失败", http.StatusInternalServerError)
 		return
 	}
 	// 聚合总量并给 daily 行附类别中文名（block_type 数值稳定，前端亦可自行映射）。
@@ -193,6 +198,12 @@ func (h *AdminHandler) Stats(w http.ResponseWriter, r *http.Request) {
 // 请求体（可选）：{"days":90}——清理 N 天前的记录，缺省用配置的保留天数。
 // 响应：{"ok":true,"deleted":N}。
 func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
+	// 仅 POST（RegisterPlugin 同时注册 GET+POST，挂件 handler 自行校验方法；
+	// GET 无副作用，防止本机恶意页面无凭证触发清理）。
+	if r.Method != http.MethodPost {
+		http.Error(w, "仅支持 POST", http.StatusMethodNotAllowed)
+		return
+	}
 	if h.shield == nil {
 		http.Error(w, "shield 未注册", http.StatusServiceUnavailable)
 		return
@@ -214,7 +225,8 @@ func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := rec.Prune(body.Days)
 	if err != nil {
-		http.Error(w, "prune 失败: "+err.Error(), http.StatusInternalServerError)
+		log.Error("shield: prune 失败", "err", err.Error())
+		http.Error(w, "prune 失败", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

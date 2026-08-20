@@ -164,7 +164,7 @@ func (s *AdminServer) handleLogin(ctx httpsvr.Context) {
 	}, http.StatusOK)
 }
 
-// pruneWarnings 数据清理未开启的登录警告（docs/WAF_MONITOR_STATS.md 登录警告机制）。
+// pruneWarnings 数据清理未开启的登录警告（登录警告机制见 DATA_DICT/WebUI 警告横幅说明）。
 // 经配置中心 List() 扫描已注册的 prune 开关（internal 层不反向依赖 plugins 包，
 // 但下方键名与插件注册项耦合，插件改名/新增需同步维护）：
 //   - SHIELD_EVENT_PRUNE_ENABLED=false → 拦截明细（shield_event 表）清理未开启警告；

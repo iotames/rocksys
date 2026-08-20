@@ -193,6 +193,8 @@ stbiz_A ──(经 RockBiz SDK)──▶ HTTP 内网调用（默认）/ gRPC（�
 > 操作，SQL 语句外置到 `sql/<dbtype>/` 目录（外挂统一根 `HOT_SCRIPTS_DIR` 下 `sql/` 子目录优先、编译期嵌入兜底），切换数据库缺脚本即报错。
 >
 > **数据库铁律**（详见 `docs/DEV_HANDBOOK.md`）：① SQL 必须落盘 `sql/<dbtype>/`，禁止 Go 内联；② 换库只改 `bin/.env`（`DB_DRIVER`/`DB_DSN`）；③ 纯 SQL 参数化，不用 ORM/对象模型；④ sqlite/mysql/postgres 三方言齐平，缺脚本即报错。
+>
+> **数据字典**：全部业务表（`shield_event`/`access_log`/`admin_users`/`outbox`）字段与枚举（含三方言类型对照）见 `docs/DATA_DICT.md`；数据结构变动（含新增枚举）必须同步维护，红线见 `AGENTS.md`。
 
 ### 8.4 演进原则
 **演进 = 开关切换，不是重构**：最小 → 标准 → 完整是同一套代码的开关组合；任何阶段关闭某组件即回到上一级能力，转发永不中断。

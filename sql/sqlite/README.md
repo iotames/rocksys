@@ -19,4 +19,16 @@ SQLite 为默认零配置方言（`DB_DRIVER` 默认 `sqlite`，`DB_DSN` 默认 
 - 索引幂等：`CREATE INDEX IF NOT EXISTS`
 - 表大小：查询 `dbstat` 虚拟表（modernc.org/sqlite 默认启用）
 
+## 字段注释约定
+
+建表脚本（`*_create_table.sql`）为数据表唯一权威说明，字段必须注释（DBA/客户端只看库，不看 Go 源码）：
+
+- **SQLite**：字段行内 `--` 注释 + 表头块注释（枚举、状态码等映射写表头，字段写行内）；
+- **MySQL**：字段定义内 `COMMENT '...'` + 表尾 `COMMENT='...'`（`SHOW CREATE TABLE`/DBeaver 可见）；
+- **PostgreSQL**：`CREATE TABLE` 后追加 `COMMENT ON TABLE/COLUMN` 多语句（lib/pq simple query 可一次 Exec，幂等）；
+- 枚举类字段（如 `shield_event.block_type`、`mq.status`）必须把**完整取值映射**写进注释，数值稳定、只增不改；
+- 新增/改动 Go 侧枚举常量时，须同步更新三方言建表脚本注释（如 `plugins/shield/block_type.go` 头部有同步提醒）。
+
 三方言文件集完全一致，由 `internal/db/db_test.go` 的 `TestScriptParity` 强制校验。
+
+> 字段/枚举的完整可读视图见 `docs/DATA_DICT.md`（数据字典：字段标题、说明、三方言类型对照、枚举映射）。

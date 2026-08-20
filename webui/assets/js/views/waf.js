@@ -1,6 +1,6 @@
 /* ==========================================================================
  * RockSys 管控控制台 - views/waf.js WAF 拦截统计页
- * 数据来源（docs/WAF_MONITOR_STATS.md）：
+ * 数据来源（admin API）：
  *   - GET  /admin/shield/metrics  近 1 分钟实时计数（内存滑动窗口，DB 未配置也可用）
  *   - GET  /admin/shield/stats    按日 × 类别聚合 + Top 攻击源 IP（查询时聚合）
  *   - GET  /admin/shield/events   拦截明细（JSONL，时间/类别/IP 过滤）

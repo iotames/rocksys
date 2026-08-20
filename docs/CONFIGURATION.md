@@ -112,6 +112,7 @@ REGISTRY_STATIC_FILE =          # 静态实例文件路径（YAML/JSON，空=无
 OBJECT_BASE_DIR = ./data/object
 
 # ===== 数据访问层 =====
+# 统一数据访问层（internal/db）：全项目业务表（shield_event/access_log/admin_users/outbox）字段与枚举见 docs/DATA_DICT.md
 DB_DRIVER = sqlite
 DB_DSN = rocksys.db               # 默认已含 ?_busy_timeout=5000&_journal_mode=WAL，可显式覆盖；mysql/postgres 示例见注释
 # SQL 方言脚本外挂目录固定为 HOT_SCRIPTS_DIR/sql/（见上方脚本外挂统一入口）

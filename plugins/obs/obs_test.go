@@ -771,7 +771,7 @@ func TestAdminStorage(t *testing.T) {
 	}
 }
 
-// DBStore.Prune 保留期清理（docs/WAF_MONITOR_STATS.md 常规日志 7 天机制底层）：
+// DBStore.Prune 保留期清理（常规日志 7 天机制底层）：
 // 保留期外删除、保留期内保留、重复执行幂等。
 func TestDBStorePrune(t *testing.T) {
 	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs_prune.db"))

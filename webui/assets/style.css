@@ -1247,7 +1247,7 @@ b, strong { font-weight: 600; }
 .switch:checked { background: var(--ok-light); }
 .switch:checked::after { left: 22px; }
 
-/* ---------- 30. 拦截统计页（WAF 监控，见 docs/WAF_MONITOR_STATS.md） ---------- */
+/* ---------- 30. 拦截统计页（WAF 监控） ---------- */
 .waf-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 
 .waf-tile {

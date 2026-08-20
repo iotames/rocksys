@@ -1,8 +1,11 @@
-// block_type 拦截类别枚举（WAF 监控统计，见 docs/WAF_MONITOR_STATS.md）。
+// block_type 拦截类别枚举（WAF 监控统计；数据字典见 docs/DATA_DICT.md）。
 //
 // 数值稳定（只增不改），SMALLINT 存储：新增检测项追加常量即可，DDL 不动。
 // 枚举与 shield.go 拦截点一一对应：Handle 中 3 个（IP 黑名单/路径规则 deny/限流）
 // + runWAF 中 7 个（方法/体积/风险路径/路径遍历/SQL 注入/XSS/爬虫 UA）。
+//
+// ★ 维护约定：本枚举与三方言建表脚本（sql/<sqlite|mysql|postgres>/shield_event_create_table.sql）
+// 的表头/列注释一一对应，新增或改动枚举值时必须同步更新 SQL 注释（DBA 依赖注释理解数据）。
 package shield
 
 // BlockType 拦截类别（SMALLINT 存储，0 保留表示"未设置/全部"）。

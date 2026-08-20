@@ -63,7 +63,7 @@ type Shield struct {
 
 	hub *hotswap.ScriptHub // 外挂规则统一内容中枢（nil = 未注入，规则回落 ScriptDir 直读）
 
-	// WAF 拦截监控统计（docs/WAF_MONITOR_STATS.md）：
+	// WAF 拦截监控统计：
 	// counter 常驻内存滑动窗口计数（无 DB 也工作，供实时看板）；
 	// recorder 落库记录器（可选，setter 注入，nil 时 Record 静默 no-op）。
 	counter  *eventCounter
@@ -290,7 +290,7 @@ func (s *Shield) SetPathRules(rules []PathRule) {
 }
 
 // SetEventRecorder 注入拦截事件记录器（DB 就绪后由 main.go 装配调用，
-// 见 docs/WAF_MONITOR_STATS.md）。未注入时拦截照常，只不落库（Record nil 安全 no-op）。
+// 未注入时拦截照常，只不落库（Record nil 安全 no-op）。
 // 装配期调用（监听启动前），运行期只读，无需加锁。
 func (s *Shield) SetEventRecorder(r *EventRecorder) { s.recorder = r }
 

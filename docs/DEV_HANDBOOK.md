@@ -43,6 +43,7 @@
 - **配置优先级**：命令行 > 环境变量 > 配置文件(.env) > 内置默认值。
 - **测试**：每章附最小单测（`go test -count=1 ./...`），使用 `httptest.NewServer` 模拟上游。
 - **文件命名**：每包按职责拆文件——`interface.go`（公开接口定义）、`impl.go`（默认实现）、`config.go`（配置结构体与默认值）、`xxx_test.go`（测试）。单文件不超过 500 行。
+- ★ **数据字典（强制）**：全部数据表字段/枚举（`block_type`、`mq.status` 等）的权威可读视图见 `docs/DATA_DICT.md`（含三方言类型对照）；**任何数据结构变动（含新增枚举）必须同步维护该文档**，与 `sql/<dbtype>/` 脚本注释保持一致，详见 `AGENTS.md`「数据字典红线」。
 - ★ **包名冲突处理**：`easyserver/hotswap`（框架层脚本管理工具，附录 A.6）与 `internal/hotswap`（我们的热运维引擎，第 6 章）包名相同。在 `cmd/rocksys` 等同时 import 两者的包中，必须用 import alias 区分，约定：`"github.com/iotames/easyserver/hotswap"` 别名为 `eshs`（easyserver hotswap），`"rocksys/internal/hotswap"` 用原名 `hotswap`。其他包通常只 import 其一，无需别名。
 
 ### 0.3 包间导入规则（强制）

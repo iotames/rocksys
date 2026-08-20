@@ -1,4 +1,4 @@
-// WAF 拦截事件记录器（WAF 监控统计，见 docs/WAF_MONITOR_STATS.md）。
+// WAF 拦截事件记录器（WAF 监控统计；数据字典见 docs/DATA_DICT.md）。
 //
 // 职责边界：
 //   - EventRecorder：拦截事件持久化（异步批量落库 shield_event 表）+ 保留期清理任务；

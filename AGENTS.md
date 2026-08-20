@@ -10,7 +10,7 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 - `sql/<mysql|postgres|sqlite>/`：数据库三方言 SQL 脚本编译期内嵌源目录（运行期外挂覆写位于 `HOT_SCRIPTS_DIR/sql/` 下）。
 - `webui/`：纯静态管理控制台，经 `go:embed` 内嵌进二进制。
 - `easyconf/`、`easyserver/`、`easydb/`：独立 git 仓库的地基库，经 `go.mod replace` 本地引用。
-- `docs/`、`ARCHITECTURE.md`：架构与接口文档，接口变更必须同步。
+- `docs/`、`ARCHITECTURE.md`：架构与接口文档，接口变更必须同步。`docs/DATA_DICT.md`：数据字典（数据层字段/枚举唯一可读视图，变动红线见下节）。
 - `bin/`：构建产物（不入库）。
 
 ## Build, Test, and Development Commands
@@ -95,6 +95,12 @@ go vet ./...
 3. **`default.env` 是全量默认值快照**：装配完成后程序自动将全部已注册配置项的默认值（含标题/默认值说明/用法注释）同步到工作目录 `default.env`（开发规范下即 `bin/default.env`），代表代码真实兜底行为；**参与**运行期取值，优先级由 easyconf 决定（取值链：命令行 → 环境变量 → 工作目录 `.env` → `default.env` → 代码默认值，`default.env` 为最低优先级兜底）。
 4. **改默认值改代码**：修改配置项默认值必须改 `Register` 调用（代码），`default.env` 由程序自动同步，或 `make gen-env` 主动刷新；禁止手工编辑 `default.env`。
 5. **新增配置项必须注册**：新增任何配置项（含挂件）必须走 `Register` 注册，不得另开读取入口。
+
+## 数据字典红线（最高优先级）
+
+1. **`docs/DATA_DICT.md` 是数据层唯一权威可读视图**：全部业务表（`shield_event`、`access_log`、`admin_users`、`outbox`）的字段名/标题/说明/三方言类型对照/枚举映射均以该文档为准，与 `sql/<dbtype>/` 建表脚本注释一一对应。
+2. **数据结构任何变动必须同步维护（强制）**：新增/修改/删除表字段、调整默认值、**新增或改动任何枚举**（`block_type`、`mq.status`、`rule_hit` 等）时，必须同步更新三处并保持一致：① 三方言建表脚本（`sql/{sqlite,postgres,mysql}/`）及其注释；② `docs/DATA_DICT.md` 对应表/枚举章节；③ Go 侧权威定义（`plugins/shield/block_type.go`、`plugins/mq/mq.go` 等）。只改其中一处视为违规。
+3. **提交前核对**：涉及数据层/枚举的提交，须核对 `docs/DATA_DICT.md` 与建表脚本字段数、枚举取值一致后再交付。
 
 ## Agent-Specific Instructions
 

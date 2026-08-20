@@ -198,7 +198,7 @@ rockctl script rollback             # 回滚上一版本
 **配置项**：`OBS_STORE`（默认 `db`，可选 `file`——已弃用，将不再被支持）、`OBS_LOG_DIR`（默认 logs，仅 file 遗留用）、`OBS_RETENTION_DAYS`（默认 30）。
 
 **存储后端**：
-- `db`（默认）：复用统一数据访问层（`DB_DRIVER`/`DB_DSN`，默认 sqlite `rocksys.db`）写 `access_log` 表；SQL 外置 `sql/<dbtype>/`。dataDB 未就绪时回退 file 并告警。
+- `db`（默认）：复用统一数据访问层（`DB_DRIVER`/`DB_DSN`，默认 sqlite `rocksys.db`）写 `access_log` 表；SQL 外置 `sql/<dbtype>/`。dataDB 未就绪时回退 file 并告警。`access_log` 表字段/枚举见 `docs/DATA_DICT.md`。
 - `file`（已弃用）：JSONL 文件 `logs/access-YYYY-MM-DD.jsonl`（按天切分、超期清理），仅显式配置 `OBS_STORE=file` 时启用，将不再被支持。
 - 切换语义：改 `OBS_STORE` 触发配置热更，新日志写入新后端；查询只读当前启用的后端，旧数据保留（db 表在库、file 文件在磁盘，切回可见）。
 
@@ -250,7 +250,7 @@ COPY_TARGETS="http://shadow-a:9100;http://shadow-b:9100"
 
 **作用**：异步消息解耦（Outbox 模式）。`MQ_ENABLED=true` 且数据访问层就绪时装配；
 outbox 表建于统一数据访问层业务库（`DB_DRIVER`/`DB_DSN`），与业务数据同库，支持本地事务同提交。
-数据访问层未就绪时跳过注册（组件降级，不阻断底座）。
+数据访问层未就绪时跳过注册（组件降级，不阻断底座）。`outbox` 表字段/枚举见 `docs/DATA_DICT.md`。
 
 ---
 

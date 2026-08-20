@@ -108,7 +108,7 @@
     }).catch(function () { /* 版本号不可用时保持空 */ });
   }
 
-  // 数据清理未开启警告（常驻置顶横幅，docs/WAF_MONITOR_STATS.md 登录警告机制）：
+  // 数据清理未开启警告（常驻置顶横幅，登录警告机制）：
   // 启动/登录后经 GET /admin/warnings 拉取（刷新页面不丢失、配置变更实时反映），
   // 与登录响应 warnings 同源。401（未登录）静默——登录流程成功后再渲染。
   function loadPruneWarnings() {
