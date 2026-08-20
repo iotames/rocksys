@@ -39,7 +39,6 @@ type Shield struct {
 	// 配置项挂件字段（构造时由 cfgMgr.Register 注册，Start 时读取重建快照）。
 	// ★ conf.Manager.Register 仅支持 *string/*int/*bool，黑白名单用字符串逗号分隔承载。
 	enabled     bool
-	ipBlacklist string // 逗号分隔，支持精确 IP 与 CIDR
 	ipWhitelist string // 逗号分隔，支持精确 IP 与 CIDR
 	rps         int    // 0 = 不限流
 	burst       int
@@ -235,7 +234,6 @@ func New(cfgMgr conf.Manager, hubs ...*hotswap.ScriptHub) (*Shield, error) {
 		title  string
 	}{
 		{&s.enabled, "SHIELD_ENABLED", "true", "是否启用 L1 防护"},
-		{&s.ipBlacklist, "SHIELD_IP_BLACKLIST", "", "IP 黑名单（逗号分隔，支持 CIDR）"},
 		{&s.ipWhitelist, "SHIELD_IP_WHITELIST", "", "IP 白名单（逗号分隔，支持 CIDR）"},
 		{&s.rps, "SHIELD_RATE_LIMIT_RPS", "0", "限流速率（每秒请求数，0=不限流）"},
 		{&s.burst, "SHIELD_RATE_LIMIT_BURST", "0", "限流突发容量"},
@@ -332,7 +330,7 @@ func (s *Shield) Start(cfg any) error {
 
 	snap := &shieldSnapshot{
 		enabled:     s.enabled,
-		ipBlacklist: newIPSet(splitList(s.ipBlacklist)),
+		ipBlacklist: newIPSet(rs.IPBlacklist), // 外挂 rules/ip_blacklist.txt（精确 IP/CIDR，≤3s 热更）
 		ipWhitelist: newIPSet(splitList(s.ipWhitelist)),
 		pathRules:   rules,
 		limitBy:     limitBy,

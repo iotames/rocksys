@@ -29,6 +29,7 @@ const (
 	ruleFileXSSPatterns   = "xss_patterns.txt"
 	ruleFilePathTraversal = "path_traversal.txt"
 	ruleFileCrawlerUA     = "crawler_ua.txt"
+	ruleFileIPBlacklist   = "ip_blacklist.txt"
 )
 
 // RuleSet 一次加载的全部规则（Start 时读取，编译进不可变快照）。
@@ -38,6 +39,7 @@ type RuleSet struct {
 	XSSPatterns   []string // XSS 特征
 	PathTraversal []string // 路径遍历特征
 	CrawlerUA     []string // 爬虫 UA 特征（小写）
+	IPBlacklist   []string // IP 黑名单（精确 IP / CIDR）
 }
 
 // ruleLoader 规则加载器：外置目录优先、嵌入兜底。
@@ -81,6 +83,9 @@ func (rl *ruleLoader) load() (*RuleSet, error) {
 	if rs.CrawlerUA, err = rl.loadLines(ruleFileCrawlerUA); err != nil {
 		return nil, err
 	}
+	if rs.IPBlacklist, err = rl.loadLines(ruleFileIPBlacklist); err != nil {
+		return nil, err
+	}
 	return rs, nil
 }
 
@@ -100,11 +105,12 @@ func (rl *ruleLoader) loadLines(name string) ([]string, error) {
 	return parseRuleLines(text), nil
 }
 
-// parseRuleLines 解析规则文件：按行、去空白、忽略 # 注释与空行。
+// parseRuleLines 解析规则文件：按行、去空白、统一小写化、忽略 # 注释与空行。
+// （规则匹配侧一律小写子串匹配，故加载时统一小写化，外挂文件大小写不敏感）
 func parseRuleLines(text string) []string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
+		line = strings.ToLower(strings.TrimSpace(line))
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}

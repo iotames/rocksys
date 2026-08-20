@@ -44,6 +44,23 @@ func newTestShield(t *testing.T) (*Shield, *fakeConfMgr) {
 	return s, f
 }
 
+// writeExternalRule 写外挂规则文件（HOT_SCRIPTS_DIR/rules/<name>），Start 时规则加载器优先读外挂。
+// 用于注入 ip_blacklist.txt 等外挂规则（黑名单已从 .env 配置改为外挂文件形式）。
+func writeExternalRule(t *testing.T, name, content string) {
+	t.Helper()
+	orig := hotswap.HotScriptsDir()
+	t.Cleanup(func() { hotswap.SetHotScriptsDir(orig) })
+	ext := t.TempDir()
+	p := filepath.Join(ext, "rules", name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hotswap.SetHotScriptsDir(ext)
+}
+
 func newCtx(path, remoteAddr, ua string) (*chain.Context, *httptest.ResponseRecorder) {
 	r := httptest.NewRequest(http.MethodGet, path, nil)
 	r.RemoteAddr = remoteAddr
@@ -58,7 +75,7 @@ func newCtx(path, remoteAddr, ua string) (*chain.Context, *httptest.ResponseReco
 func TestNewRegistersConfig(t *testing.T) {
 	s, f := newTestShield(t)
 	for _, n := range []string{
-		"SHIELD_ENABLED", "SHIELD_IP_BLACKLIST", "SHIELD_IP_WHITELIST",
+		"SHIELD_ENABLED", "SHIELD_IP_WHITELIST",
 		"SHIELD_RATE_LIMIT_RPS", "SHIELD_RATE_LIMIT_BURST", "SHIELD_RATE_LIMIT_BY",
 		"SHIELD_WAF_SQL_INJECTION", "SHIELD_WAF_XSS", "SHIELD_WAF_PATH_TRAVERSAL",
 		"SHIELD_WAF_RISK_PATH", "SHIELD_WAF_CRAWLER_UA", "SHIELD_WAF_RISK_PATHS",
@@ -82,8 +99,8 @@ func TestNewRegistersConfig(t *testing.T) {
 // 黑名单 IP（精确 + CIDR）→ 403，Handle 返回 false。
 func TestBlacklistIP(t *testing.T) {
 	s, _ := newTestShield(t)
+	writeExternalRule(t, ruleFileIPBlacklist, "192.168.1.100\n10.0.0.0/8\n")
 	s.enabled = true
-	s.ipBlacklist = "192.168.1.100,10.0.0.0/8"
 	if err := s.Start(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -104,9 +121,9 @@ func TestBlacklistIP(t *testing.T) {
 // 白名单 IP 放行，且放行时不写响应。
 func TestWhitelistPasses(t *testing.T) {
 	s, _ := newTestShield(t)
+	writeExternalRule(t, ruleFileIPBlacklist, "192.168.1.100\n")
 	s.enabled = true
 	s.ipWhitelist = "127.0.0.1"
-	s.ipBlacklist = "192.168.1.100"
 	if err := s.Start(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -215,8 +232,8 @@ func TestUARuleDeny(t *testing.T) {
 // disabled（SHIELD_ENABLED=false）→ 全部直通，防护不生效。
 func TestDisabledPassThrough(t *testing.T) {
 	s, _ := newTestShield(t)
+	writeExternalRule(t, ruleFileIPBlacklist, "192.168.1.100\n")
 	s.enabled = false
-	s.ipBlacklist = "192.168.1.100"
 	s.rps = 1
 	s.burst = 1
 	if err := s.Start(nil); err != nil {

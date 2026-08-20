@@ -26,3 +26,22 @@ nikto
 dirb
 gobuster
 feroxbuster
+# 不含宽泛 bot/spider 词、需显式列出的指纹（子串匹配，均小写）：
+perplexity-user
+chatgpt-user
+google-extended
+headlesschrome
+astra-agent
+ureq
+git/
+palo alto
+# 显式化 AI 爬虫/扫描器（可读性，多数已被上方宽泛 bot/spider 覆盖）：
+diffbot
+perplexitybot
+oai-searchbot
+google-cloudvertexbot
+deepseekbot
+xai-searchbot
+orbbot
+yisouspider
+shapbot

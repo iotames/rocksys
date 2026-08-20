@@ -93,7 +93,8 @@ type MiddlewareLifecycle interface {
 | 配置 | 默认 | 说明 |
 |------|------|------|
 | `SHIELD_ENABLED` | true | 是否启用（挂件开启时生效） |
-| `SHIELD_IP_BLACKLIST` / `WHITELIST` | 空 | 逗号分隔，支持精确 IP 与 CIDR |
+| `SHIELD_IP_WHITELIST` | 空 | 白名单（逗号分隔，支持精确 IP 与 CIDR） |
+| IP 黑名单（外挂文件） | — | `rules/ip_blacklist.txt`：每行一个精确 IP/CIDR，外挂优先、≤3s 热更；不再走 .env 配置 |
 | `SHIELD_RATE_LIMIT_RPS` / `BURST` | 0 / 0 | 限流速率与突发容量（0=不限流） |
 | `SHIELD_ALLOW_METHODS` | 空 | HTTP 方法白名单（空=不限） |
 | `SHIELD_MAX_BODY_SIZE` | 0 | 请求体上限字节（0=不限） |
@@ -104,7 +105,7 @@ type MiddlewareLifecycle interface {
 
 ```bash
 rockctl switch on shield
-SHIELD_IP_BLACKLIST="10.0.0.5,192.168.1.0/24" SHIELD_RATE_LIMIT_RPS=100 \
+SHIELD_RATE_LIMIT_RPS=100 \
 SHIELD_WAF_SQL_INJECTION=true SHIELD_WAF_XSS=true rocksys --upstream http://127.0.0.1:9000
 ```
 

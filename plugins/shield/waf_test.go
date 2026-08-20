@@ -127,7 +127,7 @@ func TestHasCrawlerUA(t *testing.T) {
 		ua   string
 		want bool
 	}{
-		{"", false},
+		{"", true}, // 空 UA 视为扫描器特征（正常浏览器必带 UA）
 		{"Mozilla/5.0 (X11; Linux x86_64)", false},
 		{"Googlebot/2.1 (+http://www.google.com/bot.html)", true},
 		{"Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)", true},
@@ -278,6 +278,14 @@ func TestShield_WAF_CrawlerUA(t *testing.T) {
 	okCtx, _ := newCtx("/api/ok", "1.2.3.4:80", "Mozilla/5.0 (X11; Linux x86_64)")
 	if next := s.Handle(okCtx); !next {
 		t.Fatal("普通 UA 应放行")
+	}
+	// 空 UA（扫描器典型特征）→ 拦截
+	emptyCtx, ew := newCtx("/api/ok", "1.2.3.4:80", "")
+	if next := s.Handle(emptyCtx); next {
+		t.Fatal("空 UA 应被拦截（与 SHIELD_WAF_CRAWLER_UA 联动）")
+	}
+	if ew.Code != http.StatusForbidden {
+		t.Errorf("空 UA 应 403, got %d", ew.Code)
 	}
 }
 

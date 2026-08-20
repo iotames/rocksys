@@ -82,8 +82,13 @@ func (w *wafSnapshot) hasPathTraversal(escapedPath, path string) bool {
 }
 
 // hasCrawlerUA 检测 User-Agent 是否命中爬虫/扫描器特征（小写子串）。
+// ★ 空 UA 直接命中：正常浏览器必然携带 User-Agent，空 UA 是批量扫描器/脚本的典型特征
+// （本方法仅在 SHIELD_WAF_CRAWLER_UA=true 时被调用，故空 UA 拦截与该开关联动）。
 func (w *wafSnapshot) hasCrawlerUA(ua string) bool {
-	if ua == "" || len(w.crawlerUAs) == 0 {
+	if ua == "" {
+		return true // 空 UA 拦截
+	}
+	if len(w.crawlerUAs) == 0 {
 		return false
 	}
 	lower := strings.ToLower(ua)

@@ -48,7 +48,7 @@ TRUSTED_PROXIES_FILE = trusted_proxies.txt
 
 # ===== 防护 shield（L1）=====
 SHIELD_ENABLED = true
-SHIELD_IP_BLACKLIST = 10.0.0.5,192.168.1.0/24
+# IP 黑名单已改为外挂规则文件：HOT_SCRIPTS_DIR/rules/ip_blacklist.txt（每行一个 IP/CIDR，≤3s 热更），不再走 .env 配置
 SHIELD_IP_WHITELIST =
 SHIELD_RATE_LIMIT_RPS = 100
 SHIELD_RATE_LIMIT_BURST = 50

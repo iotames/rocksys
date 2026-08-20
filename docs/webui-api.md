@@ -154,8 +154,8 @@
 ```json
 [
   {
-    "key": "SHIELD_IP_BLACKLIST",
-    "title": "黑名单 IP",
+    "key": "SHIELD_IP_WHITELIST",
+    "title": "白名单 IP",
     "defval": "",
     "current": "10.0.0.5,192.168.1.0/24",
     "example": "10.0.0.5,192.168.1.0/24"

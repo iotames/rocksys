@@ -162,9 +162,13 @@ func (h *ScriptHub) Subscribe(sub string, fn func(relPath string)) error {
 }
 
 // Start 启动监控循环（幂等；随 Manager 生命周期启停，停机后不重启）。
-// 启动先建一次指纹基线（不重读、不通知），之后按 interval 轮询比对。
+// ★ 基线构建在 Start 内同步完成（Start 返回前指纹基线已就绪）：若把 buildBaseline
+// 放进监控 goroutine，Start 返回后到 goroutine 实际调度前存在竞态窗口——
+// 该窗口内写入的文件会被基线捕获，后续轮询永远视为"无变化"、永不通知。
+// 语义保证：Start 返回后发生的任何文件增/删/改，均会在 ≤ interval 内触发订阅通知。
 func (h *ScriptHub) Start() {
 	h.startOnce.Do(func() {
+		h.buildBaseline()
 		h.wg.Add(1)
 		go h.watchLoop()
 	})
@@ -178,10 +182,9 @@ func (h *ScriptHub) Shutdown() {
 	h.wg.Wait()
 }
 
-// watchLoop 监控主循环：基线扫描 → 周期指纹轮询。
+// watchLoop 监控主循环：周期指纹轮询（基线已由 Start 同步构建）。
 func (h *ScriptHub) watchLoop() {
 	defer h.wg.Done()
-	h.buildBaseline()
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
 	for {

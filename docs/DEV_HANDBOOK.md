@@ -1159,7 +1159,7 @@ rockctl switch off <comp>   → POST /admin/switch/off {"name":"<comp>"}
 rockctl switch list         → GET  /admin/switch/list
 rockctl config get          → GET  /admin/config
 rockctl config set <KEY> <v>  → PUT  /admin/config     {"<KEY>":"<v>"}
-                                ★ <KEY> 为注册名全名（如 ROCKSYS_UPSTREAM、SHIELD_IP_BLACKLIST）
+                                ★ <KEY> 为注册名全名（如 ROCKSYS_UPSTREAM、SHIELD_WAF_SQL_INJECTION）
 rockctl script publish <f>  → POST /admin/script/publish
 rockctl script rollback     → POST /admin/script/rollback
 ```
@@ -1294,7 +1294,7 @@ WAF 检测链（§9.6，各项独立开关，默认关闭）→ 命中 → 403 F
 
 ```env
 SHIELD_ENABLED=true
-SHIELD_IP_BLACKLIST=192.168.1.100,10.0.0.0/8
+# IP 黑名单为外挂规则文件（HOT_SCRIPTS_DIR/rules/ip_blacklist.txt，每行一个 IP/CIDR），不再走 .env
 SHIELD_IP_WHITELIST=127.0.0.1
 SHIELD_RATE_LIMIT_RPS=100
 SHIELD_RATE_LIMIT_BURST=20
@@ -1317,9 +1317,9 @@ SHIELD_MAX_BODY_SIZE=0
 ### 9.5 验收
 
 ```bash
-# 设置黑名单
+# 白名单可经配置中心热改；IP 黑名单改外挂文件（HOT_SCRIPTS_DIR/rules/ip_blacklist.txt，≤3s 自动生效）
 curl -X PUT http://127.0.0.1:19527/admin/config \
-  -d '{"SHIELD_IP_BLACKLIST":"192.168.1.100"}'
+  -d '{"SHIELD_IP_WHITELIST":"127.0.0.1"}'
 
 # 从黑名单 IP 请求
 curl http://localhost:8080/api/test

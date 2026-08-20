@@ -20,5 +20,11 @@ __pycache__/
 bin/
 *.exe
 
+# 日志
+*.log
+
+# 数据分析的报告文件
+report_*.txt
+
 # 借鉴项目源码（仅本地参考，不提交）
 easywaf/
