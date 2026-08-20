@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
+	"rocksys/internal/hotswap"
 )
 
 // fakeConfMgr 测试用假配置管理器：仅记录注册项，不触发真实重载。
@@ -278,4 +282,61 @@ func TestRateLimiterLRUCap(t *testing.T) {
 	if got := rl.count.Load(); got > bucketsMax {
 		t.Errorf("桶数应不超过 %d，实际 %d", bucketsMax, got)
 	}
+}
+
+// TestShieldHub热更 注入 ScriptHub 后：改外挂规则文件 → ≤3s 内自动重建快照（订阅回调）。
+// 验证统一热更链路：监控检测 → 重读入缓存 → 通知订阅者 → Start 重建 → 快照含新规则。
+func TestShieldHub热更(t *testing.T) {
+	orig := hotswap.HotScriptsDir()
+	t.Cleanup(func() { hotswap.SetHotScriptsDir(orig) })
+	ext := t.TempDir()
+	hotswap.SetHotScriptsDir(ext)
+
+	hub := hotswap.NewScriptHub(50 * time.Millisecond)
+	defer hub.Shutdown()
+
+	f := newFakeConf()
+	s, err := New(f, hub)
+	if err != nil {
+		t.Fatalf("New(f, hub): %v", err)
+	}
+	hub.Start()
+
+	// writeRule 写外挂 crawler_ua.txt（外挂目录规则子目录优先于内嵌）。
+	writeRule := func(content string) {
+		t.Helper()
+		p := filepath.Join(hotswap.HotScriptsDir(), "rules", ruleFileCrawlerUA)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// waitUAs 轮询等待快照加载指定 UA 特征（5s 超时）。
+	waitUAs := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if snap := s.current(); snap != nil {
+				for _, ua := range snap.waf.crawlerUAs {
+					if ua == want {
+						return
+					}
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		snap := s.current()
+		t.Fatalf("快照未在 5s 内加载规则 %q（当前快照: %v）", want, snap)
+	}
+
+	// 新增规则文件 → 自动生效（Q2：未启用也重建快照）
+	writeRule("crawler-a\n")
+	waitUAs("crawler-a")
+
+	// 修改规则文件 → ≤3s 自动生效（核心诉求：改 crawler_ua.txt 无需重启）
+	writeRule("crawler-b\n")
+	waitUAs("crawler-b")
 }

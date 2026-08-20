@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"rocksys/internal/hotswap"
 )
@@ -312,5 +314,132 @@ func TestParseTrustedProxies(t *testing.T) {
 	}
 	if l.contains(net.ParseIP("11.0.0.1")) {
 		t.Error("11.0.0.1 不应命中 10.0.0.0/8")
+	}
+}
+
+// TestApplyTrustedProxiesText 纯解析 + 原子替换：成功替换生效；解析失败保留旧快照。
+func TestApplyTrustedProxiesText(t *testing.T) {
+	t.Cleanup(func() { resetToEmbedded(t) })
+
+	// 成功替换：10.0.0.0/8 生效
+	if err := ApplyTrustedProxiesText("10.0.0.0/8\n"); err != nil {
+		t.Fatalf("ApplyTrustedProxiesText: %v", err)
+	}
+	ip := net.ParseIP("10.0.0.9")
+	if !proxyList.Load().contains(ip) {
+		t.Fatal("ApplyTrustedProxiesText 后 10.0.0.9 应命中可信列表")
+	}
+	if proxyList.Load().contains(net.ParseIP("127.0.0.1")) {
+		t.Fatal("ApplyTrustedProxiesText 后 127.0.0.1 不应仍在可信列表（整体替换语义）")
+	}
+
+	// 解析失败：保留旧快照（10.0.0.0/8 仍在生效）
+	if err := ApplyTrustedProxiesText("not-an-ip\n"); err == nil {
+		t.Fatal("非法文本应返回 error")
+	}
+	if !proxyList.Load().contains(net.ParseIP("10.0.0.9")) {
+		t.Fatal("解析失败后应保留旧快照（10.0.0.9 仍可信）")
+	}
+}
+
+// TestRegisterHub 可信代理子目录注册进 ScriptHub：GetScriptText 读外挂优先、内嵌兜底。
+func TestRegisterHub(t *testing.T) {
+	orig := hotswap.HotScriptsDir()
+	t.Cleanup(func() { hotswap.SetHotScriptsDir(orig) })
+	ext := t.TempDir()
+	hotswap.SetHotScriptsDir(ext)
+
+	// 外挂缺失 → 回退内嵌 trusted_proxies.txt（127.0.0.1）
+	hub := hotswap.NewScriptHub(0)
+	if err := RegisterHub(hub); err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+	// 重复注册应报错（装配缺陷尽早暴露）
+	if err := RegisterHub(hub); err == nil {
+		t.Fatal("RegisterHub 重复注册应报错")
+	}
+	text, err := hub.GetScriptText(TrustedProxiesRoot, "trusted_proxies.txt")
+	if err != nil {
+		t.Fatalf("GetScriptText: %v", err)
+	}
+	if !strings.Contains(text, "127.0.0.1") {
+		t.Fatalf("回退内嵌应含 127.0.0.1, got %q", text)
+	}
+
+	// 外挂存在 → 外挂优先（首读即外挂内容，无缓存干扰）
+	dir := filepath.Join(ext, TrustedProxiesRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "trusted_proxies.txt"), []byte("192.168.0.0/16\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hub2 := hotswap.NewScriptHub(0)
+	if err := RegisterHub(hub2); err != nil {
+		t.Fatalf("RegisterHub: %v", err)
+	}
+	text, err = hub2.GetScriptText(TrustedProxiesRoot, "trusted_proxies.txt")
+	if err != nil {
+		t.Fatalf("GetScriptText: %v", err)
+	}
+	if !strings.Contains(text, "192.168.0.0/16") {
+		t.Fatalf("外挂优先应含 192.168.0.0/16, got %q", text)
+	}
+}
+
+// TestSubscribeHub 装配方一站式接线（RegisterHub + Subscribe + 初始加载）：
+// 初始加载走统一缓存 → 外挂变更 ≤interval 自动热更原子替换 → 解析失败保留旧快照仅告警。
+func TestSubscribeHub(t *testing.T) {
+	orig := hotswap.HotScriptsDir()
+	t.Cleanup(func() { hotswap.SetHotScriptsDir(orig) })
+	ext := t.TempDir()
+	hotswap.SetHotScriptsDir(ext)
+	defer resetToEmbedded(t)
+
+	dir := filepath.Join(ext, TrustedProxiesRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(dir, "trusted_proxies.txt")
+
+	// 初始加载：外挂文件存在 → 快照即外挂内容（经统一缓存首读，未命中底层读入缓存）。
+	// 各次写入用不同 size 保证指纹（mtime 纳秒 + size）必变，避免同纳秒写入漏检。
+	if err := os.WriteFile(f, []byte("10.0.0.0/8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hub := hotswap.NewScriptHub(50 * time.Millisecond)
+	if err := SubscribeHub(hub, "trusted_proxies.txt"); err != nil {
+		t.Fatalf("SubscribeHub: %v", err)
+	}
+	if !proxyList.Load().contains(net.ParseIP("10.0.0.9")) {
+		t.Fatal("SubscribeHub 初始加载后 10.0.0.9 应命中可信列表")
+	}
+	hub.Start()
+	defer hub.Shutdown()
+	// 等监控循环完成基线扫描（避免启动基线吸收紧接其后的写入，变化须发生在基线之后才触发）。
+	time.Sleep(150 * time.Millisecond)
+
+	// 热更：改外挂文件 → ≤interval 内回调替换快照（整体替换语义：127.0.0.0/8 生效、10.0.0.0/8 移除）。
+	if err := os.WriteFile(f, []byte("127.0.0.0/8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !proxyList.Load().contains(net.ParseIP("127.0.0.1")) {
+		if time.Now().After(deadline) {
+			t.Fatal("外挂热更 3s 内未生效：127.0.0.1 应命中可信列表")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if proxyList.Load().contains(net.ParseIP("10.0.0.9")) {
+		t.Fatal("热更后 10.0.0.0/8 应被整体替换移除")
+	}
+
+	// 解析失败：回调保留旧快照（127.0.0.0/8 仍在生效），不中断服务。
+	if err := os.WriteFile(f, []byte("not-an-ip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // 至少跨一个轮询周期
+	if !proxyList.Load().contains(net.ParseIP("127.0.0.1")) {
+		t.Fatal("解析失败后应保留旧快照（127.0.0.1 仍可信）")
 	}
 }

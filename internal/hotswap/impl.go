@@ -31,6 +31,7 @@ type Manager struct {
 	startedAt        map[string]time.Time           // 实体最近一次 Start 成功时间
 	lastSwitch       map[string]time.Time           // 实体最近一次状态切换时间
 	message          map[string]string              // 实体最近一次操作消息/故障信息
+	hub              *ScriptHub                     // 外挂文件统一内容中枢（可选；装配方注入，Shutdown 时随管理器一并停止监控循环）
 	mu               sync.RWMutex
 }
 
@@ -63,6 +64,16 @@ func (m *Manager) SetDrainCheck(fn func() int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.drainCheck = fn
+}
+
+// SetScriptHub 注入外挂文件统一内容中枢（ScriptHub，实现见 hub.go）。
+// 仅保存引用、不做启动：监控循环的 Start 由装配方在全部子目录注册完成后调用
+// （buildServer 尾部 scriptHub.Start()，幂等）；本管理器 Shutdown 时统一停止，
+// 保证监控 goroutine 随组件生命周期启停、不泄漏。
+func (m *Manager) SetScriptHub(hub *ScriptHub) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hub = hub
 }
 
 // RegisterComponent 注册独立组件（默认 Disabled，Enable 触发 Start）。
@@ -297,6 +308,15 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		m.lastSwitch[comp.Name()] = time.Now()
 		m.mu.Unlock()
 	}
+
+	// 3. 停止外挂文件统一内容中枢的监控循环（随 Manager 生命周期启停）。
+	m.mu.RLock()
+	hub := m.hub
+	m.mu.RUnlock()
+	if hub != nil {
+		hub.Shutdown()
+	}
+
 	return errors.Join(errs...)
 }
 

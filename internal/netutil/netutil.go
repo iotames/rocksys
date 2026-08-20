@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 
 	"rocksys/internal/hotswap"
+
+	"github.com/iotames/easyserver/log"
 )
 
 //go:embed trusted_proxies.txt
@@ -28,6 +30,10 @@ var trustedProxiesFS embed.FS
 // HOT_SCRIPTS_DIR/trusted_proxies（默认 hotscripts/trusted_proxies）的文件路径
 // （不允许绝对路径、不允许 .. 逃逸，见 safeRelPath）。
 const trustedProxiesRoot = "trusted_proxies"
+
+// TrustedProxiesRoot 可信代理外挂子目录名（HOT_SCRIPTS_DIR 下固定子目录）。
+// 供装配方注册进 ScriptHub 统一内容中枢与订阅时使用（见 RegisterHub）。
+const TrustedProxiesRoot = trustedProxiesRoot
 
 // trustedProxyList 可信代理快照：精确 IP + CIDR 网段。
 type trustedProxyList struct {
@@ -88,6 +94,57 @@ func LoadTrustedProxies(filePath string) error {
 	if err != nil {
 		return fmt.Errorf("netutil: 加载可信代理列表 %q 失败: %w", rel, err)
 	}
+	return ApplyTrustedProxiesText(text)
+}
+
+// RegisterHub 将可信代理子目录注册进 ScriptHub 统一内容中枢（实现见 internal/hotswap/hub.go）。
+// 注册后外挂文件（默认 trusted_proxies.txt）变更由中枢统一监控：≤3s 自动重读入缓存
+// 并通知订阅者（订阅方在回调内 ApplyTrustedProxiesText 即可原子生效，免重启）。
+// 注意：RegisterHub 仅注册不订阅、不加载；装配方完整接线请用 SubscribeHub（一站式）。
+func RegisterHub(hub *hotswap.ScriptHub) error {
+	sd := hotswap.NewScriptDir(trustedProxiesFS, trustedProxiesRoot)
+	return hub.Register(TrustedProxiesRoot, sd)
+}
+
+// SubscribeHub 装配方一站式接线：注册可信代理子目录进 ScriptHub + 订阅热更 + 初始加载。
+// 步骤：
+//  1. 注册子目录（Register，重复注册报错）；
+//  2. 订阅：外挂文件增/删/改 → 回调从统一缓存重取文本 → ApplyTrustedProxiesText 原子替换
+//     （解析失败保留旧快照、仅告警，不中断服务；与 shield.Start 失败保留旧快照同语义）；
+//  3. 初始加载：走统一缓存（未命中时底层读入缓存，语义与 LoadTrustedProxies 等价），
+//     保证装配期快照即来自同一生产链路（监控 → 缓存 → 推送）。
+//
+// filePath 为相对 trusted_proxies 外挂子目录的文件路径（校验规则同 LoadTrustedProxies）。
+// 消费端只认识 GetScriptText/Subscribe 两个接口，不感知内容如何生产。
+func SubscribeHub(hub *hotswap.ScriptHub, filePath string) error {
+	rel, err := safeRelPath(filePath)
+	if err != nil {
+		return err
+	}
+	if err := RegisterHub(hub); err != nil {
+		return err
+	}
+	apply := func() error {
+		txt, err := hub.GetScriptText(TrustedProxiesRoot, rel)
+		if err != nil {
+			return err
+		}
+		return ApplyTrustedProxiesText(txt)
+	}
+	if err := hub.Subscribe(TrustedProxiesRoot, func(relPath string) {
+		if err := apply(); err != nil {
+			log.Warn("netutil: 可信代理外挂热更失败，保留旧快照", "file", relPath, "err", err.Error())
+		}
+	}); err != nil {
+		return err
+	}
+	return apply()
+}
+
+// ApplyTrustedProxiesText 应用可信代理列表文本（纯解析 + 原子替换，不再碰文件系统）。
+// 供 ScriptHub 订阅回调与 LoadTrustedProxies 内部复用。解析失败返回 error 并保留
+// 当前生效快照（与 shield.Start 失败保留旧快照同语义），调用方应告警不中断服务。
+func ApplyTrustedProxiesText(text string) error {
 	l, err := parseTrustedProxies(text)
 	if err != nil {
 		return err

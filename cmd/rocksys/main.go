@@ -170,6 +170,20 @@ func buildServer(args []string) (*Server, error) {
 	}
 	hotswap.SetHotScriptsDir(hotScriptsDir)
 
+	// ── 外挂文件统一内容中枢装配（ScriptHub：缓存 + 监控 + 推送统一热更）────
+	// 三类外挂文件（sql/、rules/、trusted_proxies/）统一经中枢缓存 + 监控 + 推送：
+	// 文件变更 ≤ HOT_FILES_WATCH_INTERVAL（默认 3s）内自动生效，免重启、免借配置热更。
+	// 消费端只认识 GetScriptText / Subscribe 两个接口，不感知内容如何生产。
+	// ★ 时序：hub 构造须早于各消费端（shield.New / db.Open / netutil.SubscribeHub）注册，
+	// ★ 监控循环 Start 在所有子目录注册完成后调用（见 buildServer 尾部 scriptHub.Start()）。
+	var watchIntervalSec int
+	if err := cfgMgr.Register(&watchIntervalSec, "HOT_FILES_WATCH_INTERVAL", "3",
+		"外挂文件统一监控轮询间隔(秒，≥1；≤0 回落默认 3)",
+		"热更生效（修改 hotscripts 下 sql/rules/trusted_proxies 外挂文件后 ≤3s 自动生效，无需重启）"); err != nil {
+		return nil, fmt.Errorf("register HOT_FILES_WATCH_INTERVAL: %w", err)
+	}
+	scriptHub := hotswap.NewScriptHub(time.Duration(watchIntervalSec) * time.Second)
+
 	// ── 日志系统装配（时序硬约束）──────────────────────────────────────
 	// 日志输出模板为 easyserver/log 包内置常量 defaultLogTpl
 	// （time={{.time}} level={{.level}} msg={{.msg}}），不再走外挂机制。
@@ -210,16 +224,17 @@ func buildServer(args []string) (*Server, error) {
 		"admin", cfgMgr.Current().AdminAddr)
 
 	// ── 可信代理列表装配（netutil 依赖，须在首次请求处理前完成）────────────────
-	// hotswap 外挂优先/内嵌兜底（默认 127.0.0.1），启动加载一次快照（改外挂文件需重启）。
+	// hotswap 外挂优先/内嵌兜底（默认 127.0.0.1）。经 ScriptHub 统一内容中枢管理：
+	// 注册子目录 + 订阅热更 + 初始加载（全部走统一缓存），改外挂文件 ≤3s 自动原子替换（免重启）。
 	// TRUSTED_PROXIES_FILE 为相对外置根目录 trusted_proxies 的文件路径，不允许绝对路径。
 	var trustedProxiesFile string
 	if err := cfgMgr.Register(&trustedProxiesFile, "TRUSTED_PROXIES_FILE", "trusted_proxies.txt",
 		"可信代理列表文件（相对 trusted_proxies 外置目录的相对路径，不允许绝对路径；外挂优先，缺失回退内嵌 127.0.0.1）",
-		"装配期生效，热更后需重启"); err != nil {
+		"≤3s 自动热更（修改 hotscripts/trusted_proxies 外挂文件后自动生效，无需重启）"); err != nil {
 		return nil, fmt.Errorf("register TRUSTED_PROXIES_FILE: %w", err)
 	}
-	if err := netutil.LoadTrustedProxies(trustedProxiesFile); err != nil {
-		return nil, fmt.Errorf("netutil.LoadTrustedProxies: %w", err)
+	if err := netutil.SubscribeHub(scriptHub, trustedProxiesFile); err != nil {
+		return nil, fmt.Errorf("netutil.SubscribeHub: %w", err)
 	}
 
 	// 2. 创建转发链（初始为空）
@@ -230,11 +245,12 @@ func buildServer(args []string) (*Server, error) {
 
 	// 4. 创建 hotswap 管理器（订阅配置热更）
 	mgr := hotswap.NewManager(ch, cfgMgr)
+	mgr.SetScriptHub(scriptHub) // 外挂文件监控循环随管理器生命周期启停（Shutdown 统一停止）
 
 	// 5. 注册挂件（链中间件用 RegisterMiddleware，独立组件用 RegisterComponent；见 §6.1）
 	// 链中间件执行顺序：Head/Middle 槽位按注册顺序；Tail 槽位逆序（§4.4）——
 	// 故 Tail 上 obs 先注册、result 后注册 → result 先改写响应、obs 后记录最终状态。
-	shieldMw, err := shield.New(cfgMgr)
+	shieldMw, err := shield.New(cfgMgr, scriptHub) // hub 注入：rules/ 子目录注册 + 订阅热更（≤3s 自动重建 WAF 快照）
 	if err != nil {
 		return nil, fmt.Errorf("shield.New: %w", err)
 	}
@@ -270,7 +286,7 @@ func buildServer(args []string) (*Server, error) {
 	); err != nil {
 		return nil, fmt.Errorf("register DB_DSN: %w", err)
 	}
-	if d, err := db.Open(dbDriver, dbDSN); err != nil {
+	if d, err := db.Open(dbDriver, dbDSN, scriptHub); err != nil {
 		log.Warn("db: 数据访问层初始化失败（不阻断底座）", "driver", dbDriver, "err", err.Error())
 	} else {
 		dataDB = d
@@ -368,6 +384,10 @@ func buildServer(args []string) (*Server, error) {
 	if err := adminSrv.RegisterWebUI(webui.FS); err != nil {
 		return nil, fmt.Errorf("register webui static: %w", err)
 	}
+
+	// 启动外挂文件统一内容中枢监控循环（★ 全部子目录已注册完成：sql/rules/trusted_proxies；
+	// 幂等，重复调用无害）。此后外挂文件变更 ≤ HOT_FILES_WATCH_INTERVAL 内自动生效。
+	scriptHub.Start()
 
 	// 配置中心红线：装配完成后同步工作目录 default.env（开发规范下即 bin/default.env）为全量默认值快照（代表代码真实兜底行为）。
 	// 同步失败不阻断启动（default.env 仅兜底快照，不影响运行）。

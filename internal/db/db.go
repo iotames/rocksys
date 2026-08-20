@@ -38,7 +38,7 @@ const scriptSubDir = "sql"
 
 // sqlite DSN 自动补全参数（modernc.org/sqlite 驱动 DSN 参数，见其源码 sqlite.go dsnPick）。
 const (
-	sqliteBusyTimeout = 5000 // ms，PRAGMA busy_timeout（每连接生效）
+	sqliteBusyTimeout = 5000  // ms，PRAGMA busy_timeout（每连接生效）
 	sqliteJournalMode = "WAL" // PRAGMA journal_mode
 )
 
@@ -78,6 +78,7 @@ func ensureSQLitePragma(dsn string) string {
 type DB struct {
 	edb     *easydb.EasyDb
 	scripts *hotswap.ScriptDir
+	hub     *hotswap.ScriptHub // 外挂脚本统一内容中枢（nil = 未注入，SQL 回落 scripts 直读）
 	driver  string
 }
 
@@ -90,9 +91,13 @@ var _ SQLSource = (*DB)(nil)
 // dsn：数据库连接串。外挂 SQL 覆写目录统一为 HOT_SCRIPTS_DIR/sql（见 hotswap 收敛入口），
 // 缺失时脚本自动回退到编译期嵌入的 sql/。
 //
+// hubs：可选注入外挂文件统一内容中枢（ScriptHub，实现见 internal/hotswap/hub.go）。
+// 注入后 sql/ 子目录注册进中枢：外挂 SQL 变更 ≤3s 自动生效（缓存 + 监控失效，
+// 请求路径零文件 I/O），SQL() 读取走统一缓存；未注入时回落 ScriptDir 直读（旧语义）。
+//
 // 错误语义：驱动未注册、内嵌目录缺少 sql/<driver>/、连接失败均直接报错——
 // 其中"内嵌目录缺少脚本"正是"切换数据库找不到对应脚本即报错"的实现。
-func Open(driver, dsn string) (*DB, error) {
+func Open(driver, dsn string, hubs ...*hotswap.ScriptHub) (*DB, error) {
 	driver = strings.ToLower(strings.TrimSpace(driver))
 	if driver == "" {
 		return nil, fmt.Errorf("db: 数据库驱动名不能为空")
@@ -128,11 +133,21 @@ func Open(driver, dsn string) (*DB, error) {
 		return nil, fmt.Errorf("db: 连接 %s 失败: %w", driver, err)
 	}
 
-	return &DB{
+	d := &DB{
 		edb:     easydb.NewEasyDbBySqlDB(sqldb),
 		scripts: hotswap.NewScriptDir(sub, scriptSubDir),
 		driver:  driver,
-	}, nil
+	}
+	if len(hubs) > 0 && hubs[0] != nil {
+		d.hub = hubs[0]
+		// sql/ 子目录注册进统一内容中枢。重复注册是装配缺陷（如重复 Open 注入同一 hub），
+		// 尽早暴露；注册失败需关闭已建立连接，避免句柄泄漏。
+		if err := hubs[0].Register(scriptSubDir, d.scripts); err != nil {
+			_ = sqldb.Close()
+			return nil, fmt.Errorf("db: 注册 SQL 脚本子目录进 ScriptHub: %w", err)
+		}
+	}
+	return d, nil
 }
 
 // EmbeddedSQLSource 返回仅使用编译期嵌入脚本的 SQLSource（driver 指定方言目录）。
@@ -167,7 +182,12 @@ func (d *DB) Driver() string {
 
 // SQL 实现 SQLSource：返回 sql/<driver>/<name> 的脚本文本。
 // 外置目录优先、嵌入兜底；两者皆无时返回错误（切换数据库缺脚本即报错）。
+// 注入统一内容中枢时经缓存读取（外挂 SQL 变更由中枢监控 ≤3s 刷新，请求路径零文件 I/O），
+// 否则回落底层 ScriptDir 直读（旧语义：每次实时读磁盘）。
 func (d *DB) SQL(name string) (string, error) {
+	if d.hub != nil {
+		return d.hub.GetScriptText(scriptSubDir, d.driver+"/"+name)
+	}
 	return d.scripts.GetScriptText(d.driver + "/" + name)
 }
 

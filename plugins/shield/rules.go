@@ -18,38 +18,48 @@ import (
 //go:embed rules
 var shieldRulesFS embed.FS
 
+// ruleSubDir WAF 规则在 HOT_SCRIPTS_DIR 统一外挂根下的固定子目录：
+// 外挂覆写目录 = HOT_SCRIPTS_DIR/rules（默认 hotscripts/rules，相对工作目录）。
+const ruleSubDir = "rules"
+
 // 规则文件名清单（与 rules/ 目录一致）。
 const (
-	ruleFileRiskPaths    = "risk_paths.txt"
-	ruleFileSQLPatterns  = "sql_patterns.txt"
-	ruleFileXSSPatterns  = "xss_patterns.txt"
+	ruleFileRiskPaths     = "risk_paths.txt"
+	ruleFileSQLPatterns   = "sql_patterns.txt"
+	ruleFileXSSPatterns   = "xss_patterns.txt"
 	ruleFilePathTraversal = "path_traversal.txt"
-	ruleFileCrawlerUA    = "crawler_ua.txt"
+	ruleFileCrawlerUA     = "crawler_ua.txt"
 )
 
 // RuleSet 一次加载的全部规则（Start 时读取，编译进不可变快照）。
 type RuleSet struct {
-	RiskPaths    []string // 风险路径（小写）
-	SQLPatterns  []string // SQL 注入特征
-	XSSPatterns  []string // XSS 特征
+	RiskPaths     []string // 风险路径（小写）
+	SQLPatterns   []string // SQL 注入特征
+	XSSPatterns   []string // XSS 特征
 	PathTraversal []string // 路径遍历特征
-	CrawlerUA    []string // 爬虫 UA 特征（小写）
+	CrawlerUA     []string // 爬虫 UA 特征（小写）
 }
 
 // ruleLoader 规则加载器：外置目录优先、嵌入兜底。
 type ruleLoader struct {
-	sd *hotswap.ScriptDir
+	sd  *hotswap.ScriptDir // 底层 ScriptDir（注册进 ScriptHub 与无 hub 场景兜底）
+	hub *hotswap.ScriptHub // 统一内容中枢（nil 时回落 sd 直读）
 }
 
 // newRuleLoader 创建加载器。外挂覆写目录统一为 HOT_SCRIPTS_DIR/rules
 // （默认 hotscripts/rules，相对工作目录），缺失时自动回退嵌入文件（ScriptDir 语义）。
 // ★ 统一收敛：不再提供独立 SHIELD_RULES_DIR 配置，子目录固定为 "rules"。
-func newRuleLoader() (*ruleLoader, error) {
+// hub 为可选参数（装配方注入 ScriptHub 后，读取统一走中枢缓存，≤3s 热更）。
+func newRuleLoader(hubs ...*hotswap.ScriptHub) (*ruleLoader, error) {
 	sub, err := fs.Sub(shieldRulesFS, "rules")
 	if err != nil {
 		return nil, fmt.Errorf("shield: 读取内嵌 rules/ 目录失败: %w", err)
 	}
-	return &ruleLoader{sd: hotswap.NewScriptDir(sub, "rules")}, nil
+	rl := &ruleLoader{sd: hotswap.NewScriptDir(sub, ruleSubDir)}
+	if len(hubs) > 0 {
+		rl.hub = hubs[0]
+	}
+	return rl, nil
 }
 
 // load 读取全部规则文件。
@@ -75,8 +85,15 @@ func (rl *ruleLoader) load() (*RuleSet, error) {
 }
 
 // loadLines 读取单个规则文件并解析为行列表（小写化）。
+// 注入 hub 时经统一缓存读取（内容由中枢监控保证最新）；否则回落 ScriptDir 直读。
 func (rl *ruleLoader) loadLines(name string) ([]string, error) {
-	text, err := rl.sd.GetScriptText(name)
+	var text string
+	var err error
+	if rl.hub != nil {
+		text, err = rl.hub.GetScriptText(ruleSubDir, name)
+	} else {
+		text, err = rl.sd.GetScriptText(name)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("shield: 加载 WAF 规则文件 %q 失败: %w", name, err)
 	}

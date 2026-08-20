@@ -154,11 +154,13 @@ func TestBuildServer(t *testing.T) {
 		t.Fatalf("read default.env: %v", err)
 	}
 	s := string(def)
-	for _, key := range []string{"DB_DSN", "HOT_SCRIPTS_DIR", "TRUSTED_PROXIES_FILE", "SCRIPT_TIMEOUT", "REGISTRY_ADDR", "REGISTRY_TTL", "OBJECT_BASE_DIR", "MQ_ENABLED", "MQ_POLL_INTERVAL", "MQ_MAX_RETRIES", "MQ_BASE_BACKOFF", "MQ_CONSUMER_BASE_URL"} {
+	for _, key := range []string{"DB_DSN", "HOT_SCRIPTS_DIR", "HOT_FILES_WATCH_INTERVAL", "TRUSTED_PROXIES_FILE", "SCRIPT_TIMEOUT", "REGISTRY_ADDR", "REGISTRY_TTL", "OBJECT_BASE_DIR", "MQ_ENABLED", "MQ_POLL_INTERVAL", "MQ_MAX_RETRIES", "MQ_BASE_BACKOFF", "MQ_CONSUMER_BASE_URL"} {
 		if !strings.Contains(s, key) {
 			t.Errorf("default.env 应包含全量默认值 %s:\n%s", key, s)
 		}
 	}
+	// 停止外挂文件统一内容中枢监控循环（随管理器 Shutdown），避免测试泄漏 goroutine。
+	_ = srv.mgr.Shutdown(context.Background())
 	if srv.dataDB != nil {
 		_ = srv.dataDB.Close() // 关闭 sqlite 连接，释放 rocksys.db 句柄，供 cleanupEnvFiles 删除
 	}
@@ -196,6 +198,7 @@ func TestBuildServerMQEnabled(t *testing.T) {
 	if err := srv.mgr.Disable("mq"); err != nil {
 		t.Fatalf("Disable mq: %v", err)
 	}
+	_ = srv.mgr.Shutdown(context.Background()) // 停止外挂文件监控循环（随管理器生命周期）
 	if srv.dataDB != nil {
 		_ = srv.dataDB.Close() // 关闭 sqlite 连接，释放 rocksys.db 句柄，供 cleanupEnvFiles 删除
 	}
@@ -218,6 +221,7 @@ func TestBuildServerMQDataDBMissing(t *testing.T) {
 	if _, ok := namesOf(srv.mgr.List())["mq"]; ok {
 		t.Error("数据访问层未就绪时不应注册 mq 组件")
 	}
+	_ = srv.mgr.Shutdown(context.Background()) // 停止外挂文件监控循环（随管理器生命周期）
 }
 
 // freePort 获取一个随机空闲端口（127.0.0.1）。

@@ -16,6 +16,8 @@ import (
 	"rocksys/internal/conf"
 	"rocksys/internal/hotswap"
 	"rocksys/internal/netutil"
+
+	"github.com/iotames/easyserver/log"
 )
 
 // bucketsMax 限流桶数量上限，LRU 淘汰防内存膨胀（§9.3）。
@@ -47,17 +49,19 @@ type Shield struct {
 	pathRules []PathRule
 
 	// WAF 检测配置项（§9.6）：全部默认关闭，Start 时编译进快照。
-	wafSQLEnabled     bool   // SHIELD_WAF_SQL_INJECTION（*bool）
-	wafXSSEnabled     bool   // SHIELD_WAF_XSS（*bool）
-	wafPathEnabled    bool   // SHIELD_WAF_PATH_TRAVERSAL（*bool）
-	wafRiskPathOn     bool   // SHIELD_WAF_RISK_PATH（*bool）风险路径检测开关
-	wafCrawlerOn      bool   // SHIELD_WAF_CRAWLER_UA（*bool）爬虫 UA 拦截开关
-	wafRiskPaths      string // SHIELD_WAF_RISK_PATHS（*string）追加风险路径
-	allowMethods      string // SHIELD_ALLOW_METHODS（*string）方法白名单
-	maxBodySize       int    // SHIELD_MAX_BODY_SIZE（*int）请求体上限字节
+	wafSQLEnabled  bool   // SHIELD_WAF_SQL_INJECTION（*bool）
+	wafXSSEnabled  bool   // SHIELD_WAF_XSS（*bool）
+	wafPathEnabled bool   // SHIELD_WAF_PATH_TRAVERSAL（*bool）
+	wafRiskPathOn  bool   // SHIELD_WAF_RISK_PATH（*bool）风险路径检测开关
+	wafCrawlerOn   bool   // SHIELD_WAF_CRAWLER_UA（*bool）爬虫 UA 拦截开关
+	wafRiskPaths   string // SHIELD_WAF_RISK_PATHS（*string）追加风险路径
+	allowMethods   string // SHIELD_ALLOW_METHODS（*string）方法白名单
+	maxBodySize    int    // SHIELD_MAX_BODY_SIZE（*int）请求体上限字节
 
 	mu       sync.Mutex   // 保护 pathRules 读写
 	snapshot atomic.Value // *shieldSnapshot
+
+	hub *hotswap.ScriptHub // 外挂规则统一内容中枢（nil = 未注入，规则回落 ScriptDir 直读）
 }
 
 // shieldSnapshot 不可变运行态快照（整体重建后原子替换）。
@@ -210,8 +214,14 @@ func (rl *RateLimiter) evict() {
 }
 
 // New 构造 Shield 并注册全部配置项（§9.4）。
-func New(cfgMgr conf.Manager) (*Shield, error) {
+// hub 为可选参数（variadic）：装配方注入 ScriptHub 统一内容中枢后，
+// 规则子目录（rules/）注册进中枢并订阅，外挂规则文件变更 ≤3s 自动重建快照；
+// 未注入（nil/缺省）时规则读取回落 ScriptDir 直读（与旧行为一致，测试兼容）。
+func New(cfgMgr conf.Manager, hubs ...*hotswap.ScriptHub) (*Shield, error) {
 	s := &Shield{cfg: cfgMgr}
+	if len(hubs) > 0 {
+		s.hub = hubs[0]
+	}
 	items := []struct {
 		pval   any
 		name   string
@@ -238,7 +248,31 @@ func New(cfgMgr conf.Manager) (*Shield, error) {
 			return nil, err
 		}
 	}
+	if s.hub != nil {
+		if err := s.registerRulesHub(); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
+}
+
+// registerRulesHub 将规则子目录（rules/）注册进 ScriptHub 并订阅：
+// 规则文件增/删/改 → 回调重建快照（复用 Start 重建逻辑，清空限流状态）。
+// ★ Q2：shield 未启用也注册（Start(nil) 重建 enabled=false 快照，无害），
+// 保证启用 shield 时规则已是最新。
+func (s *Shield) registerRulesHub() error {
+	loader, err := newRuleLoader(s.hub)
+	if err != nil {
+		return err
+	}
+	if err := s.hub.Register(ruleSubDir, loader.sd); err != nil {
+		return err
+	}
+	return s.hub.Subscribe(ruleSubDir, func(relPath string) {
+		if err := s.Start(nil); err != nil {
+			log.Warn("shield: 外挂规则热更重建快照失败，保留旧快照", "file", relPath, "err", err.Error())
+		}
+	})
 }
 
 // SetPathRules 注入路径/UA 规则并立即重建快照生效（规则无配置项，代码注入）。
@@ -268,8 +302,9 @@ func (s *Shield) Start(cfg any) error {
 		limitBy = "ip"
 	}
 
-	// 加载 WAF 规则文件（外置 HOT_SCRIPTS_DIR/rules 优先、嵌入兜底）。
-	loader, err := newRuleLoader()
+	// 加载 WAF 规则文件（注入 hub 时经统一缓存读取；否则 ScriptDir 直读。
+	// 外置 HOT_SCRIPTS_DIR/rules 优先、嵌入兜底）。
+	loader, err := newRuleLoader(s.hub)
 	if err != nil {
 		return err
 	}

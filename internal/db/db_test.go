@@ -49,6 +49,46 @@ func TestOpenUnsupportedDriver(t *testing.T) {
 	}
 }
 
+// TestOpenWithHub 注入 ScriptHub 统一内容中枢（实现见 internal/hotswap/hub.go）后：
+// sql/ 子目录注册进中枢，SQL() 经统一缓存读取（外挂优先、内嵌兜底）；
+// 同一 hub 重复 Open 报错（sql 子目录重复注册 = 装配缺陷，尽早暴露）。
+func TestOpenWithHub(t *testing.T) {
+	orig := hotswap.HotScriptsDir()
+	t.Cleanup(func() { hotswap.SetHotScriptsDir(orig) })
+	ext := t.TempDir()
+	hotswap.SetHotScriptsDir(ext)
+
+	// 外挂覆写 sql/sqlite/mq_insert.sql：内容与内嵌不同，断言"外挂优先"
+	dir := filepath.Join(ext, scriptSubDir, "sqlite")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	extTxt := "INSERT INTO outbox_hub_test (payload) VALUES (?);"
+	if err := os.WriteFile(filepath.Join(dir, "mq_insert.sql"), []byte(extTxt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := hotswap.NewScriptHub(0)
+	d, err := Open("sqlite", filepath.Join(t.TempDir(), "hub.db"), hub)
+	if err != nil {
+		t.Fatalf("Open(..., hub) err: %v", err)
+	}
+	defer d.Close()
+
+	txt, err := d.SQL("mq_insert.sql")
+	if err != nil {
+		t.Fatalf("SQL(mq_insert.sql) err: %v", err)
+	}
+	if !strings.Contains(txt, "outbox_hub_test") {
+		t.Fatalf("注入 hub 后 SQL() 应经统一缓存外挂优先，got %q", txt)
+	}
+
+	// 同一 hub 重复 Open → sql 子目录重复注册报错（装配缺陷）
+	if _, err := Open("sqlite", filepath.Join(t.TempDir(), "hub2.db"), hub); err == nil {
+		t.Fatal("同一 hub 重复 Open 应报错（sql 子目录重复注册）")
+	}
+}
+
 // TestOpenAndSQL 临时 sqlite 文件打开成功，脚本源可读 mq 全量脚本。
 func TestOpenAndSQL(t *testing.T) {
 	dir := t.TempDir()

@@ -61,6 +61,7 @@ type MiddlewareLifecycle interface {
 ```
 
 - **约定**：Start 用不可变快照（`atomic.Value`）承载运行态，保证与在途请求并发安全；Start 失败保留旧快照。
+- **ScriptHub 统一内容中枢**（`internal/hotswap/hub.go`）：三类外挂文件（`sql/`、`rules/`、`trusted_proxies/`）的统一内容中枢——缓存 + 监控 + 推送全部内聚，消费端只认识 `GetScriptText(sub, relPath)`（取内容）与 `Subscribe(sub, fn)`（收通知）两个接口，不感知内容如何生产。底层读取仍统一经 `ScriptDir.GetScriptBytes`（外挂优先、内嵌兜底，红线不变）。监控为 `HOT_FILES_WATCH_INTERVAL`（默认 3s）指纹轮询（mtime 纳秒 + size），文件增/删/改均触发；变化 → 重读 → 更新缓存 → 才通知订阅者（读失败保留旧内容仅告警）。三类外挂文件变更均 ≤3s 自动生效：SQL 文本即用吃缓存、WAF 规则订阅后重建快照（复用 `Start(nil)`）、可信代理订阅后解析原子替换。监控循环随 `Manager` 生命周期启停。
 
 ### 2.5 `internal/conf` — 底座配置
 

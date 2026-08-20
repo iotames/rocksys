@@ -22,7 +22,8 @@
 | `ROCKSYS_LOG_FILE` | `logs/rocksys.log` | 日志文件路径（相对工作目录） |
 | `ROCKSYS_LOG_MAX_SIZE` | `50` | 日志文件大小上限（整数 MB，0=不限制） |
 | `HOT_SCRIPTS_DIR` | `hotscripts` | 脚本外挂统一根目录：各挂件子目录固定（`sql/`、`rules/`、`trusted_proxies/`），外挂优先、内嵌兜底；SQL/WAF 规则/可信代理改文件无需重新编译 |
-| `TRUSTED_PROXIES_FILE` | `trusted_proxies.txt` | 可信代理列表文件（相对 `HOT_SCRIPTS_DIR/trusted_proxies/` 外置目录，不允许绝对路径；外挂优先，缺失回退内嵌默认 `127.0.0.1`；启动加载一次，改外挂文件需重启） |
+| `HOT_FILES_WATCH_INTERVAL` | `3` | 外挂文件统一监控轮询间隔（秒，≥1；≤0 回落默认 3）。三类外挂文件经 ScriptHub 统一内容中枢监控，变更后 ≤ 本间隔自动生效（免重启、免借配置热更） |
+| `TRUSTED_PROXIES_FILE` | `trusted_proxies.txt` | 可信代理列表文件（相对 `HOT_SCRIPTS_DIR/trusted_proxies/` 外置目录，不允许绝对路径；外挂优先，缺失回退内嵌默认 `127.0.0.1`；改外挂文件 ≤3s 自动热更，无需重启） |
 
 ## 可信代理模型
 
@@ -42,7 +43,7 @@ ROCKSYS_LOG_FILE = logs/rocksys.log
 ROCKSYS_LOG_MAX_SIZE = 50
 
 # ===== 网络层：可信代理（客户端真实 IP 获取）=====
-# 相对 HOT_SCRIPTS_DIR/trusted_proxies/ 外置目录的文件路径（不允许绝对路径）；外挂优先，缺失回退内嵌默认 127.0.0.1；启动加载一次
+# 相对 HOT_SCRIPTS_DIR/trusted_proxies/ 外置目录的文件路径（不允许绝对路径）；外挂优先，缺失回退内嵌默认 127.0.0.1；改外挂文件 ≤3s 自动热更（无需重启）
 TRUSTED_PROXIES_FILE = trusted_proxies.txt
 
 # ===== 防护 shield（L1）=====
@@ -62,7 +63,9 @@ SHIELD_WAF_CRAWLER_UA = true
 # ===== 脚本外挂统一入口 =====
 # 各挂件外挂子目录固定：sql/（数据访问层 SQL）、rules/（WAF 规则）、trusted_proxies/（可信代理）
 # 外挂优先、内嵌兜底；改文件无需重新编译
+# 三类外挂文件经 ScriptHub 统一内容中枢监控（缓存 + 监控 + 推送），变更后 ≤ HOT_FILES_WATCH_INTERVAL（默认 3s）自动生效
 HOT_SCRIPTS_DIR = hotscripts
+HOT_FILES_WATCH_INTERVAL = 3
 
 # ===== 分发 dispatch（L2）=====
 # 格式：<prefix>=<spec>[;<spec>...]；节点 <url>[|w=权重]；可选 @间隔@超时@路径 健康检查

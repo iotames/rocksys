@@ -30,6 +30,15 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 
 WebUI 默认经 `go:embed` 编译期内嵌进二进制（`webui/embed.go`，约束 `//go:build !dev`），改前端必须重新编译。开发模式用 build tag `dev` 切换到 `os.DirFS("../webui")` 实时读磁盘（`webui/embed_dev.go`，约束 `//go:build dev`），改 `webui/` 下任意文件（`index.html`、`assets/`）**刷新浏览器即见，无需重新编译、无需重启**。生产构建（不加 dev tag）完全不受影响。唯一注意：**新增**前端文件需重启一次（路由在启动时注册），改动已有文件即改即生效。
 
+## 外挂文件统一热更（ScriptHub 统一内容中枢）
+
+三类外挂运行时读取文件（`sql/`、`rules/`、`trusted_proxies/`，均位于 `HOT_SCRIPTS_DIR` 下）经 `internal/hotswap.ScriptHub`（实现见 `internal/hotswap/hub.go`）统一管理：缓存 + 监控 + 推送全部内聚，**消费端只认识 `GetScriptText(sub, relPath)` / `Subscribe(sub, fn)` 两个接口**，不感知内容如何生产。底层读取仍统一经 `ScriptDir.GetScriptBytes`（外挂优先、内嵌兜底，红线不变）。
+
+- **统一热更语义**：外挂文件增/删/改 → ≤ `HOT_FILES_WATCH_INTERVAL`（默认 3s，easyconf 注册）内自动生效，免重启、免借配置热更、免手动开关组件。
+- **消费差异保留**（本质差异不统一）：SQL 文本即用零订阅（吃统一缓存）、WAF 规则订阅后编译不可变快照（复用 `Start(nil)` 重建）、可信代理订阅后解析原子替换（`atomic.Pointer`）。
+- **装配约定**：`HOT_FILES_WATCH_INTERVAL` 注册 → 构造 `NewScriptHub` → 各消费端注入注册（shield `New(cfgMgr, hub)`、`db.Open(..., hub)`、`netutil.SubscribeHub(hub, file)`）→ `mgr.SetScriptHub(hub)` → 所有注册完成后 `hub.Start()`；监控循环随 `Manager.Shutdown` 停止。
+- **零额外开销**：`hotscripts/` 不存在时指纹集合为空、监控永不触发，生产默认无额外 I/O。
+
 ### AI 智能体命令规范（强制）
 
 智能体天生擅长命令行，**优先使用原生命令行而非 make**（make 面向人类且仅支持 Linux，智能体须保证跨平台、可复现）：
