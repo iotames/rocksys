@@ -606,7 +606,7 @@
       '<button class="btn btn-sm btn-primary" data-act="waf-iplist-add">新增</button>' +
       '</div></div>' +
       '<div class="card"><div class="card-title">批量导入 <span class="card-sub">每行一个 IP/CIDR，重复自动跳过</span></div>' +
-      '<textarea class="input" id="iplist-import-text" rows="4" placeholder="每行一个精确 IP 或 CIDR（兼容外挂文件格式）"></textarea>' +
+      '<textarea class="input" id="iplist-import-text" rows="10" placeholder="每行一个：精确 IP 或 CIDR（兼容外挂文件格式）&#10;示例：192.168.1.100、2001:db8::1、10.0.0.0/8、2001:db8::/32&#10;# 开头为注释、空行忽略"></textarea>' +
       '<div class="log-toolbar">' +
       (isBlack
         ? '<select class="select select-sm" id="iplist-import-bt">' + btOptions + '</select>'
