@@ -59,8 +59,10 @@ deps:
 		fi; \
 	done
 
+# build：CGO_ENABLED=0 强制静态链接（与 cross-build 一致；全项目纯 Go 依赖——modernc sqlite、
+# mysql/pq 驱动均无 cgo，net 回落纯 Go resolver），产物可拷到任意 Linux 直接运行，无需匹配 glibc。
 build: deps
-	go build -ldflags "$(LD_FLAGS)" -v -o bin/rocksys ./cmd/rocksys
+	CGO_ENABLED=0 go build -ldflags "$(LD_FLAGS)" -v -o bin/rocksys ./cmd/rocksys
 
 # 交叉编译：产物带平台后缀 bin/rocksys-<os>-<arch>，可拷贝到目标服务器直接运行。
 cross-build: deps
@@ -113,8 +115,9 @@ zip: cross-build release-assets
 # 开发模式：-tags dev 编译并在 bin/ 目录运行（工作目录=bin/）。
 # WebUI 由 go:embed 切换到 os.DirFS("../webui") 实时读磁盘，改前端代码刷新浏览器即见，
 # 无需重新编译、无需重启。生产构建（make build/run/cross-build）不加 dev tag，不受影响。
+# CGO_ENABLED=0 与 build 一致（静态链接；dev 不跑 -race，无 cgo 需求）。
 dev: deps
-	go build -tags dev -ldflags "$(LD_FLAGS)" -o bin/rocksys ./cmd/rocksys
+	CGO_ENABLED=0 go build -tags dev -ldflags "$(LD_FLAGS)" -o bin/rocksys ./cmd/rocksys
 	cd bin && ./rocksys
 
 test: deps
