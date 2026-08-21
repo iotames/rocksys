@@ -525,11 +525,16 @@ func TestConcurrentEnable(t *testing.T) {
 	}
 }
 
-// Enable/Disable 与 Shutdown 并发：状态簿记 map 同受 m.mu 保护，无数据竞争（-race 验证）。
+// Enable/Disable 与 Shutdown 并发：lifecycleMu 串行化后 Start/Stop 不交错调用
+// （修复前 Shutdown 不经 lifecycleMu，存在 Stop 与并发 Start 的理论竞态）。
+// 状态簿记 map 同受 m.mu 保护；-race 下验证无数据竞争。
+// 生命周期守恒断言：任何 Stop 发生时实体必已 Start 过（Enable/Disable/Shutdown
+// 均以状态检查为前提调用生命周期方法），故 stopped ≤ started 恒成立。
 func TestEnableDisableConcurrentWithShutdown(t *testing.T) {
 	ch := chain.New()
 	mgr := NewManager(ch, &fakeConfMgr{})
-	mgr.RegisterMiddleware(&fakeMiddleware{name: "shield", slot: chain.Middle})
+	ml := &fakeMiddleware{name: "shield", slot: chain.Middle}
+	mgr.RegisterMiddleware(ml)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -546,4 +551,8 @@ func TestEnableDisableConcurrentWithShutdown(t *testing.T) {
 		_ = mgr.Shutdown(context.Background())
 	}()
 	wg.Wait()
+
+	if stopped := ml.stopped.Load(); stopped > ml.started.Load() {
+		t.Errorf("生命周期违反：Stop(%d) 多于 Start(%d)", stopped, ml.started.Load())
+	}
 }

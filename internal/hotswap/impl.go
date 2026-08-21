@@ -198,7 +198,7 @@ func (m *Manager) Enable(name string) error {
 	comp, isComponent := m.components[name]
 	var st State
 	if isMiddleware {
-		st = m.middlewareStates[name] // 幂等检查与簿记写同受 m.mu 保护（Shutdown 不经 lifecycleMu，锁外直读会竞争）
+		st = m.middlewareStates[name] // 幂等检查与簿记写同受 m.mu 保护（Shutdown 亦持 lifecycleMu，无并发写）
 	}
 	m.mu.RUnlock()
 
@@ -256,7 +256,7 @@ func (m *Manager) Disable(name string) error {
 	comp, isComponent := m.components[name]
 	var st State
 	if isMiddleware {
-		st = m.middlewareStates[name] // 幂等检查与簿记写同受 m.mu 保护（Shutdown 不经 lifecycleMu）
+		st = m.middlewareStates[name] // 幂等检查与簿记写同受 m.mu 保护（Shutdown 亦持 lifecycleMu）
 	}
 	m.mu.RUnlock()
 
@@ -365,7 +365,13 @@ func (m *Manager) List() []Status {
 
 // Shutdown 排空并停止所有已启用实体（§6.2）。
 // 调用顺序：先停中间件（Tail → Middle → Head 槽位逆序），再停独立组件。
+// ★ 与 Enable/Disable 同持 lifecycleMu 串行化：避免 Shutdown 的 Stop 与并发
+// Enable/Disable 的 Start/Stop 交错调用中间件生命周期方法（持锁调 drain 与
+// Disable 现有行为一致，排空上限 10s 阻塞其他挂载变更可接受）。
 func (m *Manager) Shutdown(ctx context.Context) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	// 1. 全局排空一次（活跃请求归零）；未注入 drainCheck 则跳过
 	if err := m.drain(ctx); err != nil {
 		log.Warn("hotswap: shutdown drain timeout", "err", err)

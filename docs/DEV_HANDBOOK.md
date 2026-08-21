@@ -1321,7 +1321,7 @@ WAF 检测链（§9.6，各项独立开关，默认关闭）→ 命中 → 403 F
 # 父开关：false=不挂载（默认）；true=挂载并拦截（.env 写 true 重启后自动生效，见 §6.4 自动挂载）
 SHIELD_ENABLED=false
 # IP 黑名单为外挂规则文件（HOT_SCRIPTS_DIR/rules/ip_blacklist.txt，每行一个 IP/CIDR），不再走 .env
-SHIELD_IP_WHITELIST=127.0.0.1
+SHIELD_IP_WHITELIST=
 SHIELD_RATE_LIMIT_RPS=100
 SHIELD_RATE_LIMIT_BURST=20
 SHIELD_RATE_LIMIT_BY=ip

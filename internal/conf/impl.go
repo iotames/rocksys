@@ -347,6 +347,22 @@ func (m *confManager) Register(pval any, name, defval, title string, usage ...st
 		_ = m.ec.SetItemValue(k, v)
 	}
 	m.publish() // 装配期无并发，加锁公开版可接受（L1）
+
+	// 布尔项原始值合法性警告：easyconf 对 *bool 采用宽松解析（仅 "true" 视为真，
+	// 其余一律按 false），.env/环境变量/命令行写入 1、yes、not-a-bool 等值会被
+	// 静默按 false 处理，与直觉相反。装配期在此对"最高优先级来源"的原始值
+	// （ValueStr 最后一次成功加载写入者）做显式告警，不阻断启动。
+	if _, ok := pval.(*bool); ok {
+		for _, it := range m.ec.GetItems() {
+			if it != nil && it.Name == name && it.ValueStr != "" {
+				if !strings.EqualFold(it.ValueStr, "true") && !strings.EqualFold(it.ValueStr, "false") {
+					// 日志模板仅渲染 msg（不输出 attr），name/raw 内联进 msg（与既有 log.Warn 惯例一致）。
+					log.Warn(fmt.Sprintf("conf: 布尔配置项 %s 取值 %q 非法，将按 false 处理（仅 true/false 合法，大小写不敏感）", name, it.ValueStr))
+				}
+				break
+			}
+		}
+	}
 	return nil
 }
 

@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/iotames/easyserver/log"
 )
 
 // cleanup 清理测试期间 easyconf 自动创建的 .env / default.env
@@ -471,5 +473,87 @@ func TestSyncDefaultFileWritesAllDefaults(t *testing.T) {
 	// 默认值快照形态：KEY = 默认值（而非当前值）
 	if !strings.Contains(s, "REWRITE_RULES = \"r1,r2\"") {
 		t.Errorf("default.env 未按默认值快照形态输出 REWRITE_RULES:\n%s", s)
+	}
+}
+
+// 布尔配置项原始值非法（如 not-a-bool）→ 装配期告警并按 false 处理（不阻断启动）。
+// 覆盖 easyconf 宽松解析（仅 "true" 视为真、其余一律 false）的直觉陷阱回归。
+func TestRegisterBoolInvalidValueWarns(t *testing.T) {
+	cleanup(t)
+	if err := os.WriteFile(".env", []byte("TEST_BOOL_RAW=not-a-bool\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	since := log.Tail(1, -1).NextOffset // 记录游标，仅断言本测试期间新增日志
+	var b bool
+	if err := mgr.Register(&b, "TEST_BOOL_RAW", "false", "测试布尔"); err != nil {
+		t.Fatalf("Register err: %v", err)
+	}
+	found := false
+	for _, line := range log.Tail(100, since).Lines {
+		if strings.Contains(line, "TEST_BOOL_RAW") && strings.Contains(line, "not-a-bool") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("非法布尔值应产生告警，日志: %v", log.Tail(100, since).Lines)
+	}
+	if b {
+		t.Errorf("非法值应按 false 处理，得到 %v", b)
+	}
+}
+
+// 合法布尔原始值（TRUE 大小写不敏感）→ 不告警，且按 true 生效。
+func TestRegisterBoolValidValueNoWarn(t *testing.T) {
+	cleanup(t)
+	if err := os.WriteFile(".env", []byte("TEST_BOOL_OK=TRUE\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	since := log.Tail(1, -1).NextOffset
+	var b bool
+	if err := mgr.Register(&b, "TEST_BOOL_OK", "false", "测试布尔"); err != nil {
+		t.Fatalf("Register err: %v", err)
+	}
+	for _, line := range log.Tail(100, since).Lines {
+		if strings.Contains(line, "TEST_BOOL_OK") {
+			t.Fatalf("合法布尔值不应告警: %s", line)
+		}
+	}
+	if !b {
+		t.Errorf("TRUE 应按 true 处理，得到 %v", b)
+	}
+}
+
+// 高优先级来源（环境变量）以合法值覆盖 .env 非法值 → 不告警、按高优先级生效。
+// ValueStr 为最后一次成功加载写入者，即"最高优先级来源"的原始值。
+func TestRegisterBoolHighPriorityOverridesInvalid(t *testing.T) {
+	cleanup(t)
+	if err := os.WriteFile(".env", []byte("TEST_BOOL_OVR=not-a-bool\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	t.Setenv("TEST_BOOL_OVR", "true") // 环境变量优先级高于 .env
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	since := log.Tail(1, -1).NextOffset
+	var b bool
+	if err := mgr.Register(&b, "TEST_BOOL_OVR", "false", "测试布尔"); err != nil {
+		t.Fatalf("Register err: %v", err)
+	}
+	for _, line := range log.Tail(100, since).Lines {
+		if strings.Contains(line, "TEST_BOOL_OVR") {
+			t.Fatalf("高优先级合法值覆盖后不应告警: %s", line)
+		}
+	}
+	if !b {
+		t.Errorf("env 覆盖后应按 true 处理，得到 %v", b)
 	}
 }

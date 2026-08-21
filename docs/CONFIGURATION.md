@@ -8,6 +8,9 @@
 
 > **配置中心红线**：禁止在项目根目录运行程序（会在根目录残留运行时文件）。运行时文件跟随**工作目录**生成；开发规范必须在 `bin/` 目录运行（`make run`/`make gen-env` 已 `cd bin`），故实际落点为 `bin/.env`、`bin/default.env`。`bin/default.env` 为全量默认值快照（装配完成自动同步，`make gen-env` 主动刷新），参与运行期取值（最低优先级兜底，优先级由 easyconf 决定）。
 
+> **⚠️ 升级注意（破坏性变更）**：`SHIELD_ENABLED`、`AUTH_ENABLED` 默认值已由 `true` 改为 `false`（"默认全关"原则：全部挂件默认不挂载）。**存量部署升级后务必核查 `bin/.env`**：若未显式配置这两项，重启后防护与认证将静默关闭（`default.env` 自动同步新默认值后兜底生效，已部署的 `.env` 不会被自动改写）。需要防护/认证的部署请在升级前于 `bin/.env` 显式写入 `SHIELD_ENABLED=true`、`AUTH_ENABLED=true`。
+> 布尔配置项取值仅识别 `true`/`false`（大小写不敏感，`TRUE`/`True` 均合法）；写入 `1`、`yes` 等非法值时按 `false` 处理，启动时输出告警日志（不阻断启动）。
+
 ## 底座配置
 
 | 项 | 默认值 | 说明 |
