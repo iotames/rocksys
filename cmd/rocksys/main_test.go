@@ -323,3 +323,43 @@ func TestSmokeProxy(t *testing.T) {
 		_ = srv.dataDB.Close() // 关闭 sqlite 连接，释放 rocksys.db 句柄，供 cleanupEnvFiles 删除
 	}
 }
+
+// TestBuildServerAutoEnable：.env/环境变量设 XXX_ENABLED=true → buildServer 装配完成后
+// 自动挂载对应中间件（重启后按配置恢复挂载）；默认全 false → 全不挂载。
+func TestBuildServerAutoEnable(t *testing.T) {
+	cleanupEnvFiles(t)
+	t.Setenv("SHIELD_ENABLED", "true")
+	t.Setenv("OBS_ENABLED", "true")
+
+	srv, err := buildServer([]string{
+		"--upstream", "http://127.0.0.1:9000",
+		"--admin", "127.0.0.1:19529",
+	})
+	if err != nil {
+		t.Fatalf("buildServer: %v", err)
+	}
+	defer func() {
+		_ = srv.mgr.Shutdown(context.Background())
+		if srv.dataDB != nil {
+			_ = srv.dataDB.Close()
+		}
+	}()
+
+	states := make(map[string]hotswap.State)
+	for _, st := range srv.mgr.List() {
+		states[st.Name] = st.State
+	}
+	// 显式开启的应自动挂载。
+	if states["shield"] != hotswap.StateEnabled {
+		t.Errorf("SHIELD_ENABLED=true 应自动挂载 shield，得到 %s", states["shield"])
+	}
+	if states["obs"] != hotswap.StateEnabled {
+		t.Errorf("OBS_ENABLED=true 应自动挂载 obs，得到 %s", states["obs"])
+	}
+	// 默认 false 的应保持不挂载。
+	for _, name := range []string{"trace", "auth", "dispatch", "rewrite", "script", "copy", "result"} {
+		if states[name] != hotswap.StateDisabled {
+			t.Errorf("%s 默认应不挂载，得到 %s", name, states[name])
+		}
+	}
+}

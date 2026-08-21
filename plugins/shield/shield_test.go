@@ -229,24 +229,6 @@ func TestUARuleDeny(t *testing.T) {
 	}
 }
 
-// disabled（SHIELD_ENABLED=false）→ 全部直通，防护不生效。
-func TestDisabledPassThrough(t *testing.T) {
-	s, _ := newTestShield(t)
-	writeExternalRule(t, ruleFileIPBlacklist, "192.168.1.100\n")
-	s.enabled = false
-	s.rps = 1
-	s.burst = 1
-	if err := s.Start(nil); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 3; i++ {
-		ctx, _ := newCtx("/api/test", "192.168.1.100:80", "")
-		if next := s.Handle(ctx); !next {
-			t.Fatal("disabled 时应全部放行")
-		}
-	}
-}
-
 // glob 匹配单测。
 func TestMatchGlob(t *testing.T) {
 	cases := []struct {

@@ -38,6 +38,7 @@ type Shield struct {
 
 	// 配置项挂件字段（构造时由 cfgMgr.Register 注册，Start 时读取重建快照）。
 	// ★ conf.Manager.Register 仅支持 *string/*int/*bool，黑白名单用字符串逗号分隔承载。
+	// ★ SHIELD_ENABLED 是挂载开关（配置中心唯一真源）：挂载即拦截，内部不再读取本字段。
 	enabled     bool
 	ipWhitelist string // 逗号分隔，支持精确 IP 与 CIDR
 	rps         int    // 0 = 不限流
@@ -74,7 +75,7 @@ type Shield struct {
 	// TTL 兜底刷新（默认 60s）：覆盖管理面变更通知缺失的异常场景，顺带 flush hit_count。
 	ipBlackDB ipListStore // DB 黑名单数据访问（nil = 未注入，回落仅外挂文件）
 	ipWhiteDB ipListStore // DB 白名单数据访问（nil = 未注入，回落仅 .env 配置）
-	dbHits    sync.Map // int64 条目 id → *atomic.Int64 增量
+	dbHits    sync.Map    // int64 条目 id → *atomic.Int64 增量
 	ttlMu     sync.Mutex
 	ttlStopCh chan struct{}
 	ttlStart  bool
@@ -102,7 +103,6 @@ const dbTTLInterval = 60 * time.Second
 // dbBlackIDs 精确 IP → DB 黑名单条目 id（命中时异步累加 hit_count；
 // 仅精确 IP 命中可归因单条，CIDR 子网命中不累加）。
 type shieldSnapshot struct {
-	enabled     bool
 	ipBlacklist *ipSet
 	ipWhitelist *ipSet
 	dbBlackIDs  map[string]int64
@@ -265,7 +265,7 @@ func New(cfgMgr conf.Manager, hubs ...*hotswap.ScriptHub) (*Shield, error) {
 		defval string
 		title  string
 	}{
-		{&s.enabled, "SHIELD_ENABLED", "true", "是否启用 L1 防护"},
+		{&s.enabled, "SHIELD_ENABLED", "false", "是否启用 L1 防护（false=不挂载；true=挂载并拦截）"},
 		{&s.ipWhitelist, "SHIELD_IP_WHITELIST", "", "IP 白名单（逗号分隔，支持 CIDR）"},
 		{&s.rps, "SHIELD_RATE_LIMIT_RPS", "0", "限流速率（每秒请求数，0=不限流）"},
 		{&s.burst, "SHIELD_RATE_LIMIT_BURST", "0", "限流突发容量"},
@@ -294,8 +294,7 @@ func New(cfgMgr conf.Manager, hubs ...*hotswap.ScriptHub) (*Shield, error) {
 
 // registerRulesHub 将规则子目录（rules/）注册进 ScriptHub 并订阅：
 // 规则文件增/删/改 → 回调重建快照（复用 Start 重建逻辑，清空限流状态）。
-// ★ Q2：shield 未启用也注册（Start(nil) 重建 enabled=false 快照，无害），
-// 保证启用 shield 时规则已是最新。
+// ★ shield 无论是否启用都注册（挂载前保证规则已是最新），无害。
 func (s *Shield) registerRulesHub() error {
 	loader, err := newRuleLoader(s.hub)
 	if err != nil {
@@ -387,7 +386,6 @@ func (s *Shield) Start(cfg any) error {
 	}
 
 	snap := &shieldSnapshot{
-		enabled:     s.enabled,
 		ipBlacklist: newIPSet(blackList), // 外挂 rules/ip_blacklist.txt ∪ DB 表（精确 IP/CIDR）
 		ipWhitelist: newIPSet(whiteList), // .env SHIELD_IP_WHITELIST ∪ DB 表
 		dbBlackIDs:  dbBlackIDs,
@@ -513,7 +511,7 @@ func (s *Shield) Stop() error {
 // 返回 true 表示继续转发链；返回 false 表示已写入响应并中断链。
 func (s *Shield) Handle(ctx *chain.Context) (next bool) {
 	snap := s.current()
-	if snap == nil || !snap.enabled {
+	if snap == nil {
 		return true
 	}
 	ip := netutil.GetClientIP(ctx.R)

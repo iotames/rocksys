@@ -870,6 +870,13 @@ func (m *Manager) RegisterComponent(c Component)
 // 由 Enable 触发 Start + chain.Replace 挂载，见 §6.3 流程 A）
 func (m *Manager) RegisterMiddleware(ml MiddlewareLifecycle)
 
+// SetAutoEnableMap 注入挂件自动开关映射：中间件名 → XXX_ENABLED 配置键。
+// 装配完成后调用 ApplyAutoEnable 做初始同步；此后配置热更会自动按配置值联动挂载/摘除。
+func (m *Manager) SetAutoEnableMap(autoMap map[string]string)
+
+// ApplyAutoEnable 启动初始同步：按当前配置值挂载/摘除 autoMap 中的中间件（幂等）。
+func (m *Manager) ApplyAutoEnable()
+
 // Enable / Disable 切换（适用两种实体）
 func (m *Manager) Enable(name string) error
 func (m *Manager) Disable(name string) error
@@ -906,12 +913,15 @@ type Status struct {
 - **Start(cfg) 的 cfg 来源**：各实体在构造时已持有 `*conf.Manager` 引用。`Start(cfg)` 中的 `cfg any` 按约定传 `nil`——实体内部自行从 `conf.Manager.Current()` 或自身注册的配置指针读取最新配置后重建快照。Manager 不负责为每个实体"构造特定类型的配置结构体"。
 
 **A. Enable（开启/挂载）**
-1. 收到开启指令（rockctl / admin API / 配置热更事件）。
+1. 收到开启指令（rockctl / admin API / 配置热更事件 / 启动自动挂载——装配层 `ApplyAutoEnable` 按 `XXX_ENABLED` 配置值调用）。
 2. 实例 `Start(cfg)` 初始化（构造运行态快照）。
 3. Start 成功 → 链中间件：`chain.Add(slot, 实例)` 追加到槽位（不影响同槽位其他中间件）；组件：置 `Enabled`。
 4. Start 失败 → 保持 `Disabled`，记录故障 + 告警（不中断服务）。
 
-**B. Disable（关闭/摘除）——统一语义：从链上摘除，绝不"保持挂载但放行"**
+> ★ `switch on/off`（admin API）成功后会额外把 `XXX_ENABLED` 持久化回 `.env`（conf.Set「热更即持久化」），
+> 保证重启后挂载状态按配置恢复——**配置中心是挂载状态的唯一真源**，运行时状态与配置永不分裂。
+
+**B. Disable（关闭/摘除）**：从链上摘除（在途请求持旧快照继续），排空后 `Stop()` 清理资源。关闭即不挂载，不存在"保持挂载但放行"状态。
 1. 收到关闭指令。
 2. 链中间件：`chain.Remove(name)` 仅移除目标中间件（在途请求持旧快照继续；同槽位其他中间件不受影响）；组件：置 `Draining` 等待自身业务排空。
 3. 排空完成（活跃请求计数归零，上限 10s）→ 调用 `Stop()` 清理资源 → 置 `Disabled`。
@@ -928,9 +938,12 @@ type Status struct {
 ### 6.4 配置热更
 
 - Manager 在初始化时订阅 `confMgr.Watch(func(newCfg *Config))`。
-- 收到变更后：逐实体检查其订阅的配置项是否变化 → 命中则走 §6.3 流程 **C（热更）**：构造新配置 → `Start(newCfg)` 替换内部快照。失败回退旧快照。
+- 收到变更后分两步：
+  1. **挂载联动（applyAutoEnable）**：对 autoMap 中的中间件，按其 `XXX_ENABLED` 配置值自动 Enable/Disable——`false→true` 自动挂载、`true→false` 自动摘除。新挂载的实体已用最新配置 Start，不重复重建快照。
+  2. 对仍处于 `State == StateEnabled` 的实体：逐实体检查其订阅的配置项是否变化 → 命中则走 §6.3 流程 **C（热更）**：构造新配置 → `Start(newCfg)` 替换内部快照。失败回退旧快照。
 - 挂件通过 `conf.Manager.Watch` 自己订阅受影响的配置项（如 dispatch 订阅 `DISPATCH_RULES`），Manager 只负责转发广播。
 - ★ **状态过滤**：hotswap 仅对当前 `State == StateEnabled` 的实体走流程 C（热更）。`StateDisabled` 的实体——即使其配置项已在 conf 中注册——不响应配置热更事件（其配置变更将在下次 `Enable` 时通过 `Start(cfg)` 首次生效）。此过滤避免"未启用的挂件因热更被误唤醒"以及"注册即触发误操作"（§2.2 Register 的重载广播对 Disabled 实体无副作用）。
+- ★ **自动挂载（XXX_ENABLED 统一语义，设计原则：单一开关）**：每个影响 HTTP 流动/观测的中间件挂件拥有 `插件目录名转大写_ENABLED` 配置项（默认 `false`），同时决定"是否挂载"与"是否生效"——**挂载即生效，挂件内部不再有 enabled 判断，不存在"挂载但放行"状态**。装配层启动时 `ApplyAutoEnable` 按配置值自动挂载；运行期热改 `XXX_ENABLED` 由上述第 1 步即时联动（配置中心是挂载状态唯一真源）。子开关（如 `SHIELD_WAF_*`、`OBS_LOG_PRUNE_ENABLED`）是挂件内部行为开关：父开关关闭时不挂载、子开关不生效。
 
 ### 6.5 验收
 
@@ -1143,8 +1156,8 @@ func (s *AdminServer) RegisterPlugin(path string, h func(http.ResponseWriter, *h
 
 | 方法 | 路径 | 请求体 | 响应 | 说明 |
 |------|------|--------|------|------|
-| POST | `/admin/switch/on` | `{"name":"shield"}` | `{"ok":true}` | 开启组件 |
-| POST | `/admin/switch/off` | `{"name":"shield"}` | `{"ok":true}` | 关闭组件 |
+| POST | `/admin/switch/on` | `{"name":"shield"}` | `{"ok":true}` | 开启组件（成功即持久化 `XXX_ENABLED=true` 到 .env，重启后自动挂载） |
+| POST | `/admin/switch/off` | `{"name":"shield"}` | `{"ok":true}` | 关闭组件（成功即持久化 `XXX_ENABLED=false` 到 .env） |
 | GET | `/admin/switch/list` | — | `[{"name":"shield","state":"enabled",...}]` | 列出状态 |
 | GET | `/admin/config` | — | `{"listen":":8080","upstream":"...",...}` | 查看配置 |
 | PUT | `/admin/config` | `{"ROCKSYS_UPSTREAM":"http://..."}` | `{"ok":true}` | 热改配置（★ key 必须为注册名全名，即环境变量名；短 key 会被 easyconf 静默忽略） |
@@ -1305,7 +1318,8 @@ WAF 检测链（§9.6，各项独立开关，默认关闭）→ 命中 → 403 F
 ### 9.4 配置项
 
 ```env
-SHIELD_ENABLED=true
+# 父开关：false=不挂载（默认）；true=挂载并拦截（.env 写 true 重启后自动生效，见 §6.4 自动挂载）
+SHIELD_ENABLED=false
 # IP 黑名单为外挂规则文件（HOT_SCRIPTS_DIR/rules/ip_blacklist.txt，每行一个 IP/CIDR），不再走 .env
 SHIELD_IP_WHITELIST=127.0.0.1
 SHIELD_RATE_LIMIT_RPS=100

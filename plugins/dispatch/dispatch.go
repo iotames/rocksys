@@ -60,12 +60,13 @@ func (rt *RouteTable) MatchParams(path string) (*Rule, map[string]string) {
 // Dispatch L2 路由分发中间件（chain.Middle 槽位）。
 // 运行态（RouteTable）存于不可变快照，经 atomic.Value 原子替换，保证 Start 与在途 Handle 并发安全。
 type Dispatch struct {
-	cfg   conf.Manager
-	rules string       // DISPATCH_RULES 配置字符串（*string 注册，easyconf 自动写入）
-	rt    atomic.Value // 持有 *RouteTable 不可变快照
+	cfg     conf.Manager
+	rules   string       // DISPATCH_RULES 配置字符串（*string 注册，easyconf 自动写入）
+	enabled bool         // *bool 注册：DISPATCH_ENABLED
+	rt      atomic.Value // 持有 *RouteTable 不可变快照
 }
 
-// New 创建路由分发中间件并注册 DISPATCH_RULES 配置项。
+// New 创建路由分发中间件并注册 DISPATCH_RULES/DISPATCH_ENABLED 配置项。
 func New(cfg conf.Manager) *Dispatch {
 	d := &Dispatch{cfg: cfg}
 	d.rt.Store(&RouteTable{})
@@ -77,6 +78,9 @@ func New(cfg conf.Manager) *Dispatch {
 			"示例：/api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz",
 			"旧格式 /api/=http://host:port 仍兼容（单节点）"); err != nil {
 			log.Warn("dispatch: 注册配置项失败", "name", "DISPATCH_RULES", "err", err)
+		}
+		if err := cfg.Register(&d.enabled, "DISPATCH_ENABLED", "false", "是否启用 L2 路由分发（false=不挂载）"); err != nil {
+			log.Warn("dispatch: 注册配置项失败", "name", "DISPATCH_ENABLED", "err", err)
 		}
 	}
 	return d

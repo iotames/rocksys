@@ -136,6 +136,7 @@ type Obs struct {
 	storeCfg      string // *string 注册：OBS_STORE（db|file，默认 db；file 已弃用）
 	logDir        string // *string 注册：OBS_LOG_DIR
 	retentionDays int    // *int 注册：OBS_RETENTION_DAYS（仅 file 后端清理用，file 已弃用）
+	enabled       bool   // *bool 注册：OBS_ENABLED
 	dataDB        *db.DB // 统一数据访问层：默认 db 后端依赖（nil 时回退 file 并告警）
 
 	// access_log 自动清理（DB 后端专用，数据保留见 DATA_DICT 维护约定）：
@@ -179,6 +180,9 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	}
 	if err := cfgMgr.Register(&o.pruneLogEnabled, "OBS_LOG_PRUNE_ENABLED", "false", "是否开启访问日志（access_log 表）自动清理（默认不开启；未开启时登录管理后台有警告提示）"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_PRUNE_ENABLED", "err", err)
+	}
+	if err := cfgMgr.Register(&o.enabled, "OBS_ENABLED", "false", "是否启用访问日志与指标观测（false=不挂载）"); err != nil {
+		log.Warn("obs: 注册配置项失败", "name", "OBS_ENABLED", "err", err)
 	}
 	if err := cfgMgr.Register(&o.pruneLogDays, "OBS_LOG_RETENTION_DAYS", strconv.Itoa(defaultLogPruneDays), "访问日志保留天数（自动清理开启后生效；DB 后端专用，与已弃用 file 后端的 OBS_RETENTION_DAYS 相互独立）"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_RETENTION_DAYS", "err", err)

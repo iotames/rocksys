@@ -31,6 +31,7 @@ type Result struct {
 	cfg        conf.Manager
 	maskFields string       // 逗号分隔的脱敏字段（*string 注册）
 	wrap       bool         // 是否统一封装（*bool 注册）
+	enabled    bool         // *bool 注册：RESULT_ENABLED
 	snapshot   atomic.Value // 运行态快照（*snapshot）
 }
 
@@ -38,7 +39,6 @@ type Result struct {
 var _ hotswap.MiddlewareLifecycle = (*Result)(nil)
 
 // New 创建 result 挂件并注册自身配置项。
-// ★ 不注册 RESULT_ENABLED：启用/禁用由 hotswap 开关管理。
 func New(cfgMgr conf.Manager) *Result {
 	r := &Result{cfg: cfgMgr}
 	if err := cfgMgr.Register(&r.maskFields, "RESULT_MASK_FIELDS", "", "脱敏字段（逗号分隔，如 phone,id_card,token）"); err != nil {
@@ -46,6 +46,9 @@ func New(cfgMgr conf.Manager) *Result {
 	}
 	if err := cfgMgr.Register(&r.wrap, "RESULT_WRAP", "false", "是否统一封装为 {code,msg,data}"); err != nil {
 		log.Warn("result: 注册配置项失败", "name", "RESULT_WRAP", "err", err)
+	}
+	if err := cfgMgr.Register(&r.enabled, "RESULT_ENABLED", "false", "是否启用 L3 结果处理（脱敏/统一封装；false=不挂载）"); err != nil {
+		log.Warn("result: 注册配置项失败", "name", "RESULT_ENABLED", "err", err)
 	}
 	r.snapshot.Store(&snapshot{})
 	return r

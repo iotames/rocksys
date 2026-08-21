@@ -82,7 +82,14 @@ type MiddlewareLifecycle interface {
 
 ## 3. 可选挂件（plugins/）
 
-所有挂件**默认关闭**，`rockctl switch on <name>` 或 `POST /admin/switch/on/<name>` 启用。
+**设计原则：每个挂件只有一个开关，不设双重概念。** 影响 HTTP 流动/观测的中间件挂件的唯一开关是 `XXX_ENABLED`（`插件目录名转大写_ENABLED`，默认 `false`），它同时决定"是否挂载"与"是否生效"——**挂载即生效，不存在"挂载但放行"状态**。默认全关，开启途径（同一开关，永不分裂）：
+
+- `.env` 写 `XXX_ENABLED=true` → 重启自动挂载；运行期热改该值即时联动挂载/摘除（配置中心是挂载状态的唯一真源）。
+- `rockctl switch on/off` 或 `POST /admin/switch/on|off/<name>` → 即时切换，并自动持久化回 `.env`（重启后按配置恢复）。
+
+独立组件（config/registry/object）不参与单请求处理、无此开关（无条件注册）；mq 已由 `MQ_ENABLED` 条件装配控制。
+
+> 子开关（如 `SHIELD_WAF_*`、`OBS_LOG_PRUNE_ENABLED`）是挂件**内部行为**开关：`XXX_ENABLED` 关闭时不挂载、子开关一律不生效；开启后子开关按各自值决定子功能是否启动。
 
 ### 3.1 shield — L1 防护（转发链中间件，Head）
 
@@ -92,7 +99,7 @@ type MiddlewareLifecycle interface {
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
-| `SHIELD_ENABLED` | true | 是否启用（挂件开启时生效） |
+| `SHIELD_ENABLED` | false | 父开关：false=不挂载（默认）；true=挂载并拦截 |
 | `SHIELD_IP_WHITELIST` | 空 | 白名单（逗号分隔，支持精确 IP 与 CIDR）；与 DB 表 `ip_whitelist` 取并集 |
 | IP 黑名单 | — | **DB 表 `ip_blacklist`（管理面录入/导入，动态）∪ 外挂 `rules/ip_blacklist.txt`（静态兑底）**，取并集；DB 未启用时仅外挂生效；热路径只读内存快照（TTL 60s 刷新），管理面见「黑白名单」Tab 与 `docs/WAF_BLACKLIST_MIGRATION.md` |
 | `SHIELD_RATE_LIMIT_RPS` / `BURST` | 0 / 0 | 限流速率与突发容量（0=不限流） |
@@ -116,7 +123,7 @@ SHIELD_WAF_SQL_INJECTION=true SHIELD_WAF_XSS=true rocksys --upstream http://127.
 
 **作用**：按 URI 分发到不同后端；未命中回退默认 upstream。
 
-**配置项**：`DISPATCH_RULES`
+**配置项**：`DISPATCH_ENABLED`（父开关，默认 false）、`DISPATCH_RULES`
 
 ```
 格式：<prefix>=<spec>[;<spec>...]，逗号分隔
@@ -167,7 +174,7 @@ DISPATCH_RULES="/=http://default-svc"
 
 **作用**：转发前改写 URI 前缀与请求头（路径归一化 / 版本剥离 / 注入标记头）。
 
-**配置项**：`REWRITE_RULES`
+**配置项**：`REWRITE_ENABLED`（父开关，默认 false）、`REWRITE_RULES`
 
 ```
 格式：<prefix>=<spec>[;<spec>...]，逗号分隔
@@ -188,6 +195,8 @@ REWRITE_RULES="/api/v1/=uri|/api/;header=X-Proxy-Tag:rewrite"
 
 **作用**：Lua 策略引擎，只做网关策略（安全规则、路由改写、A/B 分流），不落业务数据。
 
+**配置项**：`SCRIPT_ENABLED`（父开关，默认 false）、`SCRIPT_TIMEOUT`（执行超时毫秒，装配期生效）。
+
 **使用**：
 
 ```bash
@@ -199,7 +208,7 @@ rockctl script rollback             # 回滚上一版本
 
 **作用**：访问日志（异步落盘，存储后端可切换）+ 指标聚合 + 查询 API。
 
-**配置项**：`OBS_STORE`（默认 `db`，可选 `file`——已弃用，将不再被支持）、`OBS_LOG_DIR`（默认 logs，仅 file 遗留用）、`OBS_RETENTION_DAYS`（默认 30）。
+**配置项**：`OBS_ENABLED`（父开关，默认 false）、`OBS_STORE`（默认 `db`，可选 `file`——已弃用，将不再被支持）、`OBS_LOG_DIR`（默认 logs，仅 file 遗留用）、`OBS_RETENTION_DAYS`（默认 30）、`OBS_LOG_PRUNE_ENABLED`（access_log 自动清理子开关，默认 false）。
 
 **存储后端**：
 - `db`（默认）：复用统一数据访问层（`DB_DRIVER`/`DB_DSN`，默认 sqlite `rocksys.db`）写 `access_log` 表；SQL 外置 `sql/<dbtype>/`。dataDB 未就绪时回退 file 并告警。`access_log` 表字段/枚举见 `docs/DATA_DICT.md`。
@@ -214,7 +223,7 @@ rockctl script rollback             # 回滚上一版本
 
 **作用**：复制线上请求异步发送到 shadow 后端（流量审计 / 影子验证）。
 
-**配置项**：`COPY_TARGETS`（逗号分隔 shadow URL，空 = 关闭）
+**配置项**：`COPY_ENABLED`（父开关，默认 false）、`COPY_TARGETS`（逗号分隔 shadow URL，空 = 关闭）
 
 ```bash
 COPY_TARGETS="http://shadow-a:9100;http://shadow-b:9100"
@@ -226,17 +235,19 @@ COPY_TARGETS="http://shadow-a:9100;http://shadow-b:9100"
 
 **作用**：统一出口格式、字段脱敏。
 
-**配置项**：`RESULT_WRAP`（响应封装）、`RESULT_MASK_FIELDS`（脱敏字段）。
+**配置项**：`RESULT_ENABLED`（父开关，默认 false）、`RESULT_WRAP`（响应封装）、`RESULT_MASK_FIELDS`（脱敏字段）。
 
 ### 3.8 trace — trace_id 透传（转发链中间件，Head）
 
 **作用**：将 trace_id 注入转发请求头与响应头，确保上游与客户端拿到同一 ID（框架默认生成/透传 trace_id，此挂件负责显式注入响应头）。
 
+**配置项**：`TRACE_ENABLED`（父开关，默认 false）。
+
 ### 3.9 auth — RockAuth（转发链中间件，Head）
 
 **作用**：JWT 认证。
 
-**配置项**：`AUTH_ENABLED`、`AUTH_JWT_SECRET`、`AUTH_JWT_ISSUER`、`AUTH_JWT_TTL`。
+**配置项**：`AUTH_ENABLED`（父开关，默认 false；true=挂载并认证）、`AUTH_JWT_SECRET`、`AUTH_JWT_ISSUER`、`AUTH_JWT_TTL`。
 
 ### 3.10 config — RockConfig（独立组件）
 
@@ -284,4 +295,4 @@ mgr.RegisterMiddleware(New(cfgMgr))
 要点：
 - **快照不可变**：Start 整体重建快照，`atomic.Value` 原子替换，与在途 Handle 并发安全。
 - **Start 失败保留旧快照**：实例继续以旧配置服务，不中断。
-- **默认关闭**：注册即 Disabled，启用才挂载。
+- **默认关闭**：注册即 Disabled，启用才挂载；`XXX_ENABLED` 配置项（父开关）默认 false，装配层启动时按配置自动挂载，热改即时联动（见 §3 总述）。

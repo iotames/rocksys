@@ -19,6 +19,7 @@ type fakeConfMgr struct {
 	mu       sync.Mutex
 	watchers []func(*conf.Config)
 	cfg      *conf.Config
+	items    []conf.ConfigItem // List() 返回值（自动开关测试用）
 }
 
 func (f *fakeConfMgr) Current() *conf.Config              { return f.cfg }
@@ -28,8 +29,12 @@ func (f *fakeConfMgr) Register(any, string, string, string, ...string) error {
 	return nil
 }
 func (f *fakeConfMgr) Set(string, string) error { return nil }
-func (f *fakeConfMgr) List() []conf.ConfigItem  { return nil }
-func (f *fakeConfMgr) SyncDefaultFile() error   { return nil }
+func (f *fakeConfMgr) List() []conf.ConfigItem {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]conf.ConfigItem{}, f.items...)
+}
+func (f *fakeConfMgr) SyncDefaultFile() error { return nil }
 
 func (f *fakeConfMgr) Watch(fn func(*conf.Config)) {
 	f.mu.Lock()
@@ -386,4 +391,159 @@ func TestEntityNotFound(t *testing.T) {
 	if err := mgr.Disable("nope"); err == nil {
 		t.Error("Disable 不存在的实体应返回 error")
 	}
+}
+
+// ApplyAutoEnable 启动初始同步：配置值为 true 的中间件自动挂载，false 的不挂载。
+func TestApplyAutoEnable(t *testing.T) {
+	cm := &fakeConfMgr{items: []conf.ConfigItem{
+		{Key: "SHIELD_ENABLED", Current: "true"},
+		{Key: "TRACE_ENABLED", Current: "false"},
+		{Key: "OBS_ENABLED", Current: "not-a-bool"}, // 不可解析 → 跳过
+	}}
+	mgr := NewManager(chain.New(), cm)
+	shield := &fakeMiddleware{name: "shield", slot: chain.Head}
+	trace := &fakeMiddleware{name: "trace", slot: chain.Head}
+	obs := &fakeMiddleware{name: "obs", slot: chain.Tail}
+	// 注册顺序决定自动挂载的链顺序。
+	mgr.RegisterMiddleware(shield)
+	mgr.RegisterMiddleware(trace)
+	mgr.RegisterMiddleware(obs)
+	mgr.SetAutoEnableMap(map[string]string{
+		"shield": "SHIELD_ENABLED",
+		"trace":  "TRACE_ENABLED",
+		"obs":    "OBS_ENABLED",
+	})
+
+	mgr.ApplyAutoEnable()
+
+	if mgr.middlewareStates["shield"] != StateEnabled {
+		t.Errorf("SHIELD_ENABLED=true 应自动挂载 shield，得到 %s", mgr.middlewareStates["shield"])
+	}
+	if mgr.middlewareStates["trace"] != StateDisabled {
+		t.Errorf("TRACE_ENABLED=false 不应挂载 trace，得到 %s", mgr.middlewareStates["trace"])
+	}
+	if mgr.middlewareStates["obs"] != StateDisabled {
+		t.Errorf("OBS_ENABLED 不可解析应跳过挂载，得到 %s", mgr.middlewareStates["obs"])
+	}
+	if shield.started.Load() != 1 {
+		t.Errorf("shield Start 应被调用 1 次，得到 %d", shield.started.Load())
+	}
+	if trace.started.Load() != 0 || obs.started.Load() != 0 {
+		t.Error("未挂载的中间件不应 Start")
+	}
+	// 幂等：重复 ApplyAutoEnable 不重复挂载/Start。
+	mgr.ApplyAutoEnable()
+	if shield.started.Load() != 1 {
+		t.Errorf("重复 ApplyAutoEnable 不应重复 Start，得到 %d", shield.started.Load())
+	}
+}
+
+// 配置热更联动：XXX_ENABLED 变化 → 自动挂载/摘除（配置中心是挂载状态唯一真源）。
+func TestAutoEnableHotReload(t *testing.T) {
+	cm := &fakeConfMgr{items: []conf.ConfigItem{
+		{Key: "SHIELD_ENABLED", Current: "false"},
+	}}
+	mgr := NewManager(chain.New(), cm)
+	ml := &fakeMiddleware{name: "shield", slot: chain.Middle}
+	mgr.RegisterMiddleware(ml)
+	mgr.SetAutoEnableMap(map[string]string{"shield": "SHIELD_ENABLED"})
+
+	// 初始 false → 不挂载。
+	mgr.ApplyAutoEnable()
+	if stateOf(mgr, "shield") != StateDisabled {
+		t.Fatalf("初始 false 不应挂载，得到 %s", stateOf(mgr, "shield"))
+	}
+
+	// 热更 true → 自动挂载（broadcast 触发 hotReload，异步执行）。
+	cm.mu.Lock()
+	cm.items[0].Current = "true"
+	cm.mu.Unlock()
+	cm.broadcast(&conf.Config{})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for stateOf(mgr, "shield") != StateEnabled && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stateOf(mgr, "shield") != StateEnabled {
+		t.Fatalf("热更 SHIELD_ENABLED=true 后应自动挂载，得到 %s", stateOf(mgr, "shield"))
+	}
+	if ml.started.Load() != 1 {
+		t.Errorf("自动挂载应触发 Start 1 次，得到 %d", ml.started.Load())
+	}
+
+	// 热更 false → 自动摘除。
+	cm.mu.Lock()
+	cm.items[0].Current = "false"
+	cm.mu.Unlock()
+	cm.broadcast(&conf.Config{})
+
+	deadline = time.Now().Add(2 * time.Second)
+	for stateOf(mgr, "shield") != StateDisabled && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stateOf(mgr, "shield") != StateDisabled {
+		t.Fatalf("热更 SHIELD_ENABLED=false 后应自动摘除，得到 %s", stateOf(mgr, "shield"))
+	}
+	if ml.stopped.Load() != 1 {
+		t.Errorf("自动摘除应触发 Stop 1 次，得到 %d", ml.stopped.Load())
+	}
+}
+
+// stateOf 经公开 API List() 读取实体状态（内部 map 受锁保护，测试不得直读）。
+func stateOf(mgr *Manager, name string) State {
+	for _, st := range mgr.List() {
+		if st.Name == name {
+			return st.State
+		}
+	}
+	return StateDisabled
+}
+
+// 并发 Enable 同一中间件：lifecycleMu 串行化后 Start 仅 1 次、不重复挂链
+// （防 switch 显式调用与配置热更联动并发双调用的竞态回归，-race 下验证）。
+func TestConcurrentEnable(t *testing.T) {
+	ch := chain.New()
+	mgr := NewManager(ch, &fakeConfMgr{})
+	ml := &fakeMiddleware{name: "shield", slot: chain.Middle}
+	mgr.RegisterMiddleware(ml)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = mgr.Enable("shield")
+		}()
+	}
+	wg.Wait()
+
+	if ml.started.Load() != 1 {
+		t.Errorf("并发 Enable 应只 Start 1 次，得到 %d", ml.started.Load())
+	}
+	if stateOf(mgr, "shield") != StateEnabled {
+		t.Errorf("并发 Enable 后应 Enabled，得到 %s", stateOf(mgr, "shield"))
+	}
+}
+
+// Enable/Disable 与 Shutdown 并发：状态簿记 map 同受 m.mu 保护，无数据竞争（-race 验证）。
+func TestEnableDisableConcurrentWithShutdown(t *testing.T) {
+	ch := chain.New()
+	mgr := NewManager(ch, &fakeConfMgr{})
+	mgr.RegisterMiddleware(&fakeMiddleware{name: "shield", slot: chain.Middle})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			_ = mgr.Enable("shield")
+			_ = mgr.Disable("shield")
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = mgr.Shutdown(context.Background())
+	}()
+	wg.Wait()
 }

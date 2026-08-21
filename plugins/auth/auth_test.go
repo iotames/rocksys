@@ -202,31 +202,6 @@ func TestNoToken401(t *testing.T) {
 	}
 }
 
-// AUTH_ENABLED=false → 无 token 也直通，不写 tenant。
-func TestDisabledPassThrough(t *testing.T) {
-	f := newFakeConf()
-	var cm conf.Manager = f
-	a := New(&cm)
-	a.enabled = false
-	a.secret = "test-secret"
-	a.issuer = "rocksys"
-	a.ttlSec = 3600
-	if err := a.Start(nil); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, w := newCtx("")
-	if next := a.Handle(ctx); !next {
-		t.Fatal("disabled 时应直通（Handle 返回 true）")
-	}
-	if got := ctx.DF.TenantID(); got != "" {
-		t.Errorf("disabled 时不应写入 TenantID，实际 %q", got)
-	}
-	if w.Code != http.StatusOK {
-		t.Errorf("直通时不应写响应，Code 应为默认 200，实际 %d", w.Code)
-	}
-}
-
 // Verifier 密钥轮换：旧密钥令牌失效、新密钥令牌有效。
 func TestVerifierRotation(t *testing.T) {
 	v := newVerifier("rocksys", "old-secret")

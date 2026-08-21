@@ -47,7 +47,7 @@ ROCKSYS_LOG_MAX_SIZE = 50
 TRUSTED_PROXIES_FILE = trusted_proxies.txt
 
 # ===== 防护 shield（L1）=====
-SHIELD_ENABLED = true
+SHIELD_ENABLED = false           # 父开关：false=不挂载（默认）；true=挂载并拦截
 # IP 黑名单（动态）：DB 表 ip_blacklist（管理面录入/导入，见 docs/WAF_BLACKLIST_MIGRATION.md）∪ 外挂 HOT_SCRIPTS_DIR/rules/ip_blacklist.txt，取并集；热路径只读内存快照，TTL 60s 兑底刷新；不再走 .env 配置
 SHIELD_IP_WHITELIST =
 SHIELD_RATE_LIMIT_RPS = 100
@@ -88,7 +88,7 @@ RESULT_WRAP =
 RESULT_MASK_FIELDS = phone,id_card
 
 # ===== 认证 auth =====
-AUTH_ENABLED = true
+AUTH_ENABLED = false             # 父开关：false=不挂载（默认）；true=挂载并认证
 AUTH_JWT_SECRET = change-me
 AUTH_JWT_ISSUER = rocksys
 AUTH_JWT_TTL = 3600
@@ -118,7 +118,7 @@ DB_DSN = rocksys.db               # 默认已含 ?_busy_timeout=5000&_journal_mo
 # SQL 方言脚本外挂目录固定为 HOT_SCRIPTS_DIR/sql/（见上方脚本外挂统一入口）
 ```
 
-> 每个挂件默认关闭；`bin/.env` 里写配置不等于启用，需在 WebUI「组件」页或 `rockctl switch on` 显式开启。
+> 每个挂件默认关闭；`bin/.env` 里写 `XXX_ENABLED=true` 即等于启用（重启后按配置自动挂载，热改即时联动）；也可在 WebUI「组件」页或 `rockctl switch on` 开启（会自动持久化回 `.env`）。
 > 全部挂件配置项详解见 [COMPONENTS.md](COMPONENTS.md)；完整键清单可在 WebUI「配置」页查看。
 
 ## 管理接口令牌

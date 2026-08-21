@@ -16,6 +16,7 @@ import (
 	lua "github.com/yuin/gopher-lua"
 
 	"rocksys/internal/chain"
+	"rocksys/internal/conf"
 	"rocksys/internal/hotswap"
 )
 
@@ -42,9 +43,9 @@ type ScriptVersion struct {
 
 // ScriptInfo 脚本概要（供 WebUI /admin/script/list 输出）。
 type ScriptInfo struct {
-	Name          string        `json:"name"`
-	CurrentVersion int          `json:"current_version"`
-	Versions      []ScriptVerInfo `json:"versions"`
+	Name           string          `json:"name"`
+	CurrentVersion int             `json:"current_version"`
+	Versions       []ScriptVerInfo `json:"versions"`
 }
 
 // ScriptVerInfo 单个历史版本概要（供 WebUI 版本时间线展示）。
@@ -56,9 +57,9 @@ type ScriptVerInfo struct {
 // scriptsSnapshot 不可变脚本快照（§6.2/§15）：Publish/Rollback/Start 整体重建后原子替换，
 // 在途请求的 Handle 持旧快照继续，保证并发安全。
 type scriptsSnapshot struct {
-	scripts map[string]*ScriptVersion          // 当前生效脚本（按名字）
-	history map[string][]*ScriptVersion        // 各脚本全部发布历史（按版本升序），供回滚
-	nextVer int                                // 版本号单调递增计数器
+	scripts map[string]*ScriptVersion   // 当前生效脚本（按名字）
+	history map[string][]*ScriptVersion // 各脚本全部发布历史（按版本升序），供回滚
+	nextVer int                         // 版本号单调递增计数器
 }
 
 // newSnapshot 返回空快照，版本号从 1 开始。
@@ -85,20 +86,28 @@ func (s *scriptsSnapshot) names() []string {
 // scripts 存于 atomic.Value 不可变快照；mu 仅保护 Publish/Rollback/Start 的
 // 读改写序列（保证版本号单调唯一），Handle 只原子读快照、不持锁。
 type Engine struct {
-	scripts atomic.Value        // *scriptsSnapshot（不可变快照）
-	vmPool  sync.Pool           // Lua VM 池（沙箱化、移除非安全全局函数）
-	timeout time.Duration       // 执行超时，默认 100ms
-	mu      sync.Mutex          // 序列化脚本快照的读改写
+	scripts atomic.Value  // *scriptsSnapshot（不可变快照）
+	vmPool  sync.Pool     // Lua VM 池（沙箱化、移除非安全全局函数）
+	timeout time.Duration // 执行超时，默认 100ms
+	cfg     conf.Manager  // 配置中心（注册 SCRIPT_ENABLED）
+	enabled bool          // *bool 注册：SCRIPT_ENABLED
+	mu      sync.Mutex    // 序列化脚本快照的读改写
 }
 
 // New 创建脚本引擎。timeout<=0 时使用默认 100ms。
-func New(timeout time.Duration) *Engine {
+// cfgMgr 用于注册 SCRIPT_ENABLED 开关（可传 nil，测试/极简场景跳过注册）。
+func New(timeout time.Duration, cfgMgr conf.Manager) *Engine {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	e := &Engine{timeout: timeout}
+	e := &Engine{timeout: timeout, cfg: cfgMgr}
 	e.scripts.Store(newSnapshot())
 	e.vmPool = sync.Pool{New: func() any { return e.newVM() }}
+	if cfgMgr != nil {
+		if err := cfgMgr.Register(&e.enabled, "SCRIPT_ENABLED", "false", "是否启用 Lua 策略引擎（false=不挂载）"); err != nil {
+			log.Warn("script: 注册配置项失败", "name", "SCRIPT_ENABLED", "err", err)
+		}
+	}
 	return e
 }
 

@@ -39,6 +39,7 @@ type copyTargets struct {
 type Copy struct {
 	cfg     conf.Manager
 	targets string       // COPY_TARGETS 配置字符串（*string 注册，easyconf 自动写入）
+	enabled bool         // *bool 注册：COPY_ENABLED
 	snap    atomic.Value // 持有 *copyTargets 不可变快照
 }
 
@@ -57,6 +58,9 @@ func New(cfgMgr conf.Manager) *Copy {
 			"请求抄送目标（逗号分隔的 shadow 后端 URL，空=关闭）",
 			"示例：http://shadow-a:9100;http://shadow-b:9100"); err != nil {
 			log.Warn("copy: 注册配置项失败", "name", "COPY_TARGETS", "err", err)
+		}
+		if err := cfgMgr.Register(&c.enabled, "COPY_ENABLED", "false", "是否启用请求抄送（false=不挂载）"); err != nil {
+			log.Warn("copy: 注册配置项失败", "name", "COPY_ENABLED", "err", err)
 		}
 	}
 	return c

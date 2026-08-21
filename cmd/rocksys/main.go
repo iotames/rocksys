@@ -68,7 +68,7 @@ type Server struct {
 	eng      *engine.Engine
 	mgr      *hotswap.Manager
 	adminSrv *adminapi.AdminServer
-	dataDB   *db.DB                 // 统一数据访问层（DB_DRIVER/DB_DSN），mq 等插件复用；nil 表示未启用
+	dataDB   *db.DB                // 统一数据访问层（DB_DRIVER/DB_DSN），mq 等插件复用；nil 表示未启用
 	recorder *shield.EventRecorder // WAF 拦截事件记录器（dataDB 就绪时创建，setter 注入 shield；nil 表示未启用）
 }
 
@@ -271,7 +271,7 @@ func buildServer(args []string) (*Server, error) {
 	if err := cfgMgr.Register(&scriptTimeoutMS, "SCRIPT_TIMEOUT", "100", "Lua 脚本执行超时(毫秒)", "装配期生效，热更后需重启"); err != nil {
 		return nil, fmt.Errorf("register SCRIPT_TIMEOUT: %w", err)
 	}
-	mgr.RegisterMiddleware(script.New(time.Duration(scriptTimeoutMS) * time.Millisecond)) // Lua 策略 → chain.Middle
+	mgr.RegisterMiddleware(script.New(time.Duration(scriptTimeoutMS)*time.Millisecond, cfgMgr)) // Lua 策略 → chain.Middle
 
 	// 统一数据访问层（§? 数据访问层）：为可插拔组件（obs/mq 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
 	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）。
@@ -453,6 +453,29 @@ func buildServer(args []string) (*Server, error) {
 	if err := adminSrv.RegisterWebUI(webui.FS); err != nil {
 		return nil, fmt.Errorf("register webui static: %w", err)
 	}
+
+	// 挂件自动开关映射：中间件名 → XXX_ENABLED 配置键。
+	// 统一语义：XXX_ENABLED = 该挂件是否生效（默认 false 全关）——
+	//   .env 写 true → 重启自动挂载（ApplyAutoEnable 初始同步）；
+	//   switch on/off → adminapi 持久化回 .env（重启后按配置恢复）；
+	//   配置热更 → hotswap.applyAutoEnable 联动挂载/摘除（两态永不分裂）。
+	// ★ 独立组件（config/registry/object）无"HTTP 流动/观测"行为、无 ENABLED 概念，不纳入；
+	//   mq 已由 MQ_ENABLED 条件装配控制，维持现状。
+	autoEnableMap := map[string]string{
+		"shield":   "SHIELD_ENABLED",
+		"trace":    "TRACE_ENABLED",
+		"auth":     "AUTH_ENABLED",
+		"dispatch": "DISPATCH_ENABLED",
+		"rewrite":  "REWRITE_ENABLED",
+		"script":   "SCRIPT_ENABLED",
+		"obs":      "OBS_ENABLED",
+		"copy":     "COPY_ENABLED",
+		"result":   "RESULT_ENABLED",
+	}
+	mgr.SetAutoEnableMap(autoEnableMap)
+	adminSrv.SetAutoEnableMap(autoEnableMap) // switch on/off 持久化到 .env（重启后按配置恢复）
+	// 启动初始同步：按 .env/环境变量中的 XXX_ENABLED 自动挂载对应中间件（默认全 false → 全不挂载）。
+	mgr.ApplyAutoEnable()
 
 	// 启动外挂文件统一内容中枢监控循环（★ 全部子目录已注册完成：sql/rules/trusted_proxies；
 	// 幂等，重复调用无害）。此后外挂文件变更 ≤ HOT_FILES_WATCH_INTERVAL 内自动生效。

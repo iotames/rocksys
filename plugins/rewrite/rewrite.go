@@ -47,12 +47,13 @@ type rewriteTable struct {
 // Rewrite 转发前改写中间件（chain.Middle 槽位）。
 // 运行态存于不可变快照，经 atomic.Value 原子替换，保证 Start 与在途 Handle 并发安全。
 type Rewrite struct {
-	cfg   conf.Manager
-	rules string       // REWRITE_RULES 配置字符串（*string 注册，easyconf 自动写入）
-	rt    atomic.Value // 持有 *rewriteTable 不可变快照
+	cfg     conf.Manager
+	rules   string       // REWRITE_RULES 配置字符串（*string 注册，easyconf 自动写入）
+	enabled bool         // *bool 注册：REWRITE_ENABLED
+	rt      atomic.Value // 持有 *rewriteTable 不可变快照
 }
 
-// New 创建改写挂件并注册 REWRITE_RULES 配置项。
+// New 创建改写挂件并注册 REWRITE_RULES/REWRITE_ENABLED 配置项。
 func New(cfgMgr conf.Manager) *Rewrite {
 	r := &Rewrite{cfg: cfgMgr}
 	r.rt.Store(&rewriteTable{})
@@ -61,6 +62,9 @@ func New(cfgMgr conf.Manager) *Rewrite {
 			"转发前改写规则（<prefix>=<spec>[;<spec>...]，逗号分隔。spec=uri|<new_prefix> 或 header=<name>:<value>）",
 			"示例：/api/v1/=uri|/api/[;header=X-Proxy-Tag:rewrite"); err != nil {
 			log.Warn("rewrite: 注册配置项失败", "name", "REWRITE_RULES", "err", err)
+		}
+		if err := cfgMgr.Register(&r.enabled, "REWRITE_ENABLED", "false", "是否启用 L2 转发前改写（false=不挂载）"); err != nil {
+			log.Warn("rewrite: 注册配置项失败", "name", "REWRITE_ENABLED", "err", err)
 		}
 	}
 	return r

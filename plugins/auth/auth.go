@@ -48,7 +48,6 @@ func (v *Verifier) Verify(token string) (map[string]interface{}, error) {
 
 // authSnapshot 不可变运行态快照（整体重建后原子替换，§6.2/§6.3）。
 type authSnapshot struct {
-	enabled  bool
 	verifier *Verifier
 	ttl      time.Duration
 }
@@ -61,6 +60,7 @@ type Auth struct {
 	cfg *conf.Manager
 
 	// 配置项挂件字段（构造时由 cfgMgr.Register 注册，Start 时读取重建快照）。
+	// ★ AUTH_ENABLED 是挂载开关（配置中心唯一真源）：挂载即认证，内部不再读取本字段。
 	enabled bool
 	secret  string
 	issuer  string
@@ -81,7 +81,7 @@ func New(cfg *conf.Manager) *Auth {
 		defval string
 		title  string
 	}{
-		{&a.enabled, "AUTH_ENABLED", "true", "是否启用 JWT 认证"},
+		{&a.enabled, "AUTH_ENABLED", "false", "是否启用 JWT 认证（false=不挂载；true=挂载并认证）"},
 		{&a.secret, "AUTH_JWT_SECRET", "", "JWT 签名密钥"},
 		{&a.issuer, "AUTH_JWT_ISSUER", "rocksys", "JWT 签发方"},
 		{&a.ttlSec, "AUTH_JWT_TTL", "3600", "JWT 有效期(秒)"},
@@ -103,7 +103,6 @@ func (a *Auth) Slot() chain.Slot { return chain.Head }
 // Start 从配置项字段读取最新值，重建不可变快照并原子替换。
 func (a *Auth) Start(_ any) error {
 	snap := &authSnapshot{
-		enabled:  a.enabled,
 		verifier: newVerifier(a.issuer, a.secret),
 		ttl:      time.Duration(a.ttlSec) * time.Second,
 	}
@@ -126,7 +125,7 @@ func (a *Auth) current() *authSnapshot {
 // 无 token 或校验失败返回 401。返回 true 表示继续转发链，false 表示已写响应并中断。
 func (a *Auth) Handle(ctx *chain.Context) (next bool) {
 	snap := a.current()
-	if snap == nil || !snap.enabled {
+	if snap == nil {
 		return true
 	}
 	token := bearerToken(ctx.R)

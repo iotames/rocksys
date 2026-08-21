@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -66,6 +67,7 @@ type AdminServer struct {
 	users        *userStore         // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
 	auth         *adminAuth         // 管理接口鉴权器
 	loginLimiter *loginLimiter      // 登录失败限流器（按 IP）
+	autoMap      map[string]string  // 挂件自动开关映射：中间件名 → XXX_ENABLED 配置键（switch on/off 时持久化）
 	version      string             // 构建期版本号（与 --version 同源，经 SetVersionInfo 注入）
 	buildTime    string             // 构建时间
 	goVersion    string             // 编译用 Go 版本
@@ -261,13 +263,52 @@ func (s *AdminServer) requireAuth() func(func(httpsvr.Context)) func(httpsvr.Con
 	}
 }
 
-// handleSwitchOn 开启组件：{"name":"shield"} → hotswapMgr.Enable。
+// SetAutoEnableMap 注入挂件自动开关映射：中间件名 → XXX_ENABLED 配置键。
+// 装配方（cmd/rocksys/main.go）注入；switch on/off 成功后据此持久化到 .env
+// （conf.Set 复用「热更即持久化」机制），保证重启后挂载状态按配置恢复。
+func (s *AdminServer) SetAutoEnableMap(autoMap map[string]string) {
+	s.autoMap = make(map[string]string, len(autoMap))
+	for k, v := range autoMap {
+		s.autoMap[k] = v
+	}
+}
+
+// persistSwitch 将 switch 结果持久化到配置中心（写回 .env，重启后按配置恢复）。
+// 仅 autoMap 中的中间件持久化；独立组件（config/registry/object 等）无 ENABLED 概念，跳过。
+// 返回 error 表示配置未生效或落盘失败（此时调用方须知晓：持久化未成功）。
+func (s *AdminServer) persistSwitch(name, value string) error {
+	key, ok := s.autoMap[name]
+	if !ok || s.confMgr == nil {
+		return nil
+	}
+	if err := s.confMgr.Set(key, value); err != nil {
+		return err
+	}
+	// 校验持久化结果：conf.Set 对未注册 key 静默 no-op，此处显式确认，避免"操作成功但配置未落"。
+	for _, it := range s.confMgr.List() {
+		if it.Key == key {
+			if it.Current != value {
+				return fmt.Errorf("%s 未生效（当前=%s）", key, it.Current)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("%s 未注册，无法持久化", key)
+}
+
+// handleSwitchOn 开启组件：{"name":"shield"} → 先持久化 XXX_ENABLED=true，再挂载。
+// ★ 顺序固定为"先配置后状态"：conf.Set 先行更新内存并广播，任何并发热更读到的是新值，
+// 不会反向摘除刚挂载的实体；随后的 Enable 幂等（若热更已自动挂载则直接跳过）。
 func (s *AdminServer) handleSwitchOn(ctx httpsvr.Context) {
 	var body struct {
 		Name string `json:"name"`
 	}
 	if err := ctx.GetPostJson(&body); err != nil || body.Name == "" {
 		_ = ctx.Json(map[string]any{"ok": false, "error": "invalid body, require {\"name\":\"...\"}"}, http.StatusBadRequest)
+		return
+	}
+	if err := s.persistSwitch(body.Name, "true"); err != nil {
+		_ = ctx.Json(map[string]any{"ok": false, "error": err.Error()}, http.StatusInternalServerError)
 		return
 	}
 	if err := s.hotswapMgr.Enable(body.Name); err != nil {
@@ -277,13 +318,18 @@ func (s *AdminServer) handleSwitchOn(ctx httpsvr.Context) {
 	_ = ctx.Json(map[string]any{"ok": true}, http.StatusOK)
 }
 
-// handleSwitchOff 关闭组件：{"name":"shield"} → hotswapMgr.Disable。
+// handleSwitchOff 关闭组件：{"name":"shield"} → 先持久化 XXX_ENABLED=false，再摘除。
+// 顺序约定同 handleSwitchOn：先配置后状态，并发热更读到的必是新值。
 func (s *AdminServer) handleSwitchOff(ctx httpsvr.Context) {
 	var body struct {
 		Name string `json:"name"`
 	}
 	if err := ctx.GetPostJson(&body); err != nil || body.Name == "" {
 		_ = ctx.Json(map[string]any{"ok": false, "error": "invalid body, require {\"name\":\"...\"}"}, http.StatusBadRequest)
+		return
+	}
+	if err := s.persistSwitch(body.Name, "false"); err != nil {
+		_ = ctx.Json(map[string]any{"ok": false, "error": err.Error()}, http.StatusInternalServerError)
 		return
 	}
 	if err := s.hotswapMgr.Disable(body.Name); err != nil {

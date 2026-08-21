@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,6 +33,9 @@ type Manager struct {
 	lastSwitch       map[string]time.Time           // 实体最近一次状态切换时间
 	message          map[string]string              // 实体最近一次操作消息/故障信息
 	hub              *ScriptHub                     // 外挂文件统一内容中枢（可选；装配方注入，Shutdown 时随管理器一并停止监控循环）
+	autoMap          map[string]string              // 挂件自动开关映射：中间件名 → XXX_ENABLED 配置键（启动/热更按配置值联动挂载）
+	regOrder         []string                       // 中间件注册顺序（自动挂载时按注册顺序挂链，保证链顺序确定）
+	lifecycleMu      sync.Mutex                     // 串行化 Enable/Disable 的"检查→Start→挂链/摘链→置位"，消除并发双调用竞态（switch 显式调用与热更联动并发时）
 	mu               sync.RWMutex
 }
 
@@ -47,9 +51,10 @@ func NewManager(ch *chain.Chain, cfgMgr conf.Manager) *Manager {
 		startedAt:        make(map[string]time.Time),
 		lastSwitch:       make(map[string]time.Time),
 		message:          make(map[string]string),
+		autoMap:          make(map[string]string),
 	}
 	if cfgMgr != nil {
-		// 订阅配置热更（§6.4）：收到变更仅对 State == StateEnabled 的实体走流程 C。
+		// 订阅配置热更（§6.4）：先按 XXX_ENABLED 联动挂载/摘除，再对 Enabled 实体走流程 C。
 		// Start 的 cfg 按 §6.3 约定传 nil——实体内部自行从 conf.Manager.Current() 读取最新配置。
 		cfgMgr.Watch(func(*conf.Config) {
 			m.hotReload()
@@ -99,21 +104,108 @@ func (m *Manager) RegisterMiddleware(ml MiddlewareLifecycle) {
 	if _, ok := m.middlewareStates[name]; !ok {
 		m.middlewareStates[name] = StateDisabled
 	}
+	// 记录注册顺序：自动挂载（ApplyAutoEnable）时按此顺序挂链，保证链顺序确定。
+	for _, n := range m.regOrder {
+		if n == name {
+			return // 已记录，幂等
+		}
+	}
+	m.regOrder = append(m.regOrder, name)
+}
+
+// SetAutoEnableMap 注入挂件自动开关映射：中间件名 → XXX_ENABLED 配置键。
+// 装配完成后须调用 ApplyAutoEnable 做初始同步；此后配置热更（conf.Watch）
+// 会自动按配置值联动挂载/摘除（hotReload 内调用 applyAutoEnable），
+// 保证"配置中心是挂载状态的唯一真源"、两态永不分裂。
+func (m *Manager) SetAutoEnableMap(autoMap map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.autoMap = make(map[string]string, len(autoMap))
+	for k, v := range autoMap {
+		m.autoMap[k] = v
+	}
+}
+
+// ApplyAutoEnable 启动时按当前配置值同步挂载状态（幂等，可重复调用）。
+// 对 autoMap 中每个中间件：配置值为 true 且未挂载 → Enable；false 且已挂载 → Disable。
+// Enable/Disable 失败仅记录告警，不阻断启动。
+func (m *Manager) ApplyAutoEnable() {
+	m.applyAutoEnable()
+}
+
+// applyAutoEnable 按配置当前值联动挂载/摘除（启动初始同步与配置热更共用）。
+// 读取配置：conf.Manager.List() 的 Current（当前生效值，含 .env/环境变量覆盖）。
+// 按 regOrder（注册顺序）处理，保证链上中间件顺序确定。
+// 返回值：本次热更中由本函数新挂载的中间件名集合（供 hotReload 跳过重复 Start）。
+func (m *Manager) applyAutoEnable() map[string]bool {
+	m.mu.RLock()
+	confMgr := m.confMgr
+	autoMap := m.autoMap
+	order := append([]string(nil), m.regOrder...)
+	m.mu.RUnlock()
+	if confMgr == nil || len(autoMap) == 0 {
+		return nil
+	}
+
+	// 从配置中心读取全部 XXX_ENABLED 当前值（启动/热更低频，全量遍历可接受）。
+	want := make(map[string]bool, len(autoMap))
+	for _, it := range confMgr.List() {
+		for name, key := range autoMap {
+			if it.Key == key {
+				if v, err := strconv.ParseBool(it.Current); err == nil {
+					want[name] = v
+				}
+			}
+		}
+	}
+
+	newly := make(map[string]bool)
+	for _, name := range order {
+		w, ok := want[name]
+		if !ok {
+			continue // 配置未注册或不可解析，跳过
+		}
+		m.mu.RLock()
+		st := m.middlewareStates[name]
+		m.mu.RUnlock()
+		if w && st != StateEnabled {
+			if err := m.Enable(name); err != nil {
+				log.Warn("hotswap: auto enable failed", "name", name, "err", err.Error())
+			} else {
+				newly[name] = true
+			}
+		} else if !w && st == StateEnabled {
+			if err := m.Disable(name); err != nil {
+				log.Warn("hotswap: auto disable failed", "name", name, "err", err.Error())
+			}
+		}
+	}
+	return newly
 }
 
 // Enable 开启/挂载实体（§6.3 流程 A）。
 // 查找顺序：先中间件后组件。Start 成功 → 链中间件 chain.Add 追加到槽位 + 簿记 Enabled；
 // 组件簿记 StartedAt/LastSwitchAt。Start 失败 → 保持 Disabled，记录故障+告警（不中断服务）。
+// ★ 挂载变更整体持 lifecycleMu 串行化：switch 显式调用与配置热更联动（applyAutoEnable）
+// 可能并发触发同一实体的 Enable/Disable，串行后第二个进入时幂等检查（锁内）即命中，
+// 避免 Start 双调/重复挂链。
 func (m *Manager) Enable(name string) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	m.mu.RLock()
 	ml, isMiddleware := m.middlewares[name]
 	comp, isComponent := m.components[name]
+	var st State
+	if isMiddleware {
+		st = m.middlewareStates[name] // 幂等检查与簿记写同受 m.mu 保护（Shutdown 不经 lifecycleMu，锁外直读会竞争）
+	}
 	m.mu.RUnlock()
 
 	now := time.Now()
 	switch {
 	case isMiddleware:
-		if m.middlewareStates[name] == StateEnabled {
+		if st == StateEnabled {
 			return nil // 幂等：已启用不重复挂载
 		}
 		if err := ml.Start(nil); err != nil {
@@ -154,16 +246,24 @@ func (m *Manager) Enable(name string) error {
 // Disable 关闭/摘除实体（§6.3 流程 B）——统一语义：从链上摘除，绝不"保持挂载但放行"。
 // 链中间件：chain.Remove 仅移除目标（在途请求持旧快照继续）→ 排空 → Stop → 置 Disabled。
 // 独立组件：自身业务排空由 Stop 内部完成，此处直接调用 Stop。
+// ★ 与 Enable 同持 lifecycleMu 串行化（见 Enable 注释），排空最长 10s 会阻塞其他挂载变更（可接受）。
 func (m *Manager) Disable(name string) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	m.mu.RLock()
 	ml, isMiddleware := m.middlewares[name]
 	comp, isComponent := m.components[name]
+	var st State
+	if isMiddleware {
+		st = m.middlewareStates[name] // 幂等检查与簿记写同受 m.mu 保护（Shutdown 不经 lifecycleMu）
+	}
 	m.mu.RUnlock()
 
 	now := time.Now()
 	switch {
 	case isMiddleware:
-		if m.middlewareStates[name] == StateDisabled {
+		if st == StateDisabled {
 			return nil // 幂等：已摘除
 		}
 		// 1. 从链上摘除（仅移除目标，同槽位其他中间件不受影响）
@@ -321,14 +421,19 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 }
 
 // hotReload 配置热更（§6.3 流程 C / §6.4）。
-// 仅对 State == StateEnabled 的中间件/组件执行：调用 Start(nil) 重建内部快照并原子替换。
+// ① 先按 XXX_ENABLED 配置值联动挂载/摘除（applyAutoEnable：配置中心是挂载状态唯一真源）；
+// ② 再对 State == StateEnabled 的中间件/组件执行：调用 Start(nil) 重建内部快照并原子替换。
 // Start 失败 → 保留旧快照（实例继续以旧配置服务），记录故障+告警。
 // StateDisabled 的实体不响应配置热更事件（其配置变更将在下次 Enable 时经 Start 首次生效）。
 func (m *Manager) hotReload() {
+	// ① 先按 XXX_ENABLED 配置值联动挂载/摘除（applyAutoEnable：配置中心是挂载状态唯一真源）。
+	// 新挂载的实体已用最新配置 Start（跳过下方流程②的重复 Start）。
+	newly := m.applyAutoEnable()
+
 	m.mu.RLock()
 	mws := make([]MiddlewareLifecycle, 0, len(m.middlewares))
 	for name, ml := range m.middlewares {
-		if m.middlewareStates[name] == StateEnabled {
+		if m.middlewareStates[name] == StateEnabled && !newly[name] {
 			mws = append(mws, ml)
 		}
 	}

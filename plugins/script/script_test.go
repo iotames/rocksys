@@ -25,12 +25,12 @@ func newChainCtx(method, path string) (*chain.Context, *httptest.ResponseRecorde
 }
 
 func TestNewImplementsInterfaces(t *testing.T) {
-	var _ chain.Middleware = New(0)
-	var _ hotswap.MiddlewareLifecycle = New(0)
+	var _ chain.Middleware = New(0, nil)
+	var _ hotswap.MiddlewareLifecycle = New(0, nil)
 }
 
 func TestEngine_SlotName(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	if e.Name() != "script" {
 		t.Errorf("Name()=%q, want script", e.Name())
 	}
@@ -40,7 +40,7 @@ func TestEngine_SlotName(t *testing.T) {
 }
 
 func TestHandle_BlockByPath(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	// 发布脚本：路径 /block 时直接 403 响应（§15 验收场景）。
 	_, err := e.Publish("test", `if req.path() == "/block" then ctx.respond(403, "blocked") end`)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestHandle_BlockByPath(t *testing.T) {
 }
 
 func TestHandle_SetTarget(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	_, err := e.Publish("s", `if req.path() == "/api" then ctx.set_target("http://svc:9001") end`)
 	if err != nil {
 		t.Fatalf("Publish err: %v", err)
@@ -85,7 +85,7 @@ func TestHandle_SetTarget(t *testing.T) {
 }
 
 func TestHandle_ReqRead(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	_, err := e.Publish("t", `
         if req.method() == "DELETE" then ctx.respond(405, "no delete") end
     `)
@@ -105,7 +105,7 @@ func TestHandle_ReqRead(t *testing.T) {
 }
 
 func TestPublish_RejectSandbox(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	malicious := []string{
 		`os.execute("rm -rf /")`,
 		`require("os")`,
@@ -131,7 +131,7 @@ func TestPublish_RejectSandbox(t *testing.T) {
 }
 
 func TestSandbox_RejectRequireDangerous(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	_, err := e.Publish("x", `local os = require("os")`)
 	if err == nil {
 		t.Fatal("require(\"os\") 应被沙箱拦截")
@@ -139,7 +139,7 @@ func TestSandbox_RejectRequireDangerous(t *testing.T) {
 }
 
 func TestPublish_VersionMonotonic(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	v1, err := e.Publish("r", `ctx.respond(403, "v1")`)
 	if err != nil {
 		t.Fatalf("Publish v1 err: %v", err)
@@ -154,7 +154,7 @@ func TestPublish_VersionMonotonic(t *testing.T) {
 }
 
 func TestRollback_RemoveAndRestore(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	// 发布 /block 阻断 v1。
 	_, err := e.Publish("r", `if req.path() == "/block" then ctx.respond(403, "b1") end`)
 	if err != nil {
@@ -195,7 +195,7 @@ func TestRollback_RemoveAndRestore(t *testing.T) {
 }
 
 func TestRollback_UnknownError(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	if _, err := e.Publish("r", `print("hi")`); err != nil {
 		t.Fatalf("Publish err: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestRollback_UnknownError(t *testing.T) {
 }
 
 func TestHandle_TimeoutInterruptsLoop(t *testing.T) {
-	e := New(5 * time.Millisecond)
+	e := New(5*time.Millisecond, nil)
 	if _, err := e.Publish("loop", `while true do end`); err != nil {
 		t.Fatalf("Publish err: %v", err)
 	}
@@ -230,7 +230,7 @@ func newMgr(t *testing.T) *hotswap.Manager {
 	t.Helper()
 	ch := chain.New()
 	mgr := hotswap.NewManager(ch, nil)
-	mgr.RegisterMiddleware(New(0))
+	mgr.RegisterMiddleware(New(0, nil))
 	return mgr
 }
 
@@ -315,7 +315,7 @@ func TestAdmin_EngineNotRegistered(t *testing.T) {
 }
 
 func TestListScripts(t *testing.T) {
-	e := New(0)
+	e := New(0, nil)
 	if got := e.ListScripts(); len(got) != 0 {
 		t.Fatalf("未发布时 ListScripts 应为空, got %v", got)
 	}

@@ -20,21 +20,23 @@
 
 ### 可选增强挂件（默认全关，可热开关）
 
-| 挂件 | 作用 | 挂载 |
-|------|------|------|
-| **shield** | L1 防护：IP 黑白名单、路径/UA 规则、令牌桶限流、WAF（SQL/XSS/路径遍历/风险路径/爬虫 UA，规则外置文件可热改） | Head |
-| **trace** | trace_id 透传 | Head |
-| **auth** | JWT 认证 | Head |
-| **dispatch** | L2 路由分发：Radix Tree 前缀树（支持参数 `:id`、通配 `*`、最长匹配）、节点组、平滑加权轮询 / 一致性哈希、主动健康检查、高优/备份节点 | Middle |
-| **rewrite** | 转发前改写 URI / 请求头 | Middle |
-| **script** | RockScript：Lua 策略引擎（网关策略，不承载业务逻辑） | Middle |
-| **obs** | RockObs：访问日志（异步落盘）+ 指标聚合 + 查询 API | Tail |
-| **copy** | 请求抄送：复制流量异步发送到 shadow 后端（审计/影子验证） | Tail |
-| **result** | L3 结果处理：响应封装 / 字段脱敏 | Tail |
-| **config** | RockConfig：配置热更下发 | 独立组件 |
-| **registry** | RockRegistry：服务注册与发现 | 独立组件 |
-| **object** | RockObject：对象存储（S3 兼容） | 独立组件 |
-| **mq** | RockMQ：异步消息（Outbox 模式） | 独立组件 |
+| 挂件 | 作用 | 挂载 | 父开关 | 子开关 / 内部子组件 |
+|------|------|------|--------|---------------------|
+| **shield** | L1 防护：IP 黑白名单、路径/UA 规则、令牌桶限流、WAF（SQL/XSS/路径遍历/风险路径/爬虫 UA，规则外置文件可热改） | Head | `SHIELD_ENABLED` | 子开关：WAF 五项检测 `SHIELD_WAF_SQL_INJECTION` / `_XSS` / `_PATH_TRAVERSAL` / `_RISK_PATH` / `_CRAWLER_UA`；拦截事件落库 `SHIELD_EVENT_LOG_ENABLED` / `SHIELD_EVENT_PRUNE_ENABLED` |
+| **trace** | trace_id 透传 | Head | `TRACE_ENABLED` | — |
+| **auth** | JWT 认证 | Head | `AUTH_ENABLED` | — |
+| **dispatch** | L2 路由分发：Radix Tree 前缀树（支持参数 `:id`、通配 `*`、最长匹配）、节点组、平滑加权轮询 / 一致性哈希、主动健康检查、高优/备份节点 | Middle | `DISPATCH_ENABLED` | 内部子组件：Radix Tree 路由引擎（router.go）、平滑加权轮询（balancer.go）、一致性哈希（chash.go）、主动健康检查（healthcheck.go） |
+| **rewrite** | 转发前改写 URI / 请求头 | Middle | `REWRITE_ENABLED` | — |
+| **script** | RockScript：Lua 策略引擎（网关策略，不承载业务逻辑） | Middle | `SCRIPT_ENABLED` | — |
+| **obs** | RockObs：访问日志（异步落盘）+ 指标聚合 + 查询 API | Tail | `OBS_ENABLED` | 子开关：access_log 自动清理 `OBS_LOG_PRUNE_ENABLED`；存储后端 `OBS_STORE`（`db`\|`file`） |
+| **copy** | 请求抄送：复制流量异步发送到 shadow 后端（审计/影子验证） | Tail | `COPY_ENABLED` | `COPY_TARGETS` 为空即不发送 |
+| **result** | L3 结果处理：响应封装 / 字段脱敏 | Tail | `RESULT_ENABLED` | 功能项：响应封装 `RESULT_WRAP`、字段脱敏 `RESULT_MASK_FIELDS` |
+| **config** | RockConfig：配置热更下发 | 独立组件 | 无（无条件注册） | — |
+| **registry** | RockRegistry：服务注册与发现 | 独立组件 | 无（无条件注册） | — |
+| **object** | RockObject：对象存储（S3 兼容） | 独立组件 | 无（无条件注册） | — |
+| **mq** | RockMQ：异步消息（Outbox 模式） | 独立组件 | `MQ_ENABLED`（条件装配） | 内部：outbox 表建于统一数据访问层业务库，与业务数据同库 |
+
+> 父子开关语义：父开关（`XXX_ENABLED`）关闭 = 挂件不挂载，其下所有子开关一律不生效；父开关开启后，各子开关按自身值决定对应子功能是否启动。配置项详解见 [docs/COMPONENTS.md](docs/COMPONENTS.md)。
 
 ### 降级链（高可用的真正含义）
 

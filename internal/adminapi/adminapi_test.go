@@ -341,3 +341,69 @@ func TestRequireAuth(t *testing.T) {
 		t.Fatal("携带正确 token 应放行")
 	}
 }
+
+// switch on/off 应持久化 XXX_ENABLED 到配置中心（写回 .env，重启后按配置恢复）。
+func TestHandleSwitchPersist(t *testing.T) {
+	cfgMgr, mgr, _ := setup(t)
+	// 模拟插件注册 SHIELD_ENABLED（默认 false）。
+	var shieldEnabled bool
+	if err := cfgMgr.Register(&shieldEnabled, "SHIELD_ENABLED", "false", "测试"); err != nil {
+		t.Fatalf("Register SHIELD_ENABLED: %v", err)
+	}
+	s := New("127.0.0.1:19527", cfgMgr, mgr, nil)
+	s.SetAutoEnableMap(map[string]string{"shield": "SHIELD_ENABLED"})
+
+	// switch on → 挂载 + 持久化 SHIELD_ENABLED=true。
+	ctx := newCtx(http.MethodPost, PathSwitchOn, `{"name":"shield"}`)
+	s.handleSwitchOn(ctx)
+	if out := decode(t, ctx); out["ok"] != true {
+		t.Fatalf("switch on 期望 ok:true，得到 %v", out)
+	}
+	if !shieldEnabled {
+		t.Fatal("switch on 后 SHIELD_ENABLED 应持久化为 true")
+	}
+	if cur := findConfigCurrent(t, cfgMgr, "SHIELD_ENABLED"); cur != "true" {
+		t.Fatalf("配置中心 SHIELD_ENABLED 应=true，得到 %q", cur)
+	}
+
+	// switch off → 摘除 + 持久化 SHIELD_ENABLED=false。
+	ctx = newCtx(http.MethodPost, PathSwitchOff, `{"name":"shield"}`)
+	s.handleSwitchOff(ctx)
+	if out := decode(t, ctx); out["ok"] != true {
+		t.Fatalf("switch off 期望 ok:true，得到 %v", out)
+	}
+	if shieldEnabled {
+		t.Fatal("switch off 后 SHIELD_ENABLED 应持久化为 false")
+	}
+	if cur := findConfigCurrent(t, cfgMgr, "SHIELD_ENABLED"); cur != "false" {
+		t.Fatalf("配置中心 SHIELD_ENABLED 应=false，得到 %q", cur)
+	}
+}
+
+// 不在 autoMap 中的实体（独立组件等）switch on/off 不持久化、不报错。
+func TestHandleSwitchNoPersistForNonMapped(t *testing.T) {
+	cfgMgr, mgr, _ := setup(t)
+	s := New("127.0.0.1:19527", cfgMgr, mgr, nil)
+	// 未注入 autoMap（或实体不在映射内）→ persistSwitch 静默跳过。
+	s.SetAutoEnableMap(nil)
+	ctx := newCtx(http.MethodPost, PathSwitchOn, `{"name":"shield"}`)
+	s.handleSwitchOn(ctx)
+	if out := decode(t, ctx); out["ok"] != true {
+		t.Fatalf("期望 ok:true，得到 %v", out)
+	}
+	if mgr.List()[0].State != hotswap.StateEnabled {
+		t.Fatal("switch on 后 shield 未启用")
+	}
+}
+
+// findConfigCurrent 从配置中心 List 中取指定键的当前值。
+func findConfigCurrent(t *testing.T, cfgMgr conf.Manager, key string) string {
+	t.Helper()
+	for _, it := range cfgMgr.List() {
+		if it.Key == key {
+			return it.Current
+		}
+	}
+	t.Fatalf("配置项 %s 未注册", key)
+	return ""
+}
