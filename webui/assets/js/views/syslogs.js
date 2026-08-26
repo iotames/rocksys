@@ -260,8 +260,8 @@
     if (!host) return;
     host.innerHTML =
       Rock.comp.head.headHTML({
-        title: '运行日志',
-        desc: '系统进程实时日志（ring buffer 实时监控），与 HTTP 访问日志分开',
+        title: '系统日志',
+        desc: '系统进程实时日志（ring buffer 实时监控），与 HTTP 入网数据日志分开',
         actions:
           '<button class="btn btn-sm" data-act="syslog-clear">清空</button>' +
           '<button class="btn btn-sm" data-act="syslog-history">⟳ 载入历史</button>',

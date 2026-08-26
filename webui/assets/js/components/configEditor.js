@@ -210,7 +210,9 @@
       store.configListLoaded = true;
       store.configUnavailable = false;
     } catch (e) {
-      if (e.status === 404) store.configUnavailable = true;
+      // 接口不可用（404 / 500 / 网络异常）一律置位：详情页配置页签与全局配置入口
+      // 应提示"接口暂不可用"，而非误判为"该组件无独立配置项"
+      store.configUnavailable = true;
       store.configList = [];
       store.configListLoaded = true;
     }

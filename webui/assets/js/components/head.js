@@ -12,9 +12,11 @@
   const esc = Rock.util.esc;
 
   // 渲染 page-head：title/desc 在左侧子 div，actions（预编译按钮 HTML）在其后
-  function headHTML({ title, desc, actions }) {
+  // title 默认按纯文本转义；如确需内嵌样式标签（如详情页中文名+小号英文名），
+  // 传入 titleHTML（调用方自行转义用户内容），优先级高于 title。
+  function headHTML({ title, titleHTML, desc, actions }) {
     return '<div class="page-head">' +
-      '<div><div class="page-title">' + esc(title) + '</div><div class="page-desc">' + esc(desc) + '</div></div>' +
+      '<div><div class="page-title">' + (titleHTML != null ? titleHTML : esc(title)) + '</div><div class="page-desc">' + esc(desc) + '</div></div>' +
       (actions || '') +
       '</div>';
   }

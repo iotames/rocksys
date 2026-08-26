@@ -49,9 +49,9 @@ flowchart LR
         S9["7 L3 · ⑨ obs<br/>日志落盘 · 指标聚合"]
         S8["7 L3 · ⑧ copy<br/>异步发 shadow"]
         S7["7 L3 · ⑦ result<br/>脱敏 · Envelope · done_biz 取点"]
-        S9 --> S8
-        S8 --> S7
-        S7 --> WR
+        S7 --> S8
+        S8 --> S9
+        S9 --> WR
     end
 
     C -->|"1 进网关"| REQ_GW

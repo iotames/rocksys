@@ -151,25 +151,59 @@
           </svg>
           <span>概览</span>
         </a>
-        <a class="menu-item" data-route="components" href="#/components">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2l10 6-10 6L2 8z"/><path d="M2 14l10 6 10-6"/>
-          </svg>
-          <span>组件</span>
-        </a>
-        <a class="menu-item" data-route="config" href="#/config">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 6h5M13 6h7M4 12h9M17 12h3M4 18h7M15 18h5"/>
-            <circle cx="11" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="13" cy="18" r="2"/>
-          </svg>
-          <span>配置</span>
-        </a>
+
+        <!-- 组件：数据流链中间件，一组件一页 -->
+        <div class="menu-group" id="menu-group-components">
+          <div class="menu-item menu-parent" data-group="components">
+            <span class="menu-parent-label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l10 6-10 6L2 8z"/><path d="M2 14l10 6 10-6"/>
+              </svg>
+              <span>组件</span>
+            </span>
+            <span class="menu-arrow">▾</span>
+          </div>
+          <div class="menu-sub" id="menu-sub-components">
+            <a class="menu-item menu-sub-item" data-route="components/shield" href="#/components/shield"><span>防护</span><i>shield</i></a>
+            <a class="menu-item menu-sub-item" data-route="components/trace" href="#/components/trace"><span>透传</span><i>trace</i></a>
+            <a class="menu-item menu-sub-item" data-route="components/auth" href="#/components/auth"><span>认证</span><i>auth</i></a>
+            <a class="menu-item menu-sub-item" data-route="components/dispatch" href="#/components/dispatch"><span>分发</span><i>dispatch</i></a>
+            <a class="menu-item menu-sub-item" data-route="components/rewrite" href="#/components/rewrite"><span>改写</span><i>rewrite</i></a>
+            <a class="menu-item menu-sub-item" data-route="components/script" href="#/components/script"><span>脚本</span><i>script</i></a>
+            <a class="menu-item menu-sub-item" data-route="components/obs" href="#/components/obs"><span>观测</span><i>obs</i></a>
+            <a class="menu-item menu-sub-item" data-route="components/copy" href="#/components/copy"><span>抄送</span><i>copy</i></a>
+            <a class="menu-item menu-sub-item" data-route="components/result" href="#/components/result"><span>结果</span><i>result</i></a>
+          </div>
+        </div>
+
+        <!-- 服务：数据流无关的独立支撑系统 -->
+        <div class="menu-group" id="menu-group-services">
+          <div class="menu-item menu-parent" data-group="services">
+            <span class="menu-parent-label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/>
+                <circle cx="7" cy="7.5" r="0.8" fill="currentColor"/><circle cx="7" cy="16.5" r="0.8" fill="currentColor"/>
+              </svg>
+              <span>服务</span>
+            </span>
+            <span class="menu-arrow">▾</span>
+          </div>
+          <div class="menu-sub" id="menu-sub-services">
+            <a class="menu-item menu-sub-item" data-route="services/config" href="#/services/config"><span>配置服务</span><i>config</i></a>
+            <a class="menu-item menu-sub-item" data-route="services/registry" href="#/services/registry"><span>注册</span><i>registry</i></a>
+            <a class="menu-item menu-sub-item" data-route="services/object" href="#/services/object"><span>存储</span><i>object</i></a>
+            <a class="menu-item menu-sub-item" data-route="services/mq" href="#/services/mq"><span>消息</span><i>mq</i></a>
+          </div>
+        </div>
+
         <a class="menu-item" data-route="scripts" href="#/scripts">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M8 6l-6 6 6 6"/><path d="M16 6l6 6-6 6"/>
           </svg>
           <span>脚本</span>
         </a>
+
+        <!-- 观测：安全 / 入网 / 系统三类日志 -->
         <div class="menu-group" id="menu-group-obs">
           <div class="menu-item menu-parent" data-group="obs">
             <span class="menu-parent-label">
@@ -181,46 +215,49 @@
             <span class="menu-arrow">▾</span>
           </div>
           <div class="menu-sub" id="menu-sub-obs">
-            <a class="menu-item menu-sub-item" data-route="metrics" href="#/metrics">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M4 19h16"/>
-              </svg>
-              <span>指标</span>
-            </a>
-            <a class="menu-item menu-sub-item" data-route="waf" href="#/waf" title="WAF 拦截统计：实时计数 / 按日趋势 / Top 攻击源 / 明细">
+            <a class="menu-item menu-sub-item" data-route="waf" href="#/waf" title="WAF安全防护：实时计数 / 按日趋势 / Top 攻击源 / 明细">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/><path d="M12 8v4"/><circle cx="12" cy="15" r="0.5" fill="currentColor"/>
               </svg>
-              <span>拦截统计</span>
+              <span>WAF安全防护</span>
             </a>
             <a class="menu-item menu-sub-item" data-route="logs" href="#/logs">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>
               </svg>
-              <span>访问日志</span>
+              <span>入网数据</span>
             </a>
             <a class="menu-item menu-sub-item" data-route="syslogs" href="#/syslogs">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M4 5h16M4 12h16M4 19h10"/><circle cx="18" cy="19" r="2.5"/>
               </svg>
-              <span>运行日志</span>
+              <span>系统日志</span>
             </a>
           </div>
         </div>
+
+        <!-- 全局配置：基础设施配置，置底 -->
+        <a class="menu-item" data-route="config" href="#/config">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 6h5M13 6h7M4 12h9M17 12h3M4 18h7M15 18h5"/>
+            <circle cx="11" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="13" cy="18" r="2"/>
+          </svg>
+          <span>全局配置</span>
+        </a>
       </nav>
       <div class="sidebar-foot">关闭只是降级，转发永不中断</div>
     </aside>
 
-    <!-- 右侧主内容：6 个视图容器（JS 按路由切换显示） -->
+    <!-- 右侧主内容：8 个视图容器（JS 按路由切换显示；组件/服务详情共用各自容器） -->
     <main class="main" id="main">
       <section class="page" id="page-overview"></section>
       <section class="page hidden" id="page-components"></section>
-      <section class="page hidden" id="page-config"></section>
+      <section class="page hidden" id="page-services"></section>
       <section class="page hidden" id="page-scripts"></section>
-      <section class="page hidden" id="page-metrics"></section>
       <section class="page hidden" id="page-waf"></section>
       <section class="page hidden" id="page-logs"></section>
       <section class="page hidden" id="page-syslogs"></section>
+      <section class="page hidden" id="page-config"></section>
     </main>
   </div>
 </div>
@@ -240,14 +277,14 @@
 <script src="./assets/js/components/empty.js"></script>
 <script src="./assets/js/components/select.js"></script>
 <script src="./assets/js/components/componentState.js"></script>
+<script src="./assets/js/components/dataflow.js"></script>
 <script src="./assets/js/components/metrics.js"></script>
 <script src="./assets/js/components/chart.js"></script>
 <script src="./assets/js/components/configEditor.js"></script>
 <script src="./assets/js/views/overview.js"></script>
-<script src="./assets/js/views/components.js"></script>
+<script src="./assets/js/views/detail.js"></script>
 <script src="./assets/js/views/config.js"></script>
 <script src="./assets/js/views/scripts.js"></script>
-<script src="./assets/js/views/metrics.js"></script>
 <script src="./assets/js/views/waf.js"></script>
 <script src="./assets/js/views/logs.js"></script>
 <script src="./assets/js/views/syslogs.js"></script>

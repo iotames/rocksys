@@ -1,7 +1,8 @@
 /* ==========================================================================
  * RockSys 管理控制台 - main.js 入口
- * 路由与视图切换、侧边栏高亮、顶部工具条（自动刷新 / 手动刷新）、
+ * 路由与视图切换、侧边栏高亮与分组折叠、顶部工具条（自动刷新 / 手动刷新）、
  * 全局事件委托（click / change）、初始化。最后加载，依赖全部模块。
+ * 路由支持参数化：#/components/<name>、#/services/<name>，可带 ?tab=config 查询。
  * 挂载到全局命名空间 window.Rock.main。
  * ========================================================================== */
 (function () {
@@ -14,33 +15,73 @@
   const store = Rock.state.store;
   const views = Rock.views;
 
-  const ROUTES = { overview: 1, components: 1, config: 1, scripts: 1, metrics: 1, waf: 1, logs: 1, syslogs: 1 };
+  // 路由表：1 = 固定页；'param' = 带二级参数（组件/服务详情）
+  const ROUTES = {
+    overview: 1, components: 'param', services: 'param',
+    scripts: 1, config: 1, waf: 1, logs: 1, syslogs: 1,
+  };
+  // 侧边栏可折叠分组（路由 base → 分组 id）
+  const MENU_GROUPS = ['components', 'services', 'obs'];
 
-  function currentRoute() {
-    const h = location.hash.replace(/^#\/?/, '');
-    return ROUTES[h] ? h : 'overview';
+  // 解析 location.hash → { base, param, query }
+  function parseHash() {
+    const raw = location.hash.replace(/^#\/?/, '');
+    const qIdx = raw.indexOf('?');
+    const path = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
+    const qs = qIdx >= 0 ? raw.slice(qIdx + 1) : '';
+    const r = parsePath(path);
+    const query = {};
+    qs.split('&').forEach(kv => {
+      if (!kv) return;
+      const i = kv.indexOf('=');
+      if (i > 0) query[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1));
+    });
+    return { base: r.base, param: r.param, query };
   }
 
+  // 解析路由字符串（如 'components/shield?tab=config'）→ { base, param }
+  function parsePath(str) {
+    const raw = String(str || '').replace(/^#\/?/, '');
+    const qIdx = raw.indexOf('?');
+    const path = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
+    const seg = path.split('/').filter(Boolean);
+    return { base: seg[0] || '', param: seg[1] || '' };
+  }
+
+  function currentRoute() {
+    const r = parseHash();
+    if (!ROUTES[r.base]) return { base: 'overview', param: '', query: {} };
+    return r;
+  }
+
+  // 跳转：navigate('components/shield') 或 navigate('components/shield?tab=config')
   function navigate(route) {
-    if (!ROUTES[route]) route = 'overview';
-    if (route === currentRoute()) { refreshPage(route, {}); return; }
-    location.hash = '/' + route;
+    const r = parsePath(route);
+    if (!ROUTES[r.base]) route = 'overview';
+    const cur = currentRoute();
+    const curFull = (cur.param ? cur.base + '/' + cur.param : cur.base) +
+      (cur.query && cur.query.tab ? '?tab=' + cur.query.tab : '');
+    if (route === curFull) { refreshPage(cur, {}); return; }
+    location.hash = '#/' + route;
   }
 
   function activateNav(route) {
+    const full = route.param ? route.base + '/' + route.param : route.base;
     $$('.menu-item[data-route]').forEach(a => {
-      a.classList.toggle('active', a.getAttribute('data-route') === route);
+      a.classList.toggle('active', a.getAttribute('data-route') === full);
     });
-    const inObs = route === 'metrics' || route === 'waf' || route === 'logs' || route === 'syslogs';
-    const grp = $('#menu-group-obs');
-    if (grp) grp.classList.toggle('open', inObs || grp.classList.contains('open'));
+    // 激活项所在分组自动展开；其余保持用户手动状态
+    MENU_GROUPS.forEach(g => {
+      const grp = $('#menu-group-' + g);
+      if (grp && route.base === g) grp.classList.add('open');
+    });
   }
 
-  // 页面加载器配置（lazy=true 的页面首次进入拉取，之后保留缓存；其余每次进入拉取）
+  // 页面加载器配置（components/services 为详情页，按当前路由参数加载；lazy=true 的页面首次进入拉取）
   const pageLoaders = {
     overview:   { fetch: () => views.overview.load({}), lazy: false },
-    components: { fetch: () => views.components.load({}), lazy: false },
-    metrics:    { fetch: () => views.metrics.load({}), lazy: false },
+    components: { fetch: o => views.detail.load(Object.assign({ type: 'component', name: currentRoute().param, tab: currentRoute().query.tab }, o || {})), lazy: false },
+    services:   { fetch: o => views.detail.load(Object.assign({ type: 'service', name: currentRoute().param, tab: currentRoute().query.tab }, o || {})), lazy: false },
     waf:        { fetch: () => views.waf.load({}), lazy: true },
     config:     { fetch: () => views.config.load({}), lazy: true },
     scripts:    { fetch: () => views.scripts.load({}), lazy: true },
@@ -49,32 +90,31 @@
   };
 
   function refreshPage(route, opts) {
-    const p = pageLoaders[route];
+    const p = pageLoaders[route.base];
     if (!p) return Promise.resolve();
-    return Promise.resolve(p.fetch());
+    return Promise.resolve(p.fetch(opts || {}));
   }
 
-  // 路由切换前的清理钩子：运行日志页离开时关闭 SSE 实时流，避免后台连接泄漏
+  // 路由切换前的清理钩子：系统日志页离开时关闭 SSE 实时流，避免后台连接泄漏
   let prevRoute = '';
   function renderPage(route) {
-    if (prevRoute === 'syslogs' && route !== 'syslogs' && views.syslogs) {
+    if (prevRoute.base === 'syslogs' && route.base !== 'syslogs' && views.syslogs) {
       views.syslogs.leave();
     }
     prevRoute = route;
     $$('.page').forEach(sec => sec.classList.add('hidden'));
-    const page = $('#page-' + route);
+    const page = $('#page-' + route.base);
     if (page) page.classList.remove('hidden');
     activateNav(route);
-    // 懒加载页已加载时直接渲染缓存（config/scripts/logs 保留原行为）
-    const p = pageLoaders[route];
+    const p = pageLoaders[route.base];
     if (p.lazy) {
-      if ((route === 'config' && store.configListLoaded) ||
-          (route === 'scripts' && store.scriptsLoaded) ||
-          (route === 'logs' && store.logsLoaded) ||
-          (route === 'waf' && store.wafLoaded)) {
-        if (route === 'config') views.config.render();
-        else if (route === 'scripts') views.scripts.render();
-        else if (route === 'waf') views.waf.render();
+      if ((route.base === 'config' && store.configListLoaded) ||
+          (route.base === 'scripts' && store.scriptsLoaded) ||
+          (route.base === 'logs' && store.logsLoaded) ||
+          (route.base === 'waf' && store.wafLoaded)) {
+        if (route.base === 'config') views.config.render();
+        else if (route.base === 'scripts') views.scripts.render();
+        else if (route.base === 'waf') views.waf.render();
         else views.logs.render();
       } else {
         p.fetch();
@@ -136,7 +176,7 @@
     renderPruneBanner();
   }
 
-  // 自动刷新（作用于概览 / 组件 / 指标）
+  // 自动刷新（作用于概览 / 组件 / 服务 / WAF安全防护）
   let autoTimer = null;
   function restartAutoRefresh() {
     if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
@@ -145,8 +185,11 @@
     if (v > 0) {
       autoTimer = setInterval(() => {
         const r = currentRoute();
-        if (r === 'overview' || r === 'components' || r === 'metrics' || r === 'waf') {
+        if (r.base === 'overview' || r.base === 'waf') {
           refreshPage(r, { silent: true });
+        } else if (r.base === 'components' || r.base === 'services') {
+          // 配置页签正在编辑时不整页重绘，避免打断输入；状态页签强制拉取最新开关状态
+          if (r.query.tab !== 'config') refreshPage(r, { silent: true, force: true });
         }
       }, v);
     }
@@ -156,14 +199,13 @@
     window.addEventListener('hashchange', function () {
       renderPage(currentRoute());
     });
-    // 侧边栏"观测"分组展开
-    const parent = document.querySelector('.menu-parent');
-    if (parent) {
-      parent.addEventListener('click', function () {
-        const grp = document.getElementById('menu-group-obs');
+    // 侧边栏分组展开（组件 / 服务 / 观测）
+    $$('.menu-parent').forEach(p => {
+      p.addEventListener('click', function () {
+        const grp = document.getElementById('menu-group-' + p.getAttribute('data-group'));
         if (grp) grp.classList.toggle('open');
       });
-    }
+    });
     // 首次渲染
     renderPage(currentRoute());
   }
@@ -184,8 +226,9 @@
     }
     // 窗口尺寸变化时重绘图表
     window.addEventListener('resize', Rock.util.debounce(function () {
-      if (currentRoute() === 'metrics') views.metrics.drawChart();
-      if (currentRoute() === 'waf' && views.waf) views.waf.drawDailyChart();
+      const r = currentRoute();
+      if (r.base === 'overview' && views.overview) views.overview.drawChart();
+      if (r.base === 'waf' && views.waf) views.waf.drawDailyChart();
     }, 200));
   }
 
@@ -232,28 +275,41 @@
 
     switch (act) {
       // ---- 路由跳转 ----
+      case 'goto-overview':
+        navigate('overview');
+        break;
       case 'goto-config':
         navigate('config');
         break;
-      case 'goto-components':
-        navigate('components');
+      case 'goto-scripts':
+        navigate('scripts');
         break;
       case 'go-obs':
-        navigate('components');
+        navigate('components/obs');
         break;
+      case 'nav-detail': {
+        const target = el.getAttribute('data-route') || '';
+        if (target) navigate(target);
+        break;
+      }
 
       // ---- 概览 ----
       case 'overview-reload':
         views.overview.load({ manual: true });
         break;
 
-      // ---- 组件 ----
-      case 'components-reload':
-        views.components.load({ manual: true });
+      // ---- 组件/服务详情 ----
+      case 'detail-reload':
+        refreshPage(currentRoute(), { manual: true });
         break;
-      case 'comp-config':
-        views.components.toggleConfig(name);
+      case 'detail-tab': {
+        const r = currentRoute();
+        views.detail.setTab({
+          type: r.base === 'services' ? 'service' : 'component',
+          name: r.param,
+        }, el.getAttribute('data-tab') || 'state');
         break;
+      }
 
       // ---- 配置 ----
       case 'cfg-tab':
@@ -298,12 +354,7 @@
         views.scripts.openRollback();
         break;
 
-      // ---- 指标 ----
-      case 'metrics-reload':
-        views.metrics.load({ manual: true });
-        break;
-
-      // ---- 拦截统计（WAF 监控）----
+      // ---- WAF安全防护（WAF 监控）----
       case 'waf-reload':
         views.waf.load({ manual: true });
         break;
@@ -383,7 +434,7 @@
         break;
       }
 
-      // ---- 运行日志 ----
+      // ---- 系统日志 ----
       case 'syslog-toggle-stream':
         views.syslogs.toggleStream();
         break;
@@ -398,16 +449,22 @@
     }
   });
 
-  // 组件开关（change 事件，二次确认；失败/取消时还原开关状态）
+  // 组件/服务开关（change 事件，二次确认；失败/取消时还原开关状态）
+  // 概览页卡片开关切换成功后额外刷新概览（详情页由 detail.toggle 自行刷新）
   document.addEventListener('change', function (e) {
-    const el = e.target.closest('[data-act="comp-toggle"]');
+    const el = e.target.closest('[data-act="detail-toggle"]');
     if (!el) return;
     const name = el.getAttribute('data-name');
     const enabling = el.checked;
-    views.components.toggle(name, enabling).then(ok => {
+    const r = currentRoute();
+    const onOverview = r.base === 'overview';
+    const type = el.getAttribute('data-type') === 'service' ? 'service' : 'component';
+    views.detail.toggle(name, enabling, { type: type, tab: r.query.tab || 'state' }).then(ok => {
       if (!ok) {
         el.checked = !enabling;
         if (el.disabled) el.disabled = false;
+      } else if (onOverview) {
+        views.overview.load({ silent: true });
       }
     });
   });
@@ -416,6 +473,7 @@
     boot,
     navigate,
     currentRoute,
+    parseHash,
     renderPage,
     refreshPage,
     restartAutoRefresh,

@@ -288,7 +288,7 @@
     if (!wafQuery.toTime) wafQuery.toTime = '23:59';
     host.innerHTML =
       Rock.comp.head.headHTML({
-        title: '拦截统计',
+        title: 'WAF安全防护',
         desc: 'WAF 防护管理：实时计数、按日趋势、Top 攻击源与明细追溯；黑白名单管理（拦截与放行请求分开记录，互不关联）',
         actions:
           '<button class="btn btn-sm" data-act="waf-reload">⟳ 手动刷新</button>' +

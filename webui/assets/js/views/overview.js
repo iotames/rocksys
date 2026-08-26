@@ -1,7 +1,8 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/overview.js 概览页
- * 网关信息卡 + 运行指标卡 + 降级链可视化 + 组件状态总览。
- * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api / Rock.comp.metrics / Rock.comp.componentState。
+ * 网关信息卡 + 运行指标卡（含趋势图） + HTTP 数据流图 + 组件状态总览（卡片带开关）
+ * + 服务状态总览 + 降级链可视化。
+ * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api / Rock.comp.{metrics,componentState,dataflow,chart}。
  * 挂载到全局命名空间 window.Rock.views.overview。
  * ========================================================================== */
 (function () {
@@ -14,6 +15,7 @@
   const esc = Rock.util.esc;
   const store = Rock.state.store;
   const COMPONENT_ORDER = Rock.state.COMPONENT_ORDER;
+  const SERVICE_ORDER = Rock.state.SERVICE_ORDER;
   const normalizeSwitches = Rock.state.normalizeSwitches;
   const normalizeMetrics = Rock.state.normalizeMetrics;
   const api = Rock.api;
@@ -127,6 +129,40 @@
     return html;
   }
 
+  // 组件/服务总览大卡片：左上 switch 直启 + 名称点击跳转 + 环节标签 + 状态
+  function ovCardHTML(s, routeBase) {
+    const meta = Rock.comp.componentState.meta(s.name, s.kind);
+    const st = Rock.comp.componentState.stateMeta(s.state);
+    const slot = s.kind === 'component' ? '独立服务' : (meta.slotLabel || '链中间件');
+    return '<div class="ov-card' + (s.state === 'draining' ? ' is-draining' : '') + '">' +
+      '<div class="ov-head">' +
+      '<label class="el-switch" title="' + esc(st.text) + '">' +
+      '<input type="checkbox" data-act="detail-toggle" data-name="' + esc(s.name) + '" data-type="' + (routeBase === 'services' ? 'service' : 'component') + '"' +
+      (s.state === 'enabled' ? ' checked' : '') +
+      (s.state === 'draining' ? ' disabled' : '') + '>' +
+      '<span class="el-switch-core"></span></label>' +
+      '<div class="ov-name" data-act="nav-detail" data-route="' + routeBase + '/' + esc(s.name) + '"' +
+      ' title="点击进入 ' + esc(meta.title) + ' ' + esc(s.name) + ' 页">' +
+      '<b>' + esc(meta.title) + '</b><i>' + esc(s.name) + '</i></div>' +
+      '<span class="tag tag-blue">' + esc(slot) + '</span>' +
+      '</div>' +
+      '<div class="ov-foot"><span class="dot ' + st.dot + '"></span>' +
+      '<span class="ov-state">' + esc(st.text) + '</span>' +
+      '</div>' +
+      '</div>';
+  }
+
+  // 按固定顺序渲染总览卡片
+  function overviewGridHTML(switches, order, routeBase) {
+    const list = switches.slice().sort((a, x) => {
+      const ia = order.indexOf(a.name);
+      const ix = order.indexOf(x.name);
+      return (ia < 0 ? 999 : ia) - (ix < 0 ? 999 : ix);
+    });
+    if (!list.length) return Rock.comp.empty.message({ text: '暂无数据' });
+    return '<div class="ov-grid">' + list.map(s => ovCardHTML(s, routeBase)).join('') + '</div>';
+  }
+
   function render() {
     const host = $('#page-overview');
     if (!host) return;
@@ -153,7 +189,7 @@
       '<div class="gw-item"><span class="k">' + esc(it[0]) + '</span><span class="v">' + esc(it[1]) + '</span></div>'
     ).join('');
 
-    // ---- 运行指标卡 ----
+    // ---- 运行指标卡（含趋势图，指标页合并至此）----
     const metricsOff = store.metricsError === 'obs';
     let metricsBody;
     if (metricsOff) {
@@ -167,51 +203,53 @@
     } else {
       metricsBody = Rock.comp.metrics.metricTiles({ obsOff: false });
     }
+    const chartBody = metricsOff
+      ? ''
+      : '<div class="chart-box" style="height:150px;margin-top:12px"><canvas id="overview-chart"></canvas></div>' +
+        (store.metricsHistory.length < 2 ? '<div class="empty">等待采样数据…（开启自动刷新后趋势自动累积）</div>' : '');
 
-    // ---- 组件状态总览 ----
-    const comps = store.switches.slice().sort((a, x) => {
-      const ia = COMPONENT_ORDER.indexOf(a.name);
-      const ix = COMPONENT_ORDER.indexOf(x.name);
-      return (ia < 0 ? 999 : ia) - (ix < 0 ? 999 : ix);
-    });
-    const hasMq = comps.some(c => c.name === 'mq');
-    let compBody;
-    if (!comps.length) {
-      compBody = Rock.comp.empty.message({ text: '暂无组件数据' });
-    } else {
-      compBody = '<div class="comp-mini-grid">' + comps.map(c => {
-        const meta = Rock.comp.componentState.meta(c.name, c.kind);
-        const dotCls = Rock.comp.componentState.stateMeta(c.state).dot;
-        return '<div class="comp-mini" data-act="goto-components">' +
-          '<span class="dot ' + dotCls + '"></span>' +
-          '<span class="comp-mini-name">' + esc(meta.title) + '</span>' +
-          '<span class="comp-mini-slot">' + esc(meta.slotLabel || '') + '</span>' +
-          '</div>';
-      }).join('') + '</div>';
-      if (!hasMq) {
-        compBody += '<div class="form-hint" style="margin-top:10px">消息组件按配置装配（MQ_ENABLED + MQ_DSN），当前未装配。</div>';
-      }
-    }
+    // ---- 组件与服务 ----
+    const comps = store.switches.filter(s => s.kind !== 'component');
+    const services = store.switches.filter(s => s.kind === 'component');
 
     host.innerHTML =
       Rock.comp.head.headHTML({
         title: '概览',
-        desc: '30 秒完成巡检：网关状态 · 降级链 · 指标 · 组件',
+        desc: '30 秒完成巡检：网关状态 · 数据流 · 指标 · 组件 · 服务',
         actions: '<button class="btn btn-sm" data-act="overview-reload">⟳ 刷新</button>',
       }) +
 
       '<div class="grid grid-2">' +
       '<div class="card hoverable" data-act="goto-config" style="cursor:pointer">' +
-      '<div class="card-title">网关信息 <span class="card-sub">点击进入配置页</span></div>' + gwItems +
+      '<div class="card-title">网关信息 <span class="card-sub">点击进入全局配置</span></div>' + gwItems +
       '</div>' +
-      '<div class="card"><div class="card-title">运行指标 <span class="card-sub">实时</span></div>' + metricsBody + '</div>' +
+      '<div class="card"><div class="card-title">运行指标 <span class="card-sub">实时 · 趋势</span></div>' + metricsBody + chartBody + '</div>' +
+      '</div>' +
+
+      '<div class="card"><div class="card-title">HTTP 数据流 <span class="card-sub">组件按链路顺序执行，关闭即降级（点击节点进入组件页）</span></div>' +
+      Rock.comp.dataflow.renderHTML(store.switches) +
+      '</div>' +
+
+      '<div class="grid grid-2">' +
+      '<div class="card"><div class="card-title">组件状态总览 <span class="card-sub">开关即启停 · 点击名称进入详情</span></div>' +
+      overviewGridHTML(comps, COMPONENT_ORDER, 'components') +
+      '</div>' +
+      '<div class="card"><div class="card-title">服务状态总览 <span class="card-sub">独立服务 · 点击名称进入详情</span></div>' +
+      overviewGridHTML(services, SERVICE_ORDER, 'services') +
+      (services.length ? '' : '<div class="form-hint">服务按配置装配，当前未装配独立服务。</div>') +
+      '</div>' +
       '</div>' +
 
       '<div class="card"><div class="card-title">降级链 <span class="card-sub">核心概念：关闭只是降级，转发永不中断</span></div>' +
       renderDegradeChain(store.switches) +
-      '</div>' +
+      '</div>';
 
-      '<div class="card"><div class="card-title">组件状态总览 <span class="card-sub">点击卡片进入组件页</span></div>' + compBody + '</div>';
+    if (!metricsOff && store.metrics) drawChart();
+  }
+
+  // 趋势折线图（main.js resize 钩子调用）
+  function drawChart() {
+    Rock.comp.chart.line($('#overview-chart'), { data: store.metricsHistory, value: p => p.qps });
   }
 
   window.Rock.views.overview = {
@@ -220,5 +258,7 @@
     skeleton,
     degradeState,
     renderDegradeChain,
+    drawChart,
+    ovCardHTML,
   };
 })();

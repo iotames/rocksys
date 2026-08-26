@@ -1,7 +1,9 @@
 /* ==========================================================================
- * RockSys 管理控制台 - views/config.js 配置页
- * 分组标签页 + 行内编辑保存 / 恢复默认 / 掩码切换 / 需重启置灰。
- * 配置项渲染/编辑下沉到 Rock.comp.configEditor（配置页与组件页共用）。
+ * RockSys 管理控制台 - views/config.js 全局配置页
+ * 仅保留全局基础设施配置（网关 / 数据访问 / 其他）；
+ * 组件与服务的独有配置项已迁至各自页面（配置页签），此处以链接卡片引导跳转。
+ * 分组标签页 + 行内编辑保存 / 恢复默认 / 掩码切换 / 需重启置灰，
+ * 配置项渲染下沉到 Rock.comp.configEditor。
  * 挂载到全局命名空间 window.Rock.views.config。
  * ========================================================================== */
 (function () {
@@ -14,6 +16,10 @@
   const esc = Rock.util.esc;
   const store = Rock.state.store;
   const PREFIX_GROUPS = Rock.state.PREFIX_GROUPS;
+  const COMPONENT_ORDER = Rock.state.COMPONENT_ORDER;
+  const SERVICE_ORDER = Rock.state.SERVICE_ORDER;
+  const COMPONENT_META = Rock.state.COMPONENT_META;
+  const COMPONENT_PREFIX = Rock.state.COMPONENT_PREFIX;
   const groupOf = Rock.state.groupOf;
   const normalizeConfigList = Rock.state.normalizeConfigList;
   const api = Rock.api;
@@ -56,7 +62,36 @@
     if (host) host.innerHTML = skeletonHTML(6);
   }
 
-  // 构建配置分组（固定顺序，网关组自动补齐底座项）
+  // 组件/服务各自配置项数量（链接卡片角标）
+  function configCountOf(name) {
+    const prefix = COMPONENT_PREFIX[name];
+    if (!prefix) return 0;
+    return (store.configList || []).filter(c => c.key.indexOf(prefix) === 0).length;
+  }
+
+  // 配置入口链接卡片（组件 / 服务）
+  function linkGridHTML(kind) {
+    const order = kind === 'service' ? SERVICE_ORDER : COMPONENT_ORDER;
+    const routeBase = kind === 'service' ? 'services' : 'components';
+    return order.map(name => {
+      const meta = COMPONENT_META[name] || { title: name, desc: '' };
+      const cnt = configCountOf(name);
+      const route = routeBase + '/' + name + '?tab=config';
+      const tag = store.configUnavailable
+        ? '<span class="tag tag-gray">配置接口暂不可用</span>'
+        : (cnt
+          ? '<span class="tag tag-blue">' + cnt + ' 项配置</span>'
+          : '<span class="tag tag-gray">无独立配置</span>');
+      return '<a class="cfg-link" data-act="nav-detail" data-route="' + route + '" href="#/' + route + '">' +
+        '<span class="cfg-link-name">' + esc(meta.title) + ' <i>' + esc(name) + '</i></span>' +
+        '<span class="cfg-link-desc">' + esc(meta.desc || '') + '</span>' +
+        tag +
+        '<span class="cfg-link-go">去配置 →</span>' +
+        '</a>';
+    }).join('');
+  }
+
+  // 构建配置分组（固定顺序：网关 / 数据访问 / 其他）
   function buildConfigGroups() {
     const orderMap = {};
     PREFIX_GROUPS.forEach(g => {
@@ -64,6 +99,10 @@
     });
     const other = { name: 'other', label: '其他', items: [] };
     (store.configList || []).forEach(item => {
+      // 组件/服务专属配置已迁至各自详情页（配置页签），全局配置不再重复展示
+      const isComponentKey = Object.keys(COMPONENT_PREFIX).some(name =>
+        item.key.indexOf(COMPONENT_PREFIX[name]) === 0);
+      if (isComponentKey) return;
       const g = groupOf(item.key);
       if (g.name === 'other') other.items.push(item);
       else if (orderMap[g.name]) orderMap[g.name].items.push(item);
@@ -72,7 +111,7 @@
     const pushed = {}; // 防御：同名分组只 push 一次
     PREFIX_GROUPS.forEach(g => {
       const grp = orderMap[g.name];
-      if (grp && grp.items.length && !pushed[g.name]) {
+      if (grp && !pushed[g.name]) {
         groups.push(grp);
         pushed[g.name] = true;
       }
@@ -102,8 +141,8 @@
     if (store.configFailed && !store.configListLoaded) {
       host.innerHTML =
         Rock.comp.head.headHTML({
-          title: '配置',
-          desc: '可视化查看与修改全部配置',
+          title: '全局配置',
+          desc: '网关与全局基础设施配置',
           actions: '<button class="btn btn-sm" data-act="config-reload">⟳ 手动刷新</button>',
         }) +
         Rock.comp.empty.emptyCard({
@@ -124,11 +163,17 @@
     ).join('');
     host.innerHTML =
       Rock.comp.head.headHTML({
-        title: '配置',
-        desc: '可视化查看与修改全部配置，保存即即时生效，无需重启',
+        title: '全局配置',
+        desc: '网关与全局基础设施配置（保存即即时生效，无需重启）；组件/服务各自的配置请前往对应页面',
         actions: '<button class="btn btn-sm" data-act="config-reload">⟳ 手动刷新</button>',
       }) +
       (store.configUnavailable ? '<div class="alert alert-warning">配置接口（/admin/config/list）暂不可用或网关版本不支持，当前展示底座配置。修改项保存仍可用。</div>' : '') +
+      '<div class="card">' +
+      '<div class="card-title">组件配置 <span class="card-sub">数据流组件 · 点击进入对应页面查看与修改</span></div>' +
+      '<div class="cfg-link-grid">' + linkGridHTML('component') + '</div>' +
+      '<div class="card-title" style="margin-top:18px">服务配置 <span class="card-sub">独立服务 · 点击进入对应页面查看与修改</span></div>' +
+      '<div class="cfg-link-grid">' + linkGridHTML('service') + '</div>' +
+      '</div>' +
       '<div class="tabs">' + tabs + '</div>' +
       '<div class="card"><div id="config-group-panel"></div></div>';
     const panel = $('#config-group-panel');

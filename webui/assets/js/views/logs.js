@@ -281,8 +281,8 @@
     if (!logsQuery.toTime) logsQuery.toTime = '23:59';
     host.innerHTML =
       Rock.comp.head.headHTML({
-        title: '访问日志',
-        desc: '按时间范围与路径查看 HTTP 数据请求日志，定位单个请求（与系统运行日志分开）',
+        title: '入网数据',
+        desc: '按时间范围与路径查看 HTTP 入网请求日志，定位单个请求（与系统日志分开）',
         actions: '<button class="btn btn-sm" data-act="logs-reload">⟳ 手动刷新</button>',
       }) +
       '<div class="card storage-card"><span class="storage-label">存储占用：</span><span id="log-storage">' + storageHTML() + '</span></div>' +

@@ -5,6 +5,7 @@
 .omo/
 .codegraph/
 .tmp-sqltest/
+.kun-*
 
 # 配置测试副作用
 .env

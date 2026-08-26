@@ -27,14 +27,14 @@
     wafStatsError: null,
     wafEvents: [],                 // 拦截明细行（/admin/shield/events JSONL）
     wafEventsError: null,
-    wafLoaded: false,              // 拦截统计页是否已加载（懒加载缓存判定）
+    wafLoaded: false,              // WAF安全防护页是否已加载（懒加载缓存判定）
     loginWarnings: null,           // 登录响应 warnings（prune 未开启等持久化膨胀提醒）
-    logs: [],                      // 访问日志行（obs /admin/logs）
+    logs: [],                      // 入网数据日志行（obs /admin/logs）
     logsLoaded: false,
     logsError: null,
-    syslogInfo: null,              // GET /admin/log/info 运行日志状态
+    syslogInfo: null,              // GET /admin/log/info 系统日志状态
     syslogInfoError: null,         // 'obs' = 观测未开启；其余为错误消息
-    syslogPageVisible: false,      // 运行日志页是否当前可见（控制 SSE 生命周期）
+    syslogPageVisible: false,      // 系统日志页是否当前可见（控制 SSE 生命周期）
     unreachable: false,            // 网关是否不可达
     lastUpdated: null,             // 最近一次成功更新时间戳
     // 各页"首次加载失败"标志（无缓存数据时展示错误态，避免永久骨架屏）
@@ -61,24 +61,17 @@
     mq:       { title: '消息',     desc: '异步消息解耦（Outbox 模式）',               kind: 'component' },
   };
 
-  // 组件展示顺序（mq 按配置装配，可能缺席）
-  const COMPONENT_ORDER = ['shield', 'trace', 'auth', 'dispatch', 'rewrite', 'script', 'obs', 'copy', 'result', 'config', 'registry', 'object', 'mq'];
+  // 数据流组件（链中间件）展示顺序：与 HTTP_DATAFLOW.md 链路顺序一致
+  const COMPONENT_ORDER = ['shield', 'trace', 'auth', 'dispatch', 'rewrite', 'script', 'obs', 'copy', 'result'];
 
-  // 配置分组映射（key 前缀 → 分组）
+  // 独立服务（数据流无关，服务菜单）展示顺序
+  const SERVICE_ORDER = ['config', 'registry', 'object', 'mq'];
+
+  // 配置分组映射（key 前缀 → 分组）：全局配置页仅保留基础设施分组（网关 / 数据访问），
+  // 组件与服务的独有配置项已迁至各自页面（配置页签），经 COMPONENT_PREFIX 过滤取用
   const PREFIX_GROUPS = [
     { prefix: 'ROCKSYS_', name: 'gateway', label: '网关' },
-    { prefix: 'SHIELD_',  name: 'shield',  label: '防护' },
-    { prefix: 'DISPATCH_', name: 'dispatch', label: '分发' },
-    { prefix: 'REWRITE_', name: 'rewrite', label: '改写' },
-    { prefix: 'OBS_',     name: 'obs',     label: '观测' },
-    { prefix: 'COPY_',    name: 'copy',    label: '抄送' },
-    { prefix: 'RESULT_',  name: 'result',  label: '结果' },
-    { prefix: 'AUTH_',    name: 'auth',    label: '认证' },
-    { prefix: 'MQ_',       name: 'mq',       label: '消息' },
-    { prefix: 'REGISTRY_', name: 'registry', label: '注册中心' },
-    { prefix: 'OBJECT_',   name: 'object',   label: '对象存储' },
-    { prefix: 'SCRIPT_',   name: 'script',   label: '脚本' },
-    { prefix: 'DB_',       name: 'db',       label: '数据访问' },
+    { prefix: 'DB_',      name: 'db',      label: '数据访问' },
   ];
 
   // 枚举值配置项（编辑态渲染下拉而非手填）：key → 可选值数组（首个为默认/推荐）
@@ -92,10 +85,11 @@
   // 敏感配置（默认掩码）
   function isSensitiveKey(k) { return /SECRET|TOKEN|PASSWORD/i.test(k); }
 
-  // 组件名 → 配置前缀（用于组件卡片展开配置区）
+  // 组件/服务名 → 配置前缀（用于组件页配置页签过滤；无前缀者无独立配置项，如 trace/config）
   const COMPONENT_PREFIX = {
-    shield: 'SHIELD_', dispatch: 'DISPATCH_', rewrite: 'REWRITE_',
-    obs: 'OBS_', copy: 'COPY_', result: 'RESULT_', auth: 'AUTH_', mq: 'MQ_',
+    shield: 'SHIELD_', trace: 'TRACE_', dispatch: 'DISPATCH_', rewrite: 'REWRITE_',
+    obs: 'OBS_', copy: 'COPY_', result: 'RESULT_', auth: 'AUTH_', script: 'SCRIPT_',
+    registry: 'REGISTRY_', object: 'OBJECT_', mq: 'MQ_',
   };
 
   // 配置分组归属（按前缀匹配；未匹配落"其他"组）
@@ -151,6 +145,7 @@
     store,
     COMPONENT_META,
     COMPONENT_ORDER,
+    SERVICE_ORDER,
     PREFIX_GROUPS,
     ENUM_KEYS,
     RESTART_KEYS,
