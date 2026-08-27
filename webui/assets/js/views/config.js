@@ -18,7 +18,6 @@
   const PREFIX_GROUPS = Rock.state.PREFIX_GROUPS;
   const COMPONENT_ORDER = Rock.state.COMPONENT_ORDER;
   const SERVICE_ORDER = Rock.state.SERVICE_ORDER;
-  const COMPONENT_META = Rock.state.COMPONENT_META;
   const COMPONENT_PREFIX = Rock.state.COMPONENT_PREFIX;
   const groupOf = Rock.state.groupOf;
   const normalizeConfigList = Rock.state.normalizeConfigList;
@@ -74,7 +73,7 @@
     const order = kind === 'service' ? SERVICE_ORDER : COMPONENT_ORDER;
     const routeBase = kind === 'service' ? 'services' : 'components';
     return order.map(name => {
-      const meta = COMPONENT_META[name] || { title: name, desc: '' };
+      const meta = Rock.state.componentMeta(name, kind === 'service' ? 'service' : 'middleware');
       const cnt = configCountOf(name);
       const route = routeBase + '/' + name + '?tab=config';
       const tag = store.configUnavailable
@@ -157,10 +156,11 @@
     if (!configActiveGroup || !groups.some(g => g.name === configActiveGroup)) {
       configActiveGroup = groups.length ? groups[0].name : 'gateway';
     }
-    const tabs = groups.map(g =>
-      '<div class="tab' + (g.name === configActiveGroup ? ' active' : '') + '" data-act="cfg-tab" data-name="' + esc(g.name) + '">' +
-      esc(g.label) + '<span class="tab-count">' + g.items.length + '</span></div>'
-    ).join('');
+    const tabs = Rock.comp.tabs.tabsHTML(
+      groups.map(g => ({ name: g.name, label: g.label, count: g.items.length })),
+      configActiveGroup,
+      { act: 'cfg-tab' }
+    );
     host.innerHTML =
       Rock.comp.head.headHTML({
         title: '全局配置',
@@ -192,5 +192,9 @@
     render,
     skeleton,
     setActiveTab,
+    actions: {
+      'config-reload': function () { load({ manual: true }); },
+      'cfg-tab': function (el) { setActiveTab(el.getAttribute('data-name') || ''); },
+    },
   };
 })();

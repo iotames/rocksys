@@ -30,13 +30,31 @@
 
   // 页内私有状态
   const st = {
-    streaming: false,     // SSE 是否连接中
     paused: false,        // 用户手动暂停（断开 SSE）
     autoScroll: true,     // 新日志到达自动滚到底部
     maxLines: 3000,       // DOM 最大行数，超出丢弃最旧
-    streamCtl: null,      // 当前 SSE AbortController
-    streamSeq: 0,         // 流代际（重连时 +1，防止旧流回调污染）
   };
+
+  // SSE 实时流（连接/代际/重连由通用组件管理，视图只注入回调与策略）
+  const stream = Rock.comp.logStream.create({
+    url: '/admin/log/stream',
+    headers: function () {
+      const h = {};
+      const t = api.getToken();
+      if (t) h['Authorization'] = 'Bearer ' + t;
+      return h;
+    },
+    onFrame: function (lines) { appendLines(lines); },
+    onAuth: function () { Rock.ui.onUnauthorized(); },
+    onError: function () {
+      if (store.syslogPageVisible) {
+        toast('实时流已断开，将自动重连', 'warning');
+      }
+    },
+    onStateChange: function () { setStreamState(); },
+    shouldReconnect: function () { return store.syslogPageVisible && !st.paused; },
+    reconnectMs: 2000,
+  });
 
   // 日志行解析：默认模板 time={{.time}} level={{.level}} msg={{.msg}}
   // 兼容自定义外挂模板：解析失败则整行作为消息展示（time/level 留空）。
@@ -135,79 +153,6 @@
     if (lv && info.level) lv.value = info.level.toUpperCase();
     const fw = $('#syslog-file');
     if (fw) fw.checked = !!info.file_on;
-  }
-
-  // ========== 实时流（SSE：fetch + ReadableStream，带 Authorization，无 5s 超时） ==========
-  function authHeaders() {
-    const h = {};
-    const t = api.getToken();
-    if (t) h['Authorization'] = 'Bearer ' + t;
-    return h;
-  }
-
-  async function startStream() {
-    if (st.streaming) return;
-    st.streamSeq++;
-    const seq = st.streamSeq;
-    const ac = new AbortController();
-    st.streamCtl = ac;
-    st.streaming = true;
-    setStreamState();
-    try {
-      const res = await fetch('/admin/log/stream', {
-        headers: authHeaders(),
-        cache: 'no-store',
-        signal: ac.signal,
-      });
-      if (res.status === 401) {
-        // 回环免鉴权通常不会走到；非回环/凭证失效时交给统一认证引导
-        Rock.ui.onUnauthorized();
-        throw new Error('__auth__');
-      }
-      if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        // SSE 事件以空行分隔；data: 前缀为日志行，: ping 为心跳（忽略）
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) >= 0) {
-          const frame = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          if (seq !== st.streamSeq) return; // 已被新流/停止取代
-          const lines = frame.split('\n').filter(l => l.indexOf('data:') === 0).map(l => l.slice(5));
-          if (lines.length) appendLines(lines);
-        }
-      }
-    } catch (e) {
-      if (seq !== st.streamSeq) return; // 主动停止/换代，忽略错误
-      if (e && e.name === 'AbortError') return;
-      if (e && e.message === '__auth__') { st.streaming = false; setStreamState(); return; } // 凭证问题交给认证引导，不自动重连
-      if (store.syslogPageVisible) {
-        toast('实时流已断开，将自动重连', 'warning');
-        setStreamState(); // 显示已断开
-      }
-    } finally {
-      if (seq === st.streamSeq) {
-        st.streaming = false;
-        setStreamState();
-        if (store.syslogPageVisible && !st.paused) {
-          // 自动重连（非暂停状态下的意外断开）
-          setTimeout(startStream, 2000);
-        }
-      }
-    }
-  }
-
-  function stopStream() {
-    st.streamSeq++;
-    st.streaming = false;
-    if (st.streamCtl) { try { st.streamCtl.abort(); } catch (e) { /* ignore */ } }
-    st.streamCtl = null;
-    setStreamState();
   }
 
   // 拉取历史：首次进入或点击「载入历史」；depth 防御 reset 递归（上限 3 次）
@@ -331,20 +276,20 @@
   function setStreamState() {
     const btn = $('#syslog-toggle-btn');
     const state = $('#syslog-stream-state');
-    if (btn) btn.textContent = st.streaming ? '⏸ 暂停实时' : (st.paused ? '▶ 恢复实时' : '▶ 开始实时');
+    if (btn) btn.textContent = stream.isRunning() ? '⏸ 暂停实时' : (st.paused ? '▶ 恢复实时' : '▶ 开始实时');
     if (state) {
-      state.textContent = st.streaming ? '● 实时推送中' : (st.paused ? '已暂停（不接收新日志）' : '未连接');
-      state.classList.toggle('stream-on', st.streaming);
+      state.textContent = stream.isRunning() ? '● 实时推送中' : (st.paused ? '已暂停（不接收新日志）' : '未连接');
+      state.classList.toggle('stream-on', stream.isRunning());
     }
   }
 
   function toggleStream() {
-    if (st.streaming) {
+    if (stream.isRunning()) {
       st.paused = true;
-      stopStream();
+      stream.stop();
     } else {
       st.paused = false;
-      startStream();
+      stream.start();
     }
   }
 
@@ -354,7 +299,7 @@
       box.innerHTML = '';
       const d = document.createElement('div');
       d.className = 'empty';
-      d.textContent = st.streaming ? '实时流继续推送中…' : '已清空。点击「▶ 开始实时」或「⟳ 载入历史」获取日志。';
+      d.textContent = stream.isRunning() ? '实时流继续推送中…' : '已清空。点击「▶ 开始实时」或「⟳ 载入历史」获取日志。';
       box.appendChild(d);
     }
   }
@@ -375,7 +320,7 @@
     }
     if (opts && opts.autoStart !== false) {
       if (first) loadHistory(200);
-      startStream();
+      stream.start();
     }
     noteUpdated();
   }
@@ -384,7 +329,7 @@
   function leave() {
     store.syslogPageVisible = false;
     st.paused = true;
-    stopStream();
+    stream.stop();
   }
 
   window.Rock.views.syslogs = {
@@ -394,13 +339,16 @@
     renderInfo,
     loadInfo,
     loadHistory,
-    startStream,
-    stopStream,
     toggleStream,
     setLevel,
     setFile,
     clearLines,
     parseLine,
     LEVEL_OPTIONS,
+    actions: {
+      'syslog-toggle-stream': function () { toggleStream(); },
+      'syslog-history': function () { loadHistory(500); },
+      'syslog-clear': function () { clearLines(); },
+    },
   };
 })();

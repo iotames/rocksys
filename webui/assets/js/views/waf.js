@@ -32,27 +32,19 @@
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
 
-  // ── 拦截类别（与 plugins/shield/block_type.go 数值稳定约定一致）────────
-  const BLOCK_TYPES = [
-    [1, 'IP黑名单'], [2, '限流'], [3, '方法不允许'], [4, '请求体超限'], [5, '风险路径'],
-    [6, '路径遍历'], [7, 'SQL注入'], [8, 'XSS'], [9, '爬虫UA'], [10, '路径规则'],
-  ];
-  function typeName(bt) {
-    bt = Number(bt) || 0;
-    for (let i = 0; i < BLOCK_TYPES.length; i++) {
-      if (BLOCK_TYPES[i][0] === bt) return BLOCK_TYPES[i][1];
-    }
-    return '未知';
-  }
+  // 拦截类别与名称映射集中定义于 state.js（WAF 领域数据，与黑白名单子视图共享）
+  const BLOCK_TYPES = Rock.state.BLOCK_TYPES;
+  const typeName = Rock.state.blockTypeName;
 
   // ── 页内私有状态（查询条件 / 明细展开）──────────────────────────────
   const wafQuery = { fromDate: '', fromTime: '', toDate: '', toTime: '', blockType: '', clientIP: '' };
   let statsDays = 7;
-  let eventsExpanded = {};
+  const eventsExpander = Rock.comp.dataTable.createExpander();
 
-  function today() { return fmtDate(new Date()); }
-  function qFrom() { return (wafQuery.fromDate || today()) + 'T' + (wafQuery.fromTime || '00:00'); }
-  function qTo() { return (wafQuery.toDate || today()) + 'T' + (wafQuery.toTime || '23:59'); }
+  const dateRange = Rock.comp.dateRange;
+  function today() { return dateRange.today(); }
+  function qFrom() { return dateRange.from(wafQuery); }
+  function qTo() { return dateRange.to(wafQuery); }
 
   // ── 数据加载 ────────────────────────────────────────────────────────
 
@@ -88,11 +80,11 @@
       const txt = await api.text('/admin/shield/events?' + params.toString());
       store.wafEvents = parseNdjson(txt);
       store.wafEventsError = null;
-      eventsExpanded = {};
+      eventsExpander.reset();
       noteUpdated();
     } catch (e) {
       store.wafEvents = [];
-      eventsExpanded = {};
+      eventsExpander.reset();
       store.wafEventsError = e.message || '加载失败';
     }
   }
@@ -227,7 +219,7 @@
   function expKey(r) { return (r.time || '') + '|' + (r.trace_id || '') + '|' + (r.client_ip || ''); }
 
   function eventRowHTML(r) {
-    const expanded = !!eventsExpanded[expKey(r)];
+    const expanded = eventsExpander.isOpen(expKey(r));
     const st = Number(r.status_code) || 0;
     return '<tr class="log-row" data-act="waf-expand" data-idx="' + esc(expKey(r)) + '">' +
       '<td class="mono" title="' + esc(r.time) + '">' + esc(fmtDateTime(r.time)) + '</td>' +
@@ -263,17 +255,18 @@
   let wafActiveTab = 'stats'; // 'stats' | 'iplist'
 
   function tabsHTML() {
-    return '<div class="tabs">' +
-      '<div class="tab' + (wafActiveTab === 'stats' ? ' active' : '') + '" data-act="waf-tab" data-tab="stats">拦截统计</div>' +
-      '<div class="tab' + (wafActiveTab === 'iplist' ? ' active' : '') + '" data-act="waf-tab" data-tab="iplist">黑白名单</div>' +
-      '</div>';
+    return Rock.comp.tabs.tabsHTML(
+      [{ name: 'stats', label: '拦截统计' }, { name: 'iplist', label: '黑白名单' }],
+      wafActiveTab,
+      { act: 'waf-tab', nameAttr: 'data-tab' }
+    );
   }
 
   function render() {
     const host = $('#page-waf');
     if (!host) return;
     if (wafActiveTab === 'iplist') {
-      renderIPListPage(host);
+      Rock.views.blacklist.render(host);
       return;
     }
     renderStatsPage();
@@ -455,7 +448,7 @@
   // 行展开 / 收起（key = time|trace_id|ip，跟随行不错位）
   function toggleExpand(key) {
     if (!key) return;
-    eventsExpanded[key] = !eventsExpanded[key];
+    eventsExpander.toggle(key);
     const wrap = $('#waf-events-wrap');
     if (wrap) wrap.innerHTML = eventsHTML();
   }
@@ -493,225 +486,11 @@
     }
   }
 
-  // ── 黑白名单管理 Tab（WAF 方案 §6.2）──────────────────────────────
-  // 数据来源：/admin/shield/blacklist（GET 列表 / POST 新增）与 /whitelist 同构，
-  // update/delete/restore/import 为独立 POST 端点；DB 未配置时端点 503，页内提示。
-  const ipListState = {
-    kind: 'black', // 'black' | 'white'
-    ip: '', blockType: '', validOnly: false,
-    limit: 20, offset: 0,
-    rows: [], total: 0, loaded: false, error: '',
-  };
-
-  function ipListBase() {
-    return ipListState.kind === 'black' ? '/admin/shield/blacklist' : '/admin/shield/whitelist';
-  }
-
-  async function loadIPList() {
-    const p = [];
-    if (ipListState.ip) p.push('ip=' + encodeURIComponent(ipListState.ip));
-    if (ipListState.blockType) p.push('block_type=' + ipListState.blockType);
-    if (ipListState.validOnly) p.push('valid_only=1');
-    p.push('limit=' + ipListState.limit, 'offset=' + ipListState.offset);
-    ipListState.loaded = true;
-    try {
-      const r = await api.get(ipListBase() + '?' + p.join('&'));
-      ipListState.rows = r.rows || [];
-      ipListState.total = Number(r.total) || 0;
-      ipListState.error = '';
-    } catch (e) {
-      ipListState.error = e.status === 503 ? '黑白名单未启用（DB 未配置）' : (e.message || '加载失败');
-    }
-    render();
-  }
-
-  function ipListStatusHTML(row) {
-    if (row.deleted_at) return '<span class="badge badge-danger">已删除</span>';
-    if (row.expires_at) return '<span class="badge badge-warn">已过期</span>';
-    return '<span class="badge badge-ok">有效</span>';
-  }
-
-  function ipListRowsHTML() {
-    if (!ipListState.loaded) return '<div class="empty">加载中…</div>';
-    if (ipListState.error) return '<div class="empty">' + esc(ipListState.error) + '</div>';
-    if (!ipListState.rows.length) return '<div class="empty">暂无条目</div>';
-    const isBlack = ipListState.kind === 'black';
-    const head = isBlack
-      ? '<th>ID</th><th>IP / CIDR</th><th>备注</th><th>类别</th><th>命中</th><th>过期时间</th><th>状态</th><th>操作</th>'
-      : '<th>ID</th><th>IP / CIDR</th><th>备注</th><th>状态</th><th>操作</th>';
-    const rows = ipListState.rows.map(row => {
-      const id = row.id;
-      const del = row.deleted_at
-        ? '<button class="btn btn-sm btn-text" data-act="waf-iplist-restore" data-id="' + id + '">恢复</button>'
-        : '<button class="btn btn-sm btn-text" data-act="waf-iplist-del" data-id="' + id + '">删除</button>';
-      const base = isBlack
-        ? '<td>' + id + '</td><td><b>' + esc(row.ip) + '</b></td><td>' + esc(row.title || '') + '</td>' +
-          '<td>' + esc(typeName(row.block_type)) + '</td><td>' + fmtInt(Number(row.hit_count) || 0) + '</td>' +
-          '<td>' + esc(row.expires_at || '永久') + '</td><td>' + ipListStatusHTML(row) + '</td>'
-        : '<td>' + id + '</td><td><b>' + esc(row.ip) + '</b></td><td>' + esc(row.title || '') + '</td><td>' + ipListStatusHTML(row) + '</td>';
-      return '<tr>' + base + '<td>' + del + '</td></tr>';
-    }).join('');
-    return '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
-  }
-
-  function ipListPagingHTML() {
-    const pages = Math.max(1, Math.ceil(ipListState.total / ipListState.limit));
-    const cur = Math.floor(ipListState.offset / ipListState.limit) + 1;
-    return '<div class="log-toolbar" style="justify-content:space-between">' +
-      '<span class="muted">共 ' + fmtInt(ipListState.total) + ' 条 · 第 ' + cur + '/' + pages + ' 页</span>' +
-      '<div class="tool-group">' +
-      '<button class="btn btn-sm" data-act="waf-iplist-page" data-dir="-1"' + (cur <= 1 ? ' disabled' : '') + '>上一页</button>' +
-      '<button class="btn btn-sm" data-act="waf-iplist-page" data-dir="1"' + (cur >= pages ? ' disabled' : '') + '>下一页</button>' +
-      '</div></div>';
-  }
-
-  function renderIPListPage(host) {
-    const isBlack = ipListState.kind === 'black';
-    const btOptions = BLOCK_TYPES.map(t =>
-      '<option value="' + t[0] + '"' + (String(t[0]) === ipListState.blockType ? ' selected' : '') + '>' + esc(t[1]) + '</option>'
-    ).join('');
-    host.innerHTML =
-      Rock.comp.head.headHTML({
-        title: 'WAF 防护',
-        desc: '动态 IP 黑白名单：黑名单 = DB 表 ∪ 外挂 rules/ip_blacklist.txt；白名单 = DB 表 ∪ .env SHIELD_IP_WHITELIST；白名单优先、变更即时生效',
-        actions: '<button class="btn btn-sm" data-act="waf-iplist-reload">⟳ 刷新</button>',
-      }) +
-      tabsHTML() +
-      '<div class="tabs">' +
-      '<div class="tab' + (isBlack ? ' active' : '') + '" data-act="waf-iplist-kind" data-kind="black">黑名单</div>' +
-      '<div class="tab' + (!isBlack ? ' active' : '') + '" data-act="waf-iplist-kind" data-kind="white">白名单</div>' +
-      '</div>' +
-      '<div class="card"><div class="card-title">' + (isBlack ? '黑名单' : '白名单') + '条目 <span class="card-sub">' + (isBlack ? 'DB 表 ∪ 外挂 rules/ip_blacklist.txt（.env 已不再支持黑名单）' : 'DB 表 ∪ .env SHIELD_IP_WHITELIST') + '</span></div>' +
-      '<div class="log-toolbar">' +
-      '<input class="input input-sm" id="iplist-filter-ip" placeholder="IP 模糊" style="width:140px" value="' + esc(ipListState.ip) + '">' +
-      (isBlack
-        ? '<select class="select select-sm" id="iplist-filter-bt">' +
-          '<option value="">全部类别</option>' + btOptions + '</select>'
-        : '') +
-      '<label class="chk"><input type="checkbox" id="iplist-filter-valid"' + (ipListState.validOnly ? ' checked' : '') + '> 仅有效</label>' +
-      '<button class="btn btn-sm btn-primary" data-act="waf-iplist-query">查询</button>' +
-      '<button class="btn btn-sm btn-text" data-act="waf-iplist-reset">重置</button>' +
-      '</div>' +
-      ipListRowsHTML() +
-      ipListPagingHTML() +
-      '</div>' +
-      '<div class="card"><div class="card-title">新增' + (isBlack ? '黑名单' : '白名单') + '条目</div>' +
-      '<div class="log-toolbar">' +
-      '<input class="input input-sm" id="iplist-add-ip" placeholder="精确 IP 或 CIDR（必填）" style="width:180px">' +
-      '<input class="input input-sm" id="iplist-add-title" placeholder="备注（可选）" style="width:160px">' +
-      (isBlack
-        ? '<select class="select select-sm" id="iplist-add-bt">' + btOptions + '</select>' +
-          '<input class="input input-sm" id="iplist-add-expires" placeholder="过期 RFC3339（空=永久）" style="width:200px">'
-        : '') +
-      '<button class="btn btn-sm btn-primary" data-act="waf-iplist-add">新增</button>' +
-      '</div></div>' +
-      '<div class="card"><div class="card-title">批量导入 <span class="card-sub">每行一个 IP/CIDR，重复自动跳过</span></div>' +
-      '<textarea class="input" id="iplist-import-text" rows="10" placeholder="每行一个：精确 IP 或 CIDR（兼容外挂文件格式）&#10;示例：192.168.1.100、2001:db8::1、10.0.0.0/8、2001:db8::/32&#10;# 开头为注释、空行忽略"></textarea>' +
-      '<div class="log-toolbar">' +
-      (isBlack
-        ? '<select class="select select-sm" id="iplist-import-bt">' + btOptions + '</select>'
-        : '') +
-      '<button class="btn btn-sm" data-act="waf-iplist-import">批量导入</button>' +
-      '</div></div>';
-  }
-
+  // 主 Tab 切换：拦截统计 / 黑白名单（黑白名单渲染与 CRUD 已下沉 views/blacklist.js）
   async function ipListSwitchTab(tab) {
-    wafActiveTab = tab;
-    if (tab === 'iplist' && !ipListState.loaded) await loadIPList();
+    wafActiveTab = tab === 'iplist' ? 'iplist' : 'stats';
+    if (tab === 'iplist') await Rock.views.blacklist.ensureLoaded();
     render();
-  }
-
-  async function ipListSwitchKind(kind) {
-    if (ipListState.kind === kind) return;
-    ipListState.kind = kind;
-    ipListState.offset = 0;
-    ipListState.rows = [];
-    ipListState.total = 0;
-    ipListState.loaded = false;
-    await loadIPList();
-  }
-
-  async function ipListQuery() {
-    ipListState.ip = ($('#iplist-filter-ip') || {}).value || '';
-    ipListState.blockType = ($('#iplist-filter-bt') || {}).value || '';
-    ipListState.validOnly = !!($('#iplist-filter-valid') || {}).checked;
-    ipListState.offset = 0;
-    await loadIPList();
-  }
-
-  function ipListReset() {
-    ipListState.ip = ''; ipListState.blockType = ''; ipListState.validOnly = false; ipListState.offset = 0;
-    loadIPList();
-  }
-
-  async function ipListPage(dir) {
-    const next = ipListState.offset + dir * ipListState.limit;
-    if (next < 0 || next >= ipListState.total) return;
-    ipListState.offset = next;
-    await loadIPList();
-  }
-
-  async function ipListAdd() {
-    const isBlack = ipListState.kind === 'black';
-    const ip = ($('#iplist-add-ip') || {}).value || '';
-    if (!ip) { toast('ip 必填（精确 IP 或 CIDR）', 'error'); return; }
-    const body = { ip: ip.trim(), title: ($('#iplist-add-title') || {}).value || '' };
-    if (isBlack) {
-      body.block_type = Number(($('#iplist-add-bt') || {}).value) || 1;
-      const exp = ($('#iplist-add-expires') || {}).value || '';
-      if (exp) body.expires_at = exp.trim();
-    }
-    try {
-      await api.post(ipListBase())(body);
-      toast('已新增 ' + ip.trim(), 'success');
-      ipListState.offset = 0;
-      await loadIPList();
-    } catch (e) {
-      toast('新增失败：' + e.message, 'error');
-    }
-  }
-
-  async function ipListDelete(id) {
-    const ok = await confirmDialog({
-      title: '删除条目',
-      message: '将软删除该条目（可恢复），立即从拦截生效集合移除。确认？',
-      confirmText: '删除',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await api.post(ipListBase() + '/delete')({ id: Number(id) });
-      toast('已删除', 'success');
-      await loadIPList();
-    } catch (e) {
-      toast('删除失败：' + e.message, 'error');
-    }
-  }
-
-  async function ipListRestore(id) {
-    try {
-      await api.post(ipListBase() + '/restore')({ id: Number(id) });
-      toast('已恢复', 'success');
-      await loadIPList();
-    } catch (e) {
-      toast('恢复失败：' + e.message, 'error');
-    }
-  }
-
-  async function ipListImport() {
-    const text = ($('#iplist-import-text') || {}).value || '';
-    if (!text.trim()) { toast('导入内容为空', 'error'); return; }
-    const isBlack = ipListState.kind === 'black';
-    const q = isBlack ? ('?block_type=' + (Number(($('#iplist-import-bt') || {}).value) || 1)) : '';
-    try {
-      const r = await api.post(ipListBase() + '/import' + q)(text);
-      toast('已导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条', 'success');
-      ($('#iplist-import-text') || {}).value = '';
-      ipListState.offset = 0;
-      await loadIPList();
-    } catch (e) {
-      toast('导入失败：' + e.message, 'error');
-    }
   }
 
   window.Rock.views.waf = {
@@ -724,14 +503,29 @@
     pruneEvents,
     pruneLogs,
     typeName,
-    ipListSwitchTab,
-    ipListSwitchKind,
-    ipListQuery,
-    ipListReset,
-    ipListPage,
-    ipListAdd,
-    ipListDelete,
-    ipListRestore,
-    ipListImport,
+    actions: {
+      'waf-reload': function () { load({ manual: true }); },
+      'waf-query': function () { queryEvents(); },
+      'waf-reset': function () { resetFilter(); },
+      'waf-prune-events': function () { pruneEvents(); },
+      'waf-prune-logs': function () { pruneLogs(); },
+      'waf-expand': function (el) { toggleExpand(el.getAttribute('data-idx') || ''); },
+      'waf-tab': function (el) { ipListSwitchTab(el.getAttribute('data-tab') || 'stats'); },
+      'waf-iplist-kind': function (el) { Rock.views.blacklist.switchKind(el.getAttribute('data-kind') || 'black'); },
+      'waf-iplist-query': function () { Rock.views.blacklist.query(); },
+      'waf-iplist-reset': function () { Rock.views.blacklist.reset(); },
+      'waf-iplist-reload': function () { Rock.views.blacklist.query(); },
+      'waf-iplist-page': function (el) { Rock.views.blacklist.page(Number(el.getAttribute('data-dir')) || 0); },
+      'waf-iplist-add': function () { Rock.views.blacklist.add(); },
+      'waf-iplist-del': function (el) { Rock.views.blacklist.del(el.getAttribute('data-id')); },
+      'waf-iplist-restore': function (el) { Rock.views.blacklist.restore(el.getAttribute('data-id')); },
+      'waf-iplist-import': function () { Rock.views.blacklist.importRows(); },
+    },
   };
+
+  // 注入页面上下文：主 Tab HTML 与当前 Tab（黑白名单子视图渲染主 Tab 用）
+  Rock.views.blacklist.bindPage({
+    tabsHTML: tabsHTML,
+    activeTab: function () { return wafActiveTab; },
+  });
 })();

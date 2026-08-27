@@ -23,6 +23,45 @@
   // 侧边栏可折叠分组（路由 base → 分组 id）
   const MENU_GROUPS = ['components', 'services', 'obs'];
 
+  // 视图/组件 action 注册表：新增交互无需修改本文件——
+  // 各视图/组件导出 actions 映射（{ 'action-name': fn(el, e) }），boot 时统一注册
+  const actionHandlers = {};
+  function onAction(act, fn) { actionHandlers[act] = fn; }
+  function registerViewActions() {
+    [Rock.views, Rock.comp].forEach(function (root) {
+      Object.keys(root).forEach(function (name) {
+        const m = root[name];
+        if (m && m.actions) {
+          Object.keys(m.actions).forEach(function (act) {
+            onAction(act, m.actions[act]);
+          });
+        }
+      });
+    });
+  }
+
+  // 启动时校验前端模块依赖完整性（script 加载顺序/遗漏时给出明确报错）
+  function assertDeps() {
+    const missing = [];
+    const has = function (path) {
+      let o = window.Rock;
+      for (let i = 0; i < path.length && o; i++) o = o[path[i]];
+      if (!o) missing.push(path.join('.'));
+    };
+    ['util', 'theme', 'ui', 'api', 'state'].forEach(function (k) { has([k]); });
+    ['head', 'empty', 'select', 'tabs', 'dataTable', 'dateRange', 'logStream', 'luaEditor',
+      'componentState', 'dataflow', 'metrics', 'chart', 'configEditor'].forEach(function (k) { has(['comp', k]); });
+    ['overview', 'detail', 'config', 'scripts', 'waf', 'blacklist', 'logs', 'syslogs', 'auth'].forEach(function (k) { has(['views', k]); });
+    if (missing.length) {
+      console.error('[RockSys] 前端模块缺失（script 加载顺序或遗漏）：', missing.join(', '));
+      const b = $('#prune-banner');
+      if (b) {
+        b.innerHTML = '<span>前端模块加载缺失：' + missing.join(', ') + '，请检查 index.html 脚本顺序。</span>';
+        b.classList.remove('hidden');
+      }
+    }
+  }
+
   // 解析 location.hash → { base, param, query }
   function parseHash() {
     const raw = location.hash.replace(/^#\/?/, '');
@@ -212,6 +251,19 @@
 
   // 应用启动
   function boot() {
+    assertDeps();            // 模块依赖完整性校验（缺失时明确报错）
+    registerViewActions();   // 注册各视图/组件的 action 处理
+    Rock.state.ensureMeta(); // 全局获取组件/服务元数据（无缓存机制，页面会话内持有）
+    // 桥接：API 客户端与 401 处理的反向依赖由入口统一注入，基础层保持纯净
+    Rock.api.setUiBridge({
+      markUnreachable: function (v) { Rock.ui.markUnreachable(v); },
+      onUnauthorized: function () { Rock.ui.onUnauthorized(); },
+    });
+    Rock.ui.setUnauthorizedHandler(function () {
+      Rock.auth.showAuth();
+      Rock.auth.showPanel('login');
+      Rock.auth.setError('访问凭证无效或已过期，请重新登录');
+    });
     bindToolbar();
     initRoute();
     restartAutoRefresh();
@@ -270,8 +322,10 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.getAttribute('data-act');
-    const key = el.getAttribute('data-k') || '';
-    const name = el.getAttribute('data-name') || '';
+
+    // 视图/组件注册的 action 优先（新增交互在各模块 actions 中声明，无需改本文件）
+    const handler = actionHandlers[act];
+    if (handler) { handler(el, e); return; }
 
     switch (act) {
       // ---- 路由跳转 ----
@@ -292,157 +346,8 @@
         if (target) navigate(target);
         break;
       }
-
-      // ---- 概览 ----
-      case 'overview-reload':
-        views.overview.load({ manual: true });
-        break;
-
-      // ---- 组件/服务详情 ----
-      case 'detail-reload':
-        refreshPage(currentRoute(), { manual: true });
-        break;
-      case 'detail-tab': {
-        const r = currentRoute();
-        views.detail.setTab({
-          type: r.base === 'services' ? 'service' : 'component',
-          name: r.param,
-        }, el.getAttribute('data-tab') || 'state');
-        break;
-      }
-
-      // ---- 配置 ----
-      case 'cfg-tab':
-        views.config.setActiveTab(name);
-        break;
-      case 'config-reload':
-        views.config.load({ manual: true });
-        break;
-      case 'cfg-edit':
-        Rock.comp.configEditor.startEdit(key);
-        break;
-      case 'cfg-cancel':
-        Rock.comp.configEditor.cancelEdit();
-        break;
-      case 'cfg-save':
-        Rock.comp.configEditor.saveEdit(key);
-        break;
-      case 'cfg-reset':
-        Rock.comp.configEditor.resetItem(key);
-        break;
-      case 'cfg-mask':
-        Rock.comp.configEditor.toggleMask(key);
-        break;
-
-      // ---- 脚本 ----
-      case 'scripts-reload':
-        views.scripts.load({ manual: true });
-        break;
-      case 'script-select':
-        views.scripts.select(name);
-        break;
-      case 'script-new':
-        views.scripts.openNew();
-        break;
-      case 'script-check':
-        views.scripts.checkCurrent();
-        break;
-      case 'script-publish':
-        views.scripts.publish();
-        break;
-      case 'script-rollback':
-        views.scripts.openRollback();
-        break;
-
-      // ---- WAF安全防护（WAF 监控）----
-      case 'waf-reload':
-        views.waf.load({ manual: true });
-        break;
-      case 'waf-query':
-        views.waf.queryEvents();
-        break;
-      case 'waf-reset':
-        views.waf.resetFilter();
-        break;
-      case 'waf-prune-events':
-        views.waf.pruneEvents();
-        break;
-      case 'waf-prune-logs':
-        views.waf.pruneLogs();
-        break;
-      case 'waf-expand': {
-        // data-idx 为行展开键（time|trace_id|ip 字符串）
-        const wkey = el.getAttribute('data-idx') || '';
-        views.waf.toggleExpand(wkey);
-        break;
-      }
-
-      // ---- 黑白名单管理 Tab（WAF 方案 §6.2）----
-      case 'waf-tab':
-        views.waf.ipListSwitchTab(el.getAttribute('data-tab') || 'stats');
-        break;
-      case 'waf-iplist-kind':
-        views.waf.ipListSwitchKind(el.getAttribute('data-kind') || 'black');
-        break;
-      case 'waf-iplist-query':
-        views.waf.ipListQuery();
-        break;
-      case 'waf-iplist-reset':
-        views.waf.ipListReset();
-        break;
-      case 'waf-iplist-reload':
-        views.waf.ipListQuery();
-        break;
-      case 'waf-iplist-page':
-        views.waf.ipListPage(Number(el.getAttribute('data-dir')) || 0);
-        break;
-      case 'waf-iplist-add':
-        views.waf.ipListAdd();
-        break;
-      case 'waf-iplist-del':
-        views.waf.ipListDelete(el.getAttribute('data-id'));
-        break;
-      case 'waf-iplist-restore':
-        views.waf.ipListRestore(el.getAttribute('data-id'));
-        break;
-      case 'waf-iplist-import':
-        views.waf.ipListImport();
-        break;
-
-      // ---- 数据清理警告横幅 ----
       case 'prune-dismiss':
         dismissPruneBanner();
-        break;
-
-      // ---- 日志 ----
-      case 'logs-reload':
-        views.logs.query();
-        break;
-      case 'log-query':
-        views.logs.query();
-        break;
-      case 'log-export':
-        views.logs.exportLogs();
-        break;
-      case 'log-reset':
-        views.logs.resetFilter();
-        break;
-      case 'log-expand': {
-        // data-idx 为行展开键（time|trace_id 字符串），不再是数字索引，勿转 Number
-        const key = el.getAttribute('data-idx') || '';
-        views.logs.toggleExpand(key);
-        break;
-      }
-
-      // ---- 系统日志 ----
-      case 'syslog-toggle-stream':
-        views.syslogs.toggleStream();
-        break;
-      case 'syslog-history':
-        views.syslogs.loadHistory(500);
-        break;
-      case 'syslog-clear':
-        views.syslogs.clearLines();
         break;
       default:
         break;

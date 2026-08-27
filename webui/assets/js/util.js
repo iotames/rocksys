@@ -69,6 +69,21 @@
     return s.length > n ? s.slice(0, n) + '…' : s;
   }
 
+  // NDJSON 按行解析（坏行容错跳过）；可选 normalize 逐行归一化
+  function parseNdjson(txt, normalize) {
+    const out = [];
+    const lines = String(txt || '').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (!t) continue;
+      try {
+        const obj = JSON.parse(t);
+        out.push(normalize ? normalize(obj) : obj);
+      } catch (e) { /* 坏行容错跳过 */ }
+    }
+    return out;
+  }
+
   // 防抖
   function debounce(fn, wait) {
     let t = null;
@@ -101,6 +116,7 @@
     fmtDateTime,
     fmtBytes,
     truncate,
+    parseNdjson,
     debounce,
     insertAtCursor,
   };

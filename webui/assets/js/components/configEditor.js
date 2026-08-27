@@ -227,5 +227,12 @@
     toggleMask,
     refresh,
     loadList,
+    actions: {
+      'cfg-edit': function (el) { startEdit(el.getAttribute('data-k') || ''); },
+      'cfg-cancel': function () { cancelEdit(); },
+      'cfg-save': function (el) { saveEdit(el.getAttribute('data-k') || ''); },
+      'cfg-reset': function (el) { resetItem(el.getAttribute('data-k') || ''); },
+      'cfg-mask': function (el) { toggleMask(el.getAttribute('data-k') || ''); },
+    },
   };
 })();

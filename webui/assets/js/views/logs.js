@@ -13,12 +13,12 @@
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
   const debounce = Rock.util.debounce;
-  const fmtDate = Rock.util.fmtDate;
   const fmtDateTime = Rock.util.fmtDateTime;
   const fmtBytes = Rock.util.fmtBytes;
   const truncate = Rock.util.truncate;
   const store = Rock.state.store;
   const api = Rock.api;
+  const dateRange = Rock.comp.dateRange;
   const toast = Rock.ui.toast;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
@@ -26,12 +26,7 @@
   // 查询条件（提交后端） / 本地筛选条件 / 展开状态（页内私有）
   const logsQuery = { fromDate: '', fromTime: '', toDate: '', toTime: '', path: '', pathLike: '' };
   const logsFilter = { status: '', onlyError: false, sortBy: 'time_desc' };
-  let logsExpanded = {};
-
-  function today() { return fmtDate(new Date()); }
-  // 组装后端时间参数（精确到分）
-  function qFrom() { return (logsQuery.fromDate || today()) + 'T' + (logsQuery.fromTime || '00:00'); }
-  function qTo() { return (logsQuery.toDate || today()) + 'T' + (logsQuery.toTime || '23:59'); }
+  const logsExpander = Rock.comp.dataTable.createExpander();
 
   function statusGroup(code) {
     code = Number(code) || 0;
@@ -61,22 +56,6 @@
     };
   }
 
-  // NDJSON 按行解析（坏行容错跳过）
-  function parseNdjson(txt) {
-    const out = [];
-    const lines = String(txt || '').split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const t = lines[i].trim();
-      if (!t) continue;
-      try {
-        out.push(normalizeLogRow(JSON.parse(t)));
-      } catch (e) {
-        // 容错：跳过无法解析的行
-      }
-    }
-    return out;
-  }
-
   // 加载日志（默认当天全天；首次进入且页面为空时展示骨架屏）
   async function loadPage(opts) {
     const host = $('#page-logs');
@@ -84,22 +63,22 @@
       host.innerHTML = skeletonHTML(5);
     }
     const params = new URLSearchParams();
-    params.set('from', qFrom());
-    params.set('to', qTo());
+    params.set('from', dateRange.from(logsQuery));
+    params.set('to', dateRange.to(logsQuery));
     if (logsQuery.path) params.set('path', logsQuery.path);
     if (logsQuery.pathLike) params.set('path_like', logsQuery.pathLike);
     loadStorage(); // 存储占用（不阻塞日志主流程）
     try {
       const txt = await api.text('/admin/logs?' + params.toString());
-      store.logs = parseNdjson(txt);
+      store.logs = Rock.util.parseNdjson(txt, normalizeLogRow);
       store.logsLoaded = true;
       store.logsError = null;
-      logsExpanded = {};
+      logsExpander.reset();
       noteUpdated();
     } catch (e) {
       store.logsLoaded = true;
       store.logs = [];
-      logsExpanded = {};
+      logsExpander.reset();
       if (e.obsDisabled) {
         store.logsError = 'obs';
       } else if (e.status === 400) {
@@ -213,7 +192,7 @@
   function expKey(r) { return (r.time || '') + '|' + (r.trace_id || ''); }
 
   function logRowHTML(r, idx) {
-    const expanded = !!logsExpanded[expKey(r)];
+    const expanded = logsExpander.isOpen(expKey(r));
     const st = r.status_code;
     const stCls = st >= 500 ? 'status-red' : (st >= 400 ? 'status-warn' : (st >= 300 ? 'status-info' : (st >= 200 ? 'status-ok' : '')));
     const methodCls = 'method method-' + (r.method || '').toLowerCase();
@@ -263,21 +242,21 @@
       wrap.innerHTML = '<div class="card">' + Rock.comp.empty.message({ text: '没有符合筛选条件的日志' }) + '</div>';
       return;
     }
-    const shown = rows.slice(0, 2000);
-    const html = '<div class="table-wrap" style="max-height:640px">' +
-      '<table class="table"><thead><tr>' +
-      '<th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>耗时</th><th style="width:28px"></th>' +
-      '</tr></thead><tbody>' + shown.map((r, i) => logRowHTML(r, i)).join('') + '</tbody></table></div>' +
-      (rows.length >= 2000 || (store.logs || []).length >= 2000 ? '<div class="form-hint" style="margin-top:8px">已达 2000 条展示上限，请收窄时间范围或筛选条件。</div>' : '');
-    wrap.innerHTML = html;
+    wrap.innerHTML = Rock.comp.dataTable.tableHTML({
+      columns: ['时间', '方法', '路径', '状态', '耗时', { label: '', width: '28px' }],
+      rows: rows,
+      maxRows: 2000,
+      maxHeight: '640px',
+      rowHTML: logRowHTML,
+    });
   }
 
   function render() {
     const host = $('#page-logs');
     if (!host) return;
-    if (!logsQuery.fromDate) logsQuery.fromDate = today();
+    if (!logsQuery.fromDate) logsQuery.fromDate = dateRange.today();
     if (!logsQuery.fromTime) logsQuery.fromTime = '00:00';
-    if (!logsQuery.toDate) logsQuery.toDate = today();
+    if (!logsQuery.toDate) logsQuery.toDate = dateRange.today();
     if (!logsQuery.toTime) logsQuery.toTime = '23:59';
     host.innerHTML =
       Rock.comp.head.headHTML({
@@ -358,11 +337,11 @@
 
   // 按时间范围 + path 条件查询（读取工具栏输入）
   async function query() {
-    logsQuery.fromDate = $('#log-from-date').value || today();
+    logsQuery.fromDate = $('#log-from-date').value || dateRange.today();
     logsQuery.fromTime = $('#log-from-time').value || '00:00';
-    logsQuery.toDate = $('#log-to-date').value || today();
+    logsQuery.toDate = $('#log-to-date').value || dateRange.today();
     logsQuery.toTime = $('#log-to-time').value || '23:59';
-    if (qFrom() > qTo()) {
+    if (dateRange.from(logsQuery) > dateRange.to(logsQuery)) {
       toast('开始时间不能晚于结束时间', 'error');
       return;
     }
@@ -379,7 +358,7 @@
     const blob = new Blob([lines.join('\n')], { type: 'application/x-ndjson;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'access-' + qFrom().replace(/[:T]/g, '-') + '_' + qTo().replace(/[:T]/g, '-') + '.jsonl';
+    a.download = 'access-' + dateRange.from(logsQuery).replace(/[:T]/g, '-') + '_' + dateRange.to(logsQuery).replace(/[:T]/g, '-') + '.jsonl';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -392,9 +371,9 @@
     logsFilter.status = '';
     logsFilter.onlyError = false;
     logsFilter.sortBy = 'time_desc';
-    logsQuery.fromDate = today();
+    logsQuery.fromDate = dateRange.today();
     logsQuery.fromTime = '00:00';
-    logsQuery.toDate = today();
+    logsQuery.toDate = dateRange.today();
     logsQuery.toTime = '23:59';
     logsQuery.path = '';
     logsQuery.pathLike = '';
@@ -406,7 +385,7 @@
   // 行展开 / 收起（key = time|trace_id，跟随行不错位）
   function toggleExpand(key) {
     if (!key) return;
-    logsExpanded[key] = !logsExpanded[key];
+    logsExpander.toggle(key);
     renderTable();
   }
 
@@ -419,7 +398,13 @@
     exportLogs,
     resetFilter,
     toggleExpand,
-    parseNdjson,
     statusGroup,
+    actions: {
+      'logs-reload': function () { query(); },
+      'log-query': function () { query(); },
+      'log-export': function () { exportLogs(); },
+      'log-reset': function () { resetFilter(); },
+      'log-expand': function (el) { toggleExpand(el.getAttribute('data-idx') || ''); },
+    },
   };
 })();

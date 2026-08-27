@@ -919,26 +919,6 @@ b, strong { font-weight: 600; }
 .gw-item .k { font-size: 12.5px; color: var(--text-2); }
 .gw-item .v { font-size: 13px; font-family: var(--font-mono); word-break: break-all; text-align: right; }
 
-/* 组件总览小卡 */
-.comp-mini-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
-
-.comp-mini {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel-2);
-  cursor: pointer;
-  transition: border-color .15s, background .15s;
-}
-
-.comp-mini:hover { border-color: var(--primary); background: rgba(47, 129, 247, .08); }
-
-.comp-mini-name { font-size: 13px; }
-.comp-mini-slot { font-size: 11px; color: var(--text-2); margin-left: auto; }
-
 /* ---------- 22. 组件页 ---------- */
 .filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
 .filter-bar .input, .filter-bar .select { width: auto; }

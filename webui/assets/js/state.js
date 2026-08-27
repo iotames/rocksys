@@ -28,6 +28,8 @@
     wafEvents: [],                 // 拦截明细行（/admin/shield/events JSONL）
     wafEventsError: null,
     wafLoaded: false,              // WAF安全防护页是否已加载（懒加载缓存判定）
+    meta: { components: [], services: [] }, // GET /admin/meta 组件/服务元数据（全局获取，不做持久化缓存）
+    metaLoaded: false,
     loginWarnings: null,           // 登录响应 warnings（prune 未开启等持久化膨胀提醒）
     logs: [],                      // 入网数据日志行（obs /admin/logs）
     logsLoaded: false,
@@ -44,28 +46,53 @@
     metricsFailed: false,
   };
 
-  // 组件元数据（名称 → 中文名 / 说明 / 环节）
-  const COMPONENT_META = {
-    shield:   { title: '防护',     desc: '入口安全防护：按 IP 黑白名单、WAF 规则与限流拦截请求；命中返回 403/429 并中断链路，未命中放行。', slot: 'Head', slotLabel: '入口环节' },
-    trace:    { title: '透传',     desc: '链路追踪：将请求的 trace_id 写入响应头 X-Trace-Id，便于串联全链路日志（trace_id 由入口自动生成）。', slot: 'Head', slotLabel: '入口环节' },
-    auth:     { title: '认证',     desc: 'JWT 鉴权：校验 Authorization 中的令牌（签名与有效期），合法放行并识别租户，非法返回 401。', slot: 'Head', slotLabel: '入口环节' },
-    dispatch: { title: '分发',     desc: '路由决策：按 URL 规则选出目标后端并写入转发信息，实际转发由转发引擎执行；未命中路由规则则进入 ROCKSYS_UPSTREAM 默认后端，命中但节点不可用返回 503。', slot: 'Middle', slotLabel: '分发环节' },
-    rewrite:  { title: '改写',     desc: '转发前改写：按规则调整请求的 URI 前缀或注入请求头，随后由转发引擎转发。', slot: 'Middle', slotLabel: '分发环节' },
-    script:   { title: '脚本',     desc: 'Lua 策略引擎：执行自定义脚本（单脚本限时 100ms），可改写目标/请求/响应，也可直接返回响应终止转发。', slot: 'Middle', slotLabel: '分发环节' },
-    obs:      { title: '观测',     desc: '请求观测：记录访问日志（含分环节耗时）并聚合 QPS/延迟/错误率等指标，供概览与日志页查看。', slot: 'Tail', slotLabel: '响应环节' },
-    copy:     { title: '抄送',     desc: '流量影子：转发完成后异步复制请求（不含请求体）到影子后端，不改写响应、不阻塞主链，失败仅告警。', slot: 'Tail', slotLabel: '响应环节' },
-    result:   { title: '结果',     desc: '出口加工：按规则对 JSON 响应脱敏或封装为统一格式（Envelope）；非 JSON 响应原样透传。', slot: 'Tail', slotLabel: '响应环节' },
-    config:   { title: '配置服务', desc: 'KV 配置服务：集中读写配置（默认本地文件），变更支持订阅广播，供各组件与服务使用。', kind: 'component' },
-    registry: { title: '注册',     desc: '服务注册与发现：实例注册、心跳续约、超时自动摘除，实例变更自动同步到分发（dispatch）路由。', kind: 'component' },
-    object:   { title: '存储',     desc: '本地对象存储：对象读写存储于本地磁盘（含路径穿越防护）。', kind: 'component' },
-    mq:       { title: '消息',     desc: '异步消息可靠投递：Outbox 模式（业务事务与消息同写）＋轮询投递，失败自动重试、超限转死信，不依赖独立 MQ。', kind: 'component' },
-  };
+  // 组件/服务元数据来自后端 GET /admin/meta（权威源 internal/catalog），前端不再硬编码。
+  // ensureMeta 全局获取一次（页面会话内持有，不做持久化缓存）；componentMeta 按名取用。
+  async function ensureMeta() {
+    if (store.metaLoaded) return;
+    try {
+      const r = await Rock.api.get('/admin/meta');
+      store.meta.components = (r && r.components) || [];
+      store.meta.services = (r && r.services) || [];
+      store.metaLoaded = true;
+    } catch (e) { /* 接口不可达：保持空元数据，页面回退英文名 */ }
+  }
+
+  // 按名称取组件/服务元数据；kind：'service'=独立服务，其余（'middleware' 等）=链中间件。
+  // 未命中时回退：title=英文名、desc 空、slotLabel 按类型给默认环节。
+  function componentMeta(name, kind) {
+    const isService = kind === 'service';
+    const list = isService ? store.meta.services : store.meta.components;
+    const found = (list || []).find(function (x) { return x.name === name; });
+    if (found) return found;
+    return {
+      title: name,
+      desc: '',
+      slot: '',
+      slotLabel: isService ? '独立服务' : '链中间件',
+    };
+  }
 
   // 数据流组件（链中间件）展示顺序：与 HTTP_DATAFLOW.md 链路顺序一致
   const COMPONENT_ORDER = ['shield', 'trace', 'auth', 'dispatch', 'rewrite', 'script', 'obs', 'copy', 'result'];
 
   // 独立服务（数据流无关，服务菜单）展示顺序
   const SERVICE_ORDER = ['config', 'registry', 'object', 'mq'];
+
+  // WAF 拦截类别（与 plugins/shield/block_type.go 数值稳定约定一致）
+  const BLOCK_TYPES = [
+    [1, 'IP黑名单'], [2, '限流'], [3, '方法不允许'], [4, '请求体超限'], [5, '风险路径'],
+    [6, '路径遍历'], [7, 'SQL注入'], [8, 'XSS'], [9, '爬虫UA'], [10, '路径规则'],
+  ];
+
+  // 类别编号 → 中文名（未命中回退原值）
+  function blockTypeName(bt) {
+    bt = Number(bt) || 0;
+    for (let i = 0; i < BLOCK_TYPES.length; i++) {
+      if (BLOCK_TYPES[i][0] === bt) return BLOCK_TYPES[i][1];
+    }
+    return '未知';
+  }
 
   // 配置分组映射（key 前缀 → 分组）：全局配置页仅保留基础设施分组（网关 / 数据访问），
   // 组件与服务的独有配置项已迁至各自页面（配置页签），经 COMPONENT_PREFIX 过滤取用
@@ -143,9 +170,12 @@
 
   window.Rock.state = {
     store,
-    COMPONENT_META,
+    ensureMeta,
+    componentMeta,
     COMPONENT_ORDER,
     SERVICE_ORDER,
+    BLOCK_TYPES,
+    blockTypeName,
     PREFIX_GROUPS,
     ENUM_KEYS,
     RESTART_KEYS,

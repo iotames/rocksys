@@ -52,7 +52,17 @@
         const m = await api.get('/admin/metrics');
         store.metrics = normalizeMetrics(m);
         store.metricsError = null;
-        Rock.comp.metrics.pushSample(store.metrics);
+        if (store.metrics) {
+          store.metricsHistory.push({
+            t: Date.now(),
+            qps: store.metrics.qps,
+            p50: store.metrics.p50_ms,
+            p95: store.metrics.p95_ms,
+            p99: store.metrics.p99_ms,
+            err: store.metrics.error_rate,
+          });
+          if (store.metricsHistory.length > 240) store.metricsHistory.shift();
+        }
         noteUpdated();
       } catch (e) {
         if (e.obsDisabled) { store.metricsError = 'obs'; }
@@ -140,7 +150,11 @@
     } else if (!store.metrics) {
       metricsBody = Rock.comp.empty.message({ text: '暂无指标数据', padding: '24px 8px' });
     } else {
-      metricsBody = Rock.comp.metrics.metricTiles({ obsOff: false });
+      metricsBody = Rock.comp.metrics.metricTiles({
+        obsOff: false,
+        metrics: store.metrics,
+        history: store.metricsHistory,
+      });
     }
     const chartBody = metricsOff
       ? ''
@@ -187,5 +201,8 @@
     skeleton,
     drawChart,
     ovCardHTML,
+    actions: {
+      'overview-reload': function () { load({ manual: true }); },
+    },
   };
 })();

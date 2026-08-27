@@ -19,7 +19,6 @@
   const esc = Rock.util.esc;
   const fmtDateTime = Rock.util.fmtDateTime;
   const store = Rock.state.store;
-  const COMPONENT_META = Rock.state.COMPONENT_META;
   const COMPONENT_PREFIX = Rock.state.COMPONENT_PREFIX;
   const normalizeSwitches = Rock.state.normalizeSwitches;
   const api = Rock.api;
@@ -62,7 +61,7 @@
   // 面包屑：概览 > 组件/服务 > 名称（中间层为分组名，仅概览可点）
   function breadcrumbHTML(opts) {
     const group = opts.type === 'service' ? '服务' : '组件';
-    const meta = COMPONENT_META[opts.name] || { title: opts.name };
+    const meta = Rock.state.componentMeta(opts.name, opts.type === 'service' ? 'service' : 'middleware');
     return '<div class="breadcrumb">' +
       '<a data-act="goto-overview" href="#/overview">概览</a>' +
       '<span class="crumb-sep">/</span>' +
@@ -94,7 +93,7 @@
   }
 
   // 配置页签容器（hidden 由页签切换控制）
-  function renderConfigPanel(container, name) {
+  function renderConfigPanel(container, name, type) {
     if (!container) return;
     const prefix = COMPONENT_PREFIX[name];
     let items = [];
@@ -105,7 +104,7 @@
     }
     if (!items.length) {
       container.innerHTML = '<div class="empty">' +
-        '<div>' + esc(COMPONENT_META[name] ? COMPONENT_META[name].title : name) + ' 无独立配置项</div>' +
+        '<div>' + esc(Rock.state.componentMeta(name, type === 'service' ? 'service' : 'middleware').title) + ' 无独立配置项</div>' +
         '<div class="muted" style="margin-top:6px">本组件不持有专属配置；全局基础设施配置请前往「全局配置」页。</div>' +
         (name === 'script'
           ? '<button class="btn btn-sm btn-primary" style="margin-top:12px" data-act="goto-scripts">去脚本页发布策略</button>'
@@ -143,7 +142,7 @@
     }
     if (!store.switchesLoaded) { skeleton(opts); return; }
     const s = store.switches.find(x => x.name === opts.name);
-    const meta = COMPONENT_META[opts.name] || { title: opts.name };
+    const meta = Rock.state.componentMeta(opts.name, opts.type === 'service' ? 'service' : 'middleware');
     if (!s) {
       host.innerHTML = breadcrumbHTML(opts) +
         Rock.comp.head.headHTML({ title: esc(meta.title) + ' ' + esc(opts.name), desc: '组件状态' }) +
@@ -177,15 +176,15 @@
         desc: esc(meta.desc || ''),
         actions: '<button class="btn btn-sm" data-act="detail-reload">⟳ 刷新</button>',
       }) +
-      '<div class="tabs">' +
-      '<div class="tab' + (tab === 'state' ? ' active' : '') + '" data-act="detail-tab" data-tab="state">状态</div>' +
-      '<div class="tab' + (tab === 'config' ? ' active' : '') + '" data-act="detail-tab" data-tab="config">配置' +
-      (cnt ? '<span class="tab-count">' + cnt + '</span>' : '') + '</div>' +
-      '</div>' +
+      Rock.comp.tabs.tabsHTML(
+        [{ name: 'state', label: '状态' }, { name: 'config', label: '配置', count: cnt || 0 }],
+        tab,
+        { act: 'detail-tab', nameAttr: 'data-tab' }
+      ) +
       '<div id="detail-panel-state"' + (tab === 'state' ? '' : ' hidden') + '>' + stateCardHTML(s, opts) + '</div>' +
       '<div id="detail-panel-config"' + (tab === 'config' ? '' : ' hidden') + '></div>';
     // 容器内查询（components/services 两个 page 容器都有同名 panel，避免渲染错位）
-    if (tab === 'config') renderConfigPanel(host.querySelector('#detail-panel-config'), opts.name);
+    if (tab === 'config') renderConfigPanel(host.querySelector('#detail-panel-config'), opts.name, opts.type);
   }
 
   // 切换页签（同步 URL hash，刷新不丢）
@@ -197,7 +196,7 @@
   // 启停组件/服务（二次确认 → 请求 → Toast → 刷新）
   async function toggle(name, enabling, opts) {
     opts = opts || {};
-    const meta = COMPONENT_META[name] || { title: name };
+    const meta = Rock.state.componentMeta(name, opts.type === 'service' ? 'service' : 'middleware');
     const isService = opts.type === 'service';
     const kindText = isService ? '服务' : '组件';
     const ok = await confirmDialog({
@@ -233,5 +232,12 @@
     setTab,
     toggle,
     stateCardHTML,
+    actions: {
+      'detail-reload': function () { Rock.main.refreshPage(Rock.main.currentRoute(), { manual: true }); },
+      'detail-tab': function (el) {
+        const r = Rock.main.currentRoute();
+        setTab({ type: r.base === 'services' ? 'service' : 'component', name: r.param }, el.getAttribute('data-tab') || 'state');
+      },
+    },
   };
 })();

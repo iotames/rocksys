@@ -133,14 +133,17 @@
     if (b) b.textContent = fmtDateTime(new Date());
   }
 
-  // 401：凭证失效 → 跳转登录视图（已在认证页则不重复弹）
+  // 401：凭证失效 → 跳转登录视图（已在认证页则不重复弹）。
+  // 处理逻辑经 setUnauthorizedHandler 由入口注入，避免基础设施反向依赖登录视图。
+  let unauthorizedHandler = null;
+
+  function setUnauthorizedHandler(fn) {
+    unauthorizedHandler = fn;
+  }
+
   function onUnauthorized() {
     if (document.body.classList.contains('auth-mode')) return;
-    if (Rock.auth) {
-      Rock.auth.showAuth();
-      Rock.auth.showPanel('login');
-      Rock.auth.setError('访问凭证无效或已过期，请重新登录');
-    }
+    if (unauthorizedHandler) unauthorizedHandler();
   }
 
   window.Rock.ui = {
@@ -150,6 +153,7 @@
     skeletonHTML,
     markUnreachable,
     noteUpdated,
+    setUnauthorizedHandler,
     onUnauthorized,
   };
 })();

@@ -12,7 +12,6 @@
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
   const fmtDateTime = Rock.util.fmtDateTime;
-  const insertAtCursor = Rock.util.insertAtCursor;
   const api = Rock.api;
   const toast = Rock.ui.toast;
   const confirmDialog = Rock.ui.confirmDialog;
@@ -129,85 +128,20 @@
       editorHTML +
       '</div>';
 
-    wireEditor();
-  }
-
-  // Lua 基础语法着色（textarea 透明文字 + 底层高亮层）
-  const LUA_TOKEN_RE = /(--\[\[[\s\S]*?\]\]--)|(--[^\n]*)|("(?:\\.|[^"\\\n])*")|('(?:\\.|[^'\\\n])*')|(\b\d+(?:\.\d+)?\b)|(\b(?:and|break|do|else|elseif|end|false|for|function|if|in|local|nil|not|or|repeat|return|then|true|until|while)\b)|([A-Za-z_]\w*)(?=\s*\()/g;
-
-  function highlightLua(src) {
-    let out = '';
-    let last = 0;
-    let m;
-    const clsMap = ['tok-com', 'tok-com', 'tok-str', 'tok-str', 'tok-num', 'tok-kw', 'tok-fn'];
-    LUA_TOKEN_RE.lastIndex = 0;
-    while ((m = LUA_TOKEN_RE.exec(src)) !== null) {
-      out += esc(src.slice(last, m.index));
-      let cls = '';
-      for (let i = 0; i < 7; i++) {
-        if (m[i + 1] !== undefined) { cls = clsMap[i]; break; }
-      }
-      out += '<span class="' + cls + '">' + esc(m[0]) + '</span>';
-      last = m.index + m[0].length;
-    }
-    out += esc(src.slice(last));
-    return out;
-  }
-
-  function wireEditor() {
-    const input = $('#code-input');
-    const layer = $('#code-layer');
-    if (!input || !layer) return;
-    input.value = scriptsState.source;
-    layer.innerHTML = highlightLua(input.value) + '\n';
-    input.addEventListener('input', () => {
-      scriptsState.source = input.value;
-      layer.innerHTML = highlightLua(input.value) + '\n';
-    });
-    input.addEventListener('scroll', () => {
-      layer.scrollTop = input.scrollTop;
-      layer.scrollLeft = input.scrollLeft;
-    });
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        insertAtCursor(input, '  ');
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        e.preventDefault();
-        publish();
-      }
+    Rock.comp.luaEditor.wire($('#code-input'), $('#code-layer'), {
+      value: scriptsState.source,
+      onChange: function (src) { scriptsState.source = src; },
+      onSave: function () { publish(); },
     });
   }
 
-  // 基础语法校验（近似：引号 / 括号 / 关键字配对）
-  function checkSyntax(src) {
-    const errs = [];
-    const stripped = src.replace(/--\[\[[\s\S]*?\]\]--|--[^\n]*/g, '');
-    ['"', "'"].forEach(ch => {
-      let n = 0;
-      for (let i = 0; i < stripped.length; i++) if (stripped[i] === ch) n++;
-      if (n % 2) errs.push('存在未配对的 ' + ch + ' 引号');
-    });
-    [['(', ')'], ['[', ']'], ['{', '}']].forEach(pair => {
-      let a = 0, b = 0;
-      for (let i = 0; i < stripped.length; i++) {
-        if (stripped[i] === pair[0]) a++;
-        if (stripped[i] === pair[1]) b++;
-      }
-      if (a !== b) errs.push('括号 ' + pair[0] + pair[1] + ' 不配对（' + a + ' vs ' + b + '）');
-    });
-    const cnt = kw => (stripped.match(new RegExp('\\b' + kw + '\\b', 'g')) || []).length;
-    const needEnd = cnt('if') + cnt('for') + cnt('while') + cnt('function') + cnt('do');
-    const ends = cnt('end');
-    if (needEnd !== ends) errs.push('if/for/while/function/do 与 end 数量不匹配（期望 ' + needEnd + ' 个 end，实际 ' + ends + ' 个）');
-    return errs;
-  }
+  // Lua 编辑器（高亮 / 联动 / 近似校验）已下沉到通用组件 Rock.comp.luaEditor
 
   // "语法校验"按钮：对当前编辑区内容执行近似校验
   function checkCurrent() {
     const src = scriptsState.source;
     if (!src) { toast('脚本内容为空，请先编写', 'warning'); return; }
-    const errs = checkSyntax(src);
+    const errs = Rock.comp.luaEditor.check(src);
     if (errs.length) {
       openModal({
         title: '语法校验未通过',
@@ -225,7 +159,7 @@
     if (!scriptsState.selected) { toast('请先选择脚本', 'warning'); return; }
     const src = scriptsState.source.trim();
     if (!src) { toast('脚本内容不能为空', 'warning'); return; }
-    const errs = checkSyntax(src);
+    const errs = Rock.comp.luaEditor.check(src);
     if (errs.length) {
       const overlay = openModal({
         title: '语法校验未通过',
@@ -364,10 +298,16 @@
     skeleton,
     select,
     checkCurrent,
-    checkSyntax,
-    highlightLua,
     publish,
     openRollback,
     openNew,
+    actions: {
+      'scripts-reload': function () { load({ manual: true }); },
+      'script-select': function (el) { select(el.getAttribute('data-name') || ''); },
+      'script-new': function () { openNew(); },
+      'script-check': function () { checkCurrent(); },
+      'script-publish': function () { publish(); },
+      'script-rollback': function () { openRollback(); },
+    },
   };
 })();

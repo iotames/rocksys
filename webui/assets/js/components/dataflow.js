@@ -6,7 +6,7 @@
  *   上行（响应）：后端 → L3 结果(result→copy→obs) → Client
  * 组件节点内嵌开关（即启停）+ 中文/英文名（点击跳转组件页），关闭的组件
  * 灰化 + 虚线直观看出"链路缺口"；状态由开关直接体现，不再单独展示色点。
- * 依赖 Rock.state.COMPONENT_META / Rock.comp.componentState。挂载 window.Rock.comp.dataflow。
+ * 依赖 Rock.state（componentMeta）/ Rock.comp.componentState。挂载 window.Rock.comp.dataflow。
  * ========================================================================== */
 (function () {
   'use strict';
