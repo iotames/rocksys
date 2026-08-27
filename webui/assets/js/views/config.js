@@ -168,14 +168,14 @@
         actions: '<button class="btn btn-sm" data-act="config-reload">⟳ 手动刷新</button>',
       }) +
       (store.configUnavailable ? '<div class="alert alert-warning">配置接口（/admin/config/list）暂不可用或网关版本不支持，当前展示底座配置。修改项保存仍可用。</div>' : '') +
+      '<div class="tabs">' + tabs + '</div>' +
+      '<div class="card"><div id="config-group-panel"></div></div>' +
       '<div class="card">' +
       '<div class="card-title">组件配置 <span class="card-sub">数据流组件 · 点击进入对应页面查看与修改</span></div>' +
       '<div class="cfg-link-grid">' + linkGridHTML('component') + '</div>' +
       '<div class="card-title" style="margin-top:18px">服务配置 <span class="card-sub">独立服务 · 点击进入对应页面查看与修改</span></div>' +
       '<div class="cfg-link-grid">' + linkGridHTML('service') + '</div>' +
-      '</div>' +
-      '<div class="tabs">' + tabs + '</div>' +
-      '<div class="card"><div id="config-group-panel"></div></div>';
+      '</div>';
     const panel = $('#config-group-panel');
     const active = groups.find(g => g.name === configActiveGroup);
     ce.render(panel, active ? active.items : []);

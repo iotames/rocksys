@@ -4,8 +4,8 @@
  *   下行（请求）：Client → 入口 → L1 防护(shield→trace→auth) → L2 决策(dispatch→rewrite→script)
  *                 → 转发引擎 → 后端
  *   上行（响应）：后端 → L3 结果(result→copy→obs) → Client
- * 组件节点仅展示状态色点 + 名称（不做开关交互），点击跳转对应组件页；
- * 关闭的组件灰化 + 虚线，直观看出"链路缺口"。hover 展示组件说明。
+ * 组件节点内嵌开关（即启停）+ 中文/英文名（点击跳转组件页），关闭的组件
+ * 灰化 + 虚线直观看出"链路缺口"；状态由开关直接体现，不再单独展示色点。
  * 依赖 Rock.state.COMPONENT_META / Rock.comp.componentState。挂载 window.Rock.comp.dataflow。
  * ========================================================================== */
 (function () {
@@ -16,21 +16,23 @@
 
   const esc = Rock.util.esc;
 
-  // 环节定义：name / 组件列表 / 组标签
+  // 环节定义：name / 组件列表 / 组标签 / 组内箭头方向
+  // （上行响应组整行 row-reverse：后端在右、Client 在左，组内箭头统一向左）
   const GROUPS = [
-    { label: 'L1 防护', sub: '入口环节', names: ['shield', 'trace', 'auth'] },
-    { label: 'L2 决策', sub: '分发环节', names: ['dispatch', 'rewrite', 'script'] },
+    { label: 'L1 防护', sub: '入口环节', names: ['shield', 'trace', 'auth'], arrow: '→' },
+    { label: 'L2 决策', sub: '分发环节', names: ['dispatch', 'rewrite', 'script'], arrow: '→' },
   ];
   // 上行（响应）执行顺序：result → copy → obs（Tail 槽位逆序：result 先改写、obs 最后记录）；
-  // df-up 行为 row-reverse，names 反向排列以还原真实时序（后端 → result → copy → obs → Client）
-  const RESP_GROUP = { label: 'L3 结果', sub: '响应环节', names: ['obs', 'copy', 'result'] };
+  // df-up 整行 row-reverse（视觉后端在右、Client 在左），组内自左向右为 obs→copy→result，
+  // 配合向左箭头还原真实流向（后端 → result → copy → obs → Client）
+  const RESP_GROUP = { label: 'L3 结果', sub: '响应环节', names: ['obs', 'copy', 'result'], arrow: '←' };
 
   function stateOf(switches, name) {
     const s = (switches || []).find(x => x.name === name);
     return s ? s.state : 'disabled';
   }
 
-  // 组件节点：状态色点 + 中文名 + 英文名；关闭灰化虚线
+  // 组件节点：启停开关 + 中文名 + 英文名；关闭灰化虚线；点击名称跳组件页
   function nodeHTML(switches, name) {
     const st = stateOf(switches, name);
     const meta = Rock.comp.componentState.meta(name, 'middleware');
@@ -38,16 +40,24 @@
     const off = st !== 'enabled';
     return '<div class="df-node' + (off ? ' off' : '') + '"' +
       ' data-tip="' + esc(meta.title) + ' · ' + esc(meta.slotLabel || '') + ' · ' + esc(sm.text) + '"' +
-      ' data-act="nav-detail" data-route="components/' + esc(name) + '">' +
-      '<span class="dot ' + sm.dot + '"></span><b>' + esc(meta.title) + '</b><i>' + esc(name) + '</i>' +
+      '>' +
+      '<label class="el-switch" title="' + esc(sm.text) + '">' +
+      '<input type="checkbox" data-act="detail-toggle" data-name="' + esc(name) + '" data-type="component"' +
+      (st === 'enabled' ? ' checked' : '') +
+      (st === 'draining' ? ' disabled' : '') + '>' +
+      '<span class="el-switch-core"></span></label>' +
+      '<div class="df-name" data-act="nav-detail" data-route="components/' + esc(name) + '"' +
+      ' title="点击进入 ' + esc(meta.title) + ' ' + esc(name) + ' 页">' +
+      '<b>' + esc(meta.title) + '</b><i>' + esc(name) + '</i></div>' +
       '</div>';
   }
 
   // 环节分组：组标签 + 组内组件横排
   function groupHTML(switches, g) {
+    const arrow = g.arrow || '→';
     return '<div class="df-group">' +
       '<div class="df-group-label">' + esc(g.label) + ' <span>' + esc(g.sub) + '</span></div>' +
-      '<div class="df-group-body">' + g.names.map(n => nodeHTML(switches, n)).join('<div class="df-arrow">→</div>') + '</div>' +
+      '<div class="df-group-body">' + g.names.map(n => nodeHTML(switches, n)).join('<div class="df-arrow">' + arrow + '</div>') + '</div>' +
       '</div>';
   }
 

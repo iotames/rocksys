@@ -121,7 +121,7 @@ SHIELD_WAF_SQL_INJECTION=true SHIELD_WAF_XSS=true rocksys --upstream http://127.
 
 ### 3.2 dispatch — L2 路由分发（转发链中间件，Middle）
 
-**作用**：按 URI 分发到不同后端；未命中回退默认 upstream。
+**作用**：按 URL 规则**选择**目标后端并写入转发信息，实际转发由转发引擎执行；未命中路由规则则进入 `ROCKSYS_UPSTREAM` 默认后端，命中但节点不可用返回 503。
 
 **配置项**：`DISPATCH_ENABLED`（父开关，默认 false）、`DISPATCH_RULES`
 
@@ -221,7 +221,7 @@ rockctl script rollback             # 回滚上一版本
 
 ### 3.6 copy — 请求抄送（转发链中间件，Tail + ResponseHook）
 
-**作用**：复制线上请求异步发送到 shadow 后端（流量审计 / 影子验证）。
+**作用**：复制线上请求异步发送到 shadow 后端（流量审计 / 影子验证），不改写响应、不阻塞主链。
 
 **配置项**：`COPY_ENABLED`（父开关，默认 false）、`COPY_TARGETS`（逗号分隔 shadow URL，空 = 关闭）
 
@@ -259,7 +259,7 @@ COPY_TARGETS="http://shadow-a:9100;http://shadow-b:9100"
 
 ### 3.12 object — RockObject（独立组件）
 
-**作用**：对象存储（默认本地磁盘，S3 兼容适配器可选）。
+**作用**：本地对象存储（默认 `./data/object` 目录，含路径穿越防护）。
 
 ### 3.13 mq — RockMQ（独立组件）
 

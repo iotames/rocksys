@@ -110,8 +110,6 @@
 | object | 存储 | component | 独立服务 |
 | mq | 消息 | component | 独立服务（条件装配） |
 
-**降级链关联**（概览页可视化用）：L1 防护 = `shield`；L2 分发 = `dispatch`；L3 结果 = `result`。三者全开 = 全量能力；逐级关闭 = 逐级降级；最底层裸转发永远可用。
-
 ### 3.2 POST /admin/switch/on — 开启组件
 
 请求体：

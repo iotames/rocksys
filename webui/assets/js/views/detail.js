@@ -72,31 +72,15 @@
       '</div>';
   }
 
-  // 状态页签：大卡片
+  // 状态页签：运行信息卡片（开关 / 名称 / 环节 / 描述已上移至页面公共区域）
   function stateCardHTML(s, opts) {
     const meta = Rock.comp.componentState.meta(s.name, s.kind);
-    const st = Rock.comp.componentState.stateMeta(s.state);
     const isService = opts.type === 'service';
-    const slotLabel = isService ? '独立服务' : (meta.slotLabel || '链中间件');
     const slotHint = isService
       ? '独立于 HTTP 数据流运行，作为网关的支撑系统。'
-      : ('位于数据流「' + slotLabel + '」，请求按顺序流经本环节。');
+      : ('位于数据流「' + (meta.slotLabel || '链中间件') + '」，请求按顺序流经本环节。');
     const msgBad = /fail|error|timeout/i.test(s.message);
     return '<div class="detail-card">' +
-      '<div class="comp-head">' +
-      '<label class="el-switch" title="' + esc(st.text) + '">' +
-      '<input type="checkbox" data-act="detail-toggle" data-name="' + esc(s.name) + '" data-type="' + (isService ? 'service' : 'component') + '"' +
-      (s.state === 'enabled' ? ' checked' : '') +
-      (s.state === 'draining' ? ' disabled' : '') + '>' +
-      '<span class="el-switch-core"></span></label>' +
-      '<div class="detail-name">' +
-      '<span class="detail-cn">' + esc(meta.title) + '</span>' +
-      '<span class="comp-key">' + esc(s.name) + '</span>' +
-      '</div>' +
-      '<span class="tag ' + st.tag + '">' + esc(st.text) + '</span>' +
-      '<span class="tag tag-blue">' + esc(slotLabel) + '</span>' +
-      '</div>' +
-      '<div class="comp-desc">' + esc(meta.desc) + '</div>' +
       '<div class="comp-meta">' +
       '<span>启用时间 <b>' + esc(fmtDateTime(s.started_at)) + '</b></span>' +
       '<span>最近切换 <b>' + esc(fmtDateTime(s.last_switch_at)) + '</b></span>' +
@@ -170,10 +154,26 @@
     }
     const tab = opts.tab === 'config' ? 'config' : 'state';
     const cnt = configCount(opts.name);
+    const isService = opts.type === 'service';
+    const st = Rock.comp.componentState.stateMeta(s.state);
+    const slotLabel = isService ? '独立服务' : (meta.slotLabel || '链中间件');
+    const barHTML =
+      '<span class="page-title-bar">' +
+      '<label class="el-switch" title="' + esc(st.text) + '">' +
+      '<input type="checkbox" data-act="detail-toggle" data-name="' + esc(opts.name) + '" data-type="' + (isService ? 'service' : 'component') + '"' +
+      (s.state === 'enabled' ? ' checked' : '') +
+      (s.state === 'draining' ? ' disabled' : '') + '>' +
+      '<span class="el-switch-core"></span></label>' +
+      '<span class="detail-name">' +
+      '<span class="detail-cn">' + esc(meta.title) + '</span>' +
+      '<span class="comp-key">' + esc(opts.name) + '</span>' +
+      '</span>' +
+      '<span class="tag tag-blue">' + esc(slotLabel) + '</span>' +
+      '</span>';
     host.innerHTML =
       breadcrumbHTML(opts) +
       Rock.comp.head.headHTML({
-        titleHTML: esc(meta.title) + ' <span class="comp-key">' + esc(opts.name) + '</span>',
+        titleHTML: barHTML,
         desc: esc(meta.desc || ''),
         actions: '<button class="btn btn-sm" data-act="detail-reload">⟳ 刷新</button>',
       }) +

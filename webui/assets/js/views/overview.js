@@ -1,7 +1,7 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/overview.js 概览页
- * 网关信息卡 + 运行指标卡（含趋势图） + HTTP 数据流图 + 组件状态总览（卡片带开关）
- * + 服务状态总览 + 降级链可视化。
+ * 网关信息卡 + 运行指标卡（含趋势图） + HTTP 数据流图（组件节点带开关）
+ * + 服务状态总览。
  * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api / Rock.comp.{metrics,componentState,dataflow,chart}。
  * 挂载到全局命名空间 window.Rock.views.overview。
  * ========================================================================== */
@@ -14,7 +14,6 @@
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
   const store = Rock.state.store;
-  const COMPONENT_ORDER = Rock.state.COMPONENT_ORDER;
   const SERVICE_ORDER = Rock.state.SERVICE_ORDER;
   const normalizeSwitches = Rock.state.normalizeSwitches;
   const normalizeMetrics = Rock.state.normalizeMetrics;
@@ -69,67 +68,7 @@
     host.innerHTML = skeletonHTML(6);
   }
 
-  // 降级链：L1 防护 / L2 分发 / L3 结果
-  function degradeState(switches) {
-    const get = name => {
-      const s = switches.find(x => x.name === name);
-      return !!(s && s.state === 'enabled');
-    };
-    const sOn = get('shield');
-    const dOn = get('dispatch');
-    const rOn = get('result');
-    const closed = [];
-    if (!rOn) closed.push('L3 结果处理');
-    if (!dOn) closed.push('L2 分发');
-    if (!sOn) closed.push('L1 防护');
-    let currentIdx;   // 当前能力节点下标
-    let mode;
-    let modeCls = 'tag-green';
-    if (closed.length === 0) {
-      currentIdx = 0; mode = '全量能力：防护 → 分发 → 结果处理全链路开启';
-    } else if (closed.length === 3) {
-      currentIdx = 4; mode = '裸转发兜底：降级链已全部关闭，转发永不中断';
-      modeCls = 'tag-orange';
-    } else {
-      // 降级运行：当前能力边界 = 最深的仍开启保护环
-      if (sOn) { currentIdx = 3; mode = '降级运行：已关闭 ' + closed.join('、'); }
-      else if (dOn) { currentIdx = 2; mode = '降级运行：已关闭 ' + closed.join('、'); }
-      else { currentIdx = 4; mode = '降级运行：已关闭 ' + closed.join('、'); }
-      modeCls = 'tag-orange';
-    }
-    return { sOn, dOn, rOn, currentIdx, mode, modeCls, closed };
-  }
-
-  function renderDegradeChain(switches) {
-    const d = degradeState(switches);
-    const nodes = [
-      { label: '全量能力', sub: '激活', on: d.closed.length === 0, fallback: false, badge: d.currentIdx === 0 ? '当前' : null, badgeCls: '', current: d.currentIdx === 0 },
-      { label: 'L3 结果', sub: d.rOn ? '开' : '关', on: d.rOn, fallback: false, badge: null, badgeCls: '', current: d.currentIdx === 1 },
-      { label: 'L2 分发', sub: d.dOn ? '开' : '关', on: d.dOn, fallback: false, badge: null, badgeCls: '', current: d.currentIdx === 2 },
-      { label: 'L1 防护', sub: d.sOn ? '开' : '关', on: d.sOn, fallback: false, badge: null, badgeCls: '', current: d.currentIdx === 3 },
-      { label: '裸转发', sub: '兜底', on: true, fallback: true, badge: '永不中断', badgeCls: 'badge-red', current: d.currentIdx === 4 },
-    ];
-    let html = '<div class="chain">';
-    nodes.forEach((n, i) => {
-      if (i > 0) html += '<div class="chain-link"></div>';
-      let cls = '';
-      if (n.fallback) cls += ' fallback';
-      else if (n.on) cls += ' on';
-      if (n.current) cls += ' current';
-      html += '<div class="chain-node">' +
-        '<div class="chain-pill' + cls + '">' + esc(n.label) +
-        (n.badge ? '<span class="badge ' + (n.badgeCls || '') + '">' + esc(n.badge) + '</span>' : '') +
-        '</div>' +
-        '<div class="chain-state">' + esc(n.sub) + '</div>' +
-        '</div>';
-    });
-    html += '</div>';
-    html += '<div class="chain-mode"><span class="tag ' + d.modeCls + '">' + esc(d.closed.length === 0 ? '全量' : (d.closed.length === 3 ? '裸转发' : '降级')) + '</span> ' +
-      esc(d.mode) + '　<span class="muted">关闭只是降级，转发永不中断</span></div>';
-    return html;
-  }
-
-  // 组件/服务总览大卡片：左上 switch 直启 + 名称点击跳转 + 环节标签 + 状态
+  // 服务总览大卡片：左上 switch 直启 + 名称点击跳转 + 独立服务标签 + 状态
   function ovCardHTML(s, routeBase) {
     const meta = Rock.comp.componentState.meta(s.name, s.kind);
     const st = Rock.comp.componentState.stateMeta(s.state);
@@ -208,8 +147,7 @@
       : '<div class="chart-box" style="height:150px;margin-top:12px"><canvas id="overview-chart"></canvas></div>' +
         (store.metricsHistory.length < 2 ? '<div class="empty">等待采样数据…（开启自动刷新后趋势自动累积）</div>' : '');
 
-    // ---- 组件与服务 ----
-    const comps = store.switches.filter(s => s.kind !== 'component');
+    // ---- 独立服务 ----
     const services = store.switches.filter(s => s.kind === 'component');
 
     host.innerHTML =
@@ -226,22 +164,13 @@
       '<div class="card"><div class="card-title">运行指标 <span class="card-sub">实时 · 趋势</span></div>' + metricsBody + chartBody + '</div>' +
       '</div>' +
 
-      '<div class="card"><div class="card-title">HTTP 数据流 <span class="card-sub">组件按链路顺序执行，关闭即降级（点击节点进入组件页）</span></div>' +
+      '<div class="card"><div class="card-title">HTTP 数据流 <span class="card-sub">组件按链路顺序执行 · 开关即启停 · 点击名称进入详情（关闭即降级）</span></div>' +
       Rock.comp.dataflow.renderHTML(store.switches) +
       '</div>' +
 
-      '<div class="grid grid-2">' +
-      '<div class="card"><div class="card-title">组件状态总览 <span class="card-sub">开关即启停 · 点击名称进入详情</span></div>' +
-      overviewGridHTML(comps, COMPONENT_ORDER, 'components') +
-      '</div>' +
       '<div class="card"><div class="card-title">服务状态总览 <span class="card-sub">独立服务 · 点击名称进入详情</span></div>' +
       overviewGridHTML(services, SERVICE_ORDER, 'services') +
       (services.length ? '' : '<div class="form-hint">服务按配置装配，当前未装配独立服务。</div>') +
-      '</div>' +
-      '</div>' +
-
-      '<div class="card"><div class="card-title">降级链 <span class="card-sub">核心概念：关闭只是降级，转发永不中断</span></div>' +
-      renderDegradeChain(store.switches) +
       '</div>';
 
     if (!metricsOff && store.metrics) drawChart();
@@ -256,8 +185,6 @@
     load,
     render,
     skeleton,
-    degradeState,
-    renderDegradeChain,
     drawChart,
     ovCardHTML,
   };

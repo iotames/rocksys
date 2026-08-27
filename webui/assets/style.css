@@ -447,6 +447,7 @@ b, strong { font-weight: 600; }
 
 .page-title { font-size: 16px; font-weight: 600; }
 .page-desc { font-size: 12.5px; color: var(--text-2); margin-top: 2px; }
+.page-title-bar { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 /* ---------- 6. 按钮 ---------- */
 .btn {
@@ -918,60 +919,6 @@ b, strong { font-weight: 600; }
 .gw-item .k { font-size: 12.5px; color: var(--text-2); }
 .gw-item .v { font-size: 13px; font-family: var(--font-mono); word-break: break-all; text-align: right; }
 
-/* 降级链 */
-.chain { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; padding: 18px 0 6px; }
-
-.chain-node { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 96px; }
-
-.chain-pill {
-  position: relative;
-  padding: 8px 14px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  text-align: center;
-  font-size: 13px;
-  color: var(--text-2);
-  transition: all .2s;
-}
-
-.chain-pill.on { border-color: rgba(34, 197, 94, .55); color: var(--ok-light); }
-.chain-pill.fallback { border-color: rgba(47, 129, 247, .6); color: var(--primary-light); }
-.chain-pill.current {
-  border-color: var(--primary);
-  color: var(--primary);
-  box-shadow: 0 0 0 3px var(--focus-ring);
-}
-
-.chain-pill .badge {
-  position: absolute;
-  top: -8px;
-  right: -8px;
-  font-size: 10px;
-  padding: 0 6px;
-  border-radius: 8px;
-  background: var(--primary);
-  color: #fff;
-  line-height: 16px;
-  white-space: nowrap;
-}
-
-.chain-pill .badge-red { background: var(--danger); }
-.chain-pill .badge-green { background: var(--ok); }
-
-.chain-state { font-size: 12px; color: var(--text-2); }
-
-.chain-link {
-  flex: 1 1 20px;
-  min-width: 16px;
-  display: flex;
-  align-items: center;
-  color: var(--border);
-}
-.chain-link::before { content: ''; flex: 1; height: 1px; background: currentColor; }
-
-.chain-mode { margin-top: 14px; padding: 10px 14px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--border); font-size: 13px; }
-
 /* 组件总览小卡 */
 .comp-mini-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 
@@ -1302,6 +1249,7 @@ b, strong { font-weight: 600; }
 
 /* ---- 详情页（组件/服务）：状态大卡片 ---- */
 .detail-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; }
+.detail-card > .comp-meta { border-top: none; padding-top: 0; }
 .detail-card .comp-head { gap: 12px; }
 .detail-name { display: inline-flex; align-items: baseline; gap: 8px; }
 .detail-cn { font-size: 16px; font-weight: 600; color: var(--text); }
@@ -1326,18 +1274,20 @@ b, strong { font-weight: 600; }
 .df-row { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; }
 .df-up { flex-direction: row-reverse; }
 .df-node {
-  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
   border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel);
-  cursor: pointer; transition: border-color .15s, box-shadow .15s, opacity .15s;
+  transition: border-color .15s, box-shadow .15s, opacity .15s;
   white-space: nowrap;
 }
-.df-node b { font-size: 13px; font-weight: 600; }
+.df-node b { font-size: 14px; font-weight: 600; }
 .df-node i { font-style: normal; font-size: 11px; color: var(--text-2); font-family: var(--font-mono); }
 .df-node:hover { border-color: var(--primary); box-shadow: var(--shadow); }
 .df-node.off { border-style: dashed; border-color: var(--border); opacity: .55; }
 .df-node.off:hover { border-color: var(--primary); opacity: .85; }
 .df-node.df-ext { cursor: default; border-color: var(--border); background: var(--panel-2); }
 .df-node.df-base { cursor: default; }
+.df-name { display: inline-flex; align-items: baseline; gap: 6px; cursor: pointer; }
+.df-name:hover b { color: var(--primary); }
 .df-group {
   display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px;
   background: var(--panel-2); padding: 6px 8px; gap: 6px;
