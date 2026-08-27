@@ -152,6 +152,20 @@
           <span>概览</span>
         </a>
 
+        <!-- WAF安全防护 / 入网数据：安全与流量巡检，紧跟概览 -->
+        <a class="menu-item" data-route="waf" href="#/waf" title="WAF安全防护：实时计数 / 按日趋势 / Top 攻击源 / 明细">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/><path d="M12 8v4"/><circle cx="12" cy="15" r="0.5" fill="currentColor"/>
+          </svg>
+          <span>WAF安全防护</span>
+        </a>
+        <a class="menu-item" data-route="logs" href="#/logs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>
+          </svg>
+          <span>入网数据</span>
+        </a>
+
         <!-- 组件：数据流链中间件，一组件一页 -->
         <div class="menu-group" id="menu-group-components">
           <div class="menu-item menu-parent" data-group="components">
@@ -203,39 +217,6 @@
           <span>脚本</span>
         </a>
 
-        <!-- 观测：安全 / 入网 / 系统三类日志 -->
-        <div class="menu-group" id="menu-group-obs">
-          <div class="menu-item menu-parent" data-group="obs">
-            <span class="menu-parent-label">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M6 20V10M12 20V4M18 20v-6"/>
-              </svg>
-              <span>观测</span>
-            </span>
-            <span class="menu-arrow">▾</span>
-          </div>
-          <div class="menu-sub" id="menu-sub-obs">
-            <a class="menu-item menu-sub-item" data-route="waf" href="#/waf" title="WAF安全防护：实时计数 / 按日趋势 / Top 攻击源 / 明细">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/><path d="M12 8v4"/><circle cx="12" cy="15" r="0.5" fill="currentColor"/>
-              </svg>
-              <span>WAF安全防护</span>
-            </a>
-            <a class="menu-item menu-sub-item" data-route="logs" href="#/logs">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M8 6h12M8 12h12M8 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>
-              </svg>
-              <span>入网数据</span>
-            </a>
-            <a class="menu-item menu-sub-item" data-route="syslogs" href="#/syslogs">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M4 5h16M4 12h16M4 19h10"/><circle cx="18" cy="19" r="2.5"/>
-              </svg>
-              <span>系统日志</span>
-            </a>
-          </div>
-        </div>
-
         <!-- 全局配置：基础设施配置，置底 -->
         <a class="menu-item" data-route="config" href="#/config">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -243,6 +224,14 @@
             <circle cx="11" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="13" cy="18" r="2"/>
           </svg>
           <span>全局配置</span>
+        </a>
+
+        <!-- 系统日志：进程日志排障入口，置于全局配置之后 -->
+        <a class="menu-item" data-route="syslogs" href="#/syslogs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 5h16M4 12h16M4 19h10"/><circle cx="18" cy="19" r="2.5"/>
+          </svg>
+          <span>系统日志</span>
         </a>
       </nav>
       <div class="sidebar-foot">关闭只是降级，转发永不中断</div>

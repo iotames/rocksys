@@ -2,7 +2,7 @@
 
 > 依据：`internal/chain/`（链机制）、`internal/engine/engine.go`（转发）、`internal/dataflow/`（数据载体）、`plugins/*`（各挂件）。
 
-> 依赖方向：挂件仅依赖底座接口（`chain.Middleware` / `chain.ResponseHook` / `hotswap.MiddlewareLifecycle`），**底座不依赖任何挂件**（ARCHITECTURE.md §8 红线）。
+> 依赖方向：挂件仅依赖底座接口（`chain.Middleware` / `chain.ResponseHook` / `hotswap.MiddlewareLifecycle`），**底座不依赖任何挂件**。
 
 ---
 

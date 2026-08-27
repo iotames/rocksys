@@ -1,6 +1,6 @@
 # 生产部署
 
-> 目录规划、systemd 服务、安全建议、升级重启、多副本与日志留存。由 README.md「生产部署」章节下沉而来。
+> 目录规划、systemd 服务、Nginx 反代、安全建议、升级重启、多副本与日志留存。由 README.md「生产部署」章节下沉而来。
 
 ## 目录规划
 
@@ -70,8 +70,24 @@ sudo systemctl restart rocksys
 
 前方用负载均衡器 / DNS 轮询分发；配置集中下发（同一配置文件或环境变量）。
 
+## Nginx 反代（HTTPS / FastCGI 场景）
+
+rockSys 是纯 HTTP 反代（**不支持 HTTPS 监听、不支持 FastCGI**），公网 HTTPS 由 Nginx 终结，rockSys 作中间防护层；Nginx 必须用 `proxy_pass` 转发（`fastcgi_pass` 报文 rockSys 无法解析；php-fpm 后端由 Nginx 在 rockSys 之后继续 fastcgi 转发）。
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;   # rockSys 入口
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Nginx 与 rockSys 同机（经 127.0.0.1 转发）无需配置可信代理；Nginx 在容器/他机时，将其 IP 或网段加入 `bin/hotscripts/trusted_proxies/trusted_proxies.txt`（默认仅 `127.0.0.1`，改后 ≤3s 热更），否则 `client_ip` 取到的是 Nginx 的 IP。客户端真实 IP 取值逻辑（可信代理模型）见 `docs/CONFIGURATION.md`。
+
 ## 日志与留存
 
 - obs 启用后：访问日志默认写入 `access_log` 表（`OBS_STORE=db`，复用 `DB_DRIVER`/`DB_DSN`；数据库不可用时回退 JSONL 文件并告警）。`OBS_STORE=file` 已弃用，将不再被支持。WebUI「日志」页支持按时间范围（精确到分）+ 路径精确/模糊过滤查询。全部数据表字段/枚举定义见 `docs/DATA_DICT.md`。
-- 指标：`GET /admin/metrics`（1 分钟滑动窗口），WebUI「观测 · 指标」查看趋势。
+- 指标：`GET /admin/metrics`（1 分钟滑动窗口），WebUI 概览页「运行指标」查看趋势。
 - 业务日志与网关日志分离；如需聚合到统一平台，可对接日志采集器消费 `logs/` 目录。

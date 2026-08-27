@@ -48,7 +48,7 @@ TRUSTED_PROXIES_FILE = trusted_proxies.txt
 
 # ===== 防护 shield（L1）=====
 SHIELD_ENABLED = false           # 父开关：false=不挂载（默认）；true=挂载并拦截
-# IP 黑名单（动态）：DB 表 ip_blacklist（管理面录入/导入，见 docs/WAF_BLACKLIST_MIGRATION.md）∪ 外挂 HOT_SCRIPTS_DIR/rules/ip_blacklist.txt，取并集；热路径只读内存快照，TTL 60s 兑底刷新；不再走 .env 配置
+# IP 黑名单（动态）：DB 表 ip_blacklist（管理面录入/导入）∪ 外挂 HOT_SCRIPTS_DIR/rules/ip_blacklist.txt，取并集；热路径只读内存快照，TTL 60s 兑底刷新；不再走 .env 配置
 SHIELD_IP_WHITELIST =
 SHIELD_RATE_LIMIT_RPS = 100
 SHIELD_RATE_LIMIT_BURST = 50

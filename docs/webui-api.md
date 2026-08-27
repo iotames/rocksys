@@ -465,7 +465,7 @@
 | `/admin/shield/blacklist/import` | POST 批量导入：**body 为纯文本**（每行一个精确 IP/CIDR，兼容外挂文件格式；兼容 JSON 字符串编码），query 可选 `title`/`block_type`；响应 `{"ok":true,"imported":N,"skipped":N}` |
 | `/admin/shield/whitelist` 及 update/delete/restore/import | 白名单同构（无 block_type/expires_at 字段） |
 
-> 全部变更写库后**即时重建拦截快照**（不等 TTL 兜底）；数据表见 `docs/DATA_DICT.md` §2.5-2.7；存量迁移手册见 `docs/WAF_BLACKLIST_MIGRATION.md`。
+> 全部变更写库后**即时重建拦截快照**（不等 TTL 兜底）；数据表见 `docs/DATA_DICT.md` §2.5-2.7；外挂 `rules/ip_blacklist.txt` 存量条目可直接粘贴本接口批量导入。
 
 ---
 

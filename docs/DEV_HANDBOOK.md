@@ -1,6 +1,6 @@
 # RockSys 开发手册（详细技术规格，供 AI 智能体对照实现）
 
-> 依据：ARCHITECTURE.md v2（架构）· PROJECT_STRUCTURE.md v3（目录）
+> 依据：PROJECT_STRUCTURE.md v3（目录）· HTTP_DATAFLOW.md（数据流）
 > 用法：按章顺序实现，每章独立可交付；每章末尾"验收标准"达标后再进入下一章。
 > 附录 A/B 提供 easyserver/easyconf 的实际接口签名——实现时对照查阅，禁止凭空假设。
 
@@ -1347,7 +1347,7 @@ DB 就绪（`DB_DRIVER`/`DB_DSN`）时自动建表并接入拦截链路（三表
 - **来源合并**：黑名单 = DB 表 ∪ 外挂 `rules/ip_blacklist.txt`；白名单 = DB 表 ∪ `.env` `SHIELD_IP_WHITELIST`，均取并集，白名单优先；
 - **性能红线**：请求热路径零 DB 查询——快照（含 DB 数据）由启动/管理面变更/TTL（60s）重建，命中计数异步攒批落库；
 - **管理面**：`/admin/shield/blacklist`（GET 列表 / POST 新增）、`/update`、`/delete`（软删）、`/restore`、`/import`（批量导入，body 纯文本每行一个 IP/CIDR）；whitelist 同构；变更即时生效（主动重建快照）；DB 未配置时端点 503；
-- **存量迁移**：外挂 403 条风险 IP 导入 DB 的操作手册见 `docs/WAF_BLACKLIST_MIGRATION.md`（导入后建议外挂瘦身为最小种子集，DB 为唯一权威）。
+- **存量迁移**：外挂 `rules/ip_blacklist.txt` 中的存量条目可经 WebUI「黑白名单」Tab 批量导入（或 `POST /admin/shield/blacklist/import`）直接搬入 DB；导入后建议外挂瘦身为最小种子集，DB 为唯一权威。
 
 ### 9.4.2 未来方向（WAF 方案 §8 留档，实施完成后记录备查）
 
@@ -1380,7 +1380,7 @@ for i in $(seq 1 110); do curl -s -o /dev/null -w "%{http_code}\n" http://localh
 # → 前 100 个 200，之后 429
 ```
 
-### 9.6 WAF 检测（批次10 新增）
+### 9.6 WAF 检测
 
 WAF 检测链在 IP 黑白名单之后、路径/UA 规则之前执行，各检测项独立开关、**全部默认关闭**（符合"演进 = 开关切换"红线）。
 
@@ -1429,7 +1429,7 @@ curl http://localhost:8080/.env
 
 - **职责**：URI 前缀路由表 → 目标节点组（多节点负载均衡）；未命中 → 默认 upstream。
 - **依赖**：`internal/chain`、`internal/dataflow`、`internal/hotswap`、`internal/conf`。
-- **v2（批次10）**：前缀可指向【节点组】——多节点 + 平滑加权轮询 + 主动健康检查 + 高优节点优先（借鉴 easywaf，修掉其"未加权轮询、健康检查空壳"不足）。
+- **v2**：前缀可指向【节点组】——多节点 + 平滑加权轮询 + 主动健康检查 + 高优节点优先（借鉴 easywaf，修掉其"未加权轮询、健康检查空壳"不足）。
 
 ### 10.1 关键类型
 
@@ -1521,7 +1521,7 @@ curl http://localhost:8080/api/ordering/list
 # → 不命中 /api/order/，走默认 upstream
 ```
 
-### 10.5 负载均衡选点语义（批次10 新增）
+### 10.5 负载均衡选点语义
 
 ```
 高优节点（Priority=0）中选健康的
@@ -1836,7 +1836,7 @@ curl http://localhost:8080/block
 
 ---
 
-## 第 16 章 plugins/auth（RockAuth）【P2】
+## 第 16 章 plugins/auth（RockAuth）
 
 - **职责**：JWT 认证、租户识别。实现 `chain.Middleware` + `hotswap.MiddlewareLifecycle`，挂在 Head 槽位。
 - **依赖**：`internal/chain`、`internal/dataflow`、`internal/hotswap`、`internal/conf`。
@@ -1849,7 +1849,7 @@ curl http://localhost:8080/block
 
 ---
 
-## 第 17 章 plugins/registry（RockRegistry）【P2】
+## 第 17 章 plugins/registry（RockRegistry）
 
 - **职责**：服务注册与发现。实现 `hotswap.Component` 接口。
 - **依赖**：`internal/hotswap`、`internal/conf`、`internal/chain`（联动 dispatch 时）。
@@ -1862,7 +1862,7 @@ curl http://localhost:8080/block
 
 ---
 
-## 第 18 章 plugins/mq（RockMQ）【P2】
+## 第 18 章 plugins/mq（RockMQ）
 
 - **职责**：异步消息可靠投递（无需独立 MQ 即可工作）。
 - **依赖**：`internal/hotswap`、数据库 driver（通过 `*sql.DB` 注入）。
@@ -1875,7 +1875,7 @@ curl http://localhost:8080/block
 
 ---
 
-## 第 19 章 plugins/object（RockObject）【P2】
+## 第 19 章 plugins/object（RockObject）
 
 - **职责**：本地对象存储。
 - **依赖**：`internal/hotswap`。

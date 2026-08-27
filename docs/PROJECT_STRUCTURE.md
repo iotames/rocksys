@@ -37,8 +37,7 @@ rocksys/
 ├── examples/
 │   └── stbiz_hello/              # 最小业务微服务模板
 └── docs/
-    ├── ARCHITECTURE.md
-    └── PROJECT_STRUCTURE.md
+    └── PROJECT_STRUCTURE.md      # 本文件；其余文档见 README「文档」索引
 ```
 
 ## 1. 只有三层，无多余嵌套

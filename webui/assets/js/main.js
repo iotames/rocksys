@@ -20,8 +20,8 @@
     overview: 1, components: 'param', services: 'param',
     scripts: 1, config: 1, waf: 1, logs: 1, syslogs: 1,
   };
-  // 侧边栏可折叠分组（路由 base → 分组 id）
-  const MENU_GROUPS = ['components', 'services', 'obs'];
+  // 侧边栏可折叠分组（路由 base → 分组 id；WAF/入网数据/系统日志为顶级菜单，不折叠）
+  const MENU_GROUPS = ['components', 'services'];
 
   // 视图/组件 action 注册表：新增交互无需修改本文件——
   // 各视图/组件导出 actions 映射（{ 'action-name': fn(el, e) }），boot 时统一注册
@@ -48,10 +48,10 @@
       for (let i = 0; i < path.length && o; i++) o = o[path[i]];
       if (!o) missing.push(path.join('.'));
     };
-    ['util', 'theme', 'ui', 'api', 'state'].forEach(function (k) { has([k]); });
+    ['util', 'theme', 'ui', 'api', 'state', 'auth'].forEach(function (k) { has([k]); });
     ['head', 'empty', 'select', 'tabs', 'dataTable', 'dateRange', 'logStream', 'luaEditor',
       'componentState', 'dataflow', 'metrics', 'chart', 'configEditor'].forEach(function (k) { has(['comp', k]); });
-    ['overview', 'detail', 'config', 'scripts', 'waf', 'blacklist', 'logs', 'syslogs', 'auth'].forEach(function (k) { has(['views', k]); });
+    ['overview', 'detail', 'config', 'scripts', 'waf', 'blacklist', 'logs', 'syslogs'].forEach(function (k) { has(['views', k]); });
     if (missing.length) {
       console.error('[RockSys] 前端模块缺失（script 加载顺序或遗漏）：', missing.join(', '));
       const b = $('#prune-banner');

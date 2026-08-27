@@ -101,7 +101,7 @@ type MiddlewareLifecycle interface {
 |------|------|------|
 | `SHIELD_ENABLED` | false | 父开关：false=不挂载（默认）；true=挂载并拦截 |
 | `SHIELD_IP_WHITELIST` | 空 | 白名单（逗号分隔，支持精确 IP 与 CIDR）；与 DB 表 `ip_whitelist` 取并集 |
-| IP 黑名单 | — | **DB 表 `ip_blacklist`（管理面录入/导入，动态）∪ 外挂 `rules/ip_blacklist.txt`（静态兑底）**，取并集；DB 未启用时仅外挂生效；热路径只读内存快照（TTL 60s 刷新），管理面见「黑白名单」Tab 与 `docs/WAF_BLACKLIST_MIGRATION.md` |
+| IP 黑名单 | — | **DB 表 `ip_blacklist`（管理面录入/导入，动态）∪ 外挂 `rules/ip_blacklist.txt`（静态兑底）**，取并集；DB 未启用时仅外挂生效；热路径只读内存快照（TTL 60s 刷新），管理面见「黑白名单」Tab（录入/批量导入） |
 | `SHIELD_RATE_LIMIT_RPS` / `BURST` | 0 / 0 | 限流速率与突发容量（0=不限流） |
 | `SHIELD_RATE_LIMIT_BY` | ip | 限流维度（当前仅支持 ip） |
 | `SHIELD_ALLOW_METHODS` | 空 | HTTP 方法白名单（空=不限） |
