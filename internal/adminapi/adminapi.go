@@ -20,6 +20,7 @@ import (
 	"github.com/iotames/easyserver/log"
 
 	"rocksys/internal/conf"
+	"rocksys/internal/catalog"
 	"rocksys/internal/db"
 	"rocksys/internal/hotswap"
 )
@@ -32,6 +33,7 @@ const (
 	PathConfig     = "/admin/config"
 	PathConfigList = "/admin/config/list"
 	PathVersion    = "/admin/version"
+	PathMeta       = "/admin/meta"
 )
 
 // 认证端点路径（§8.4）：登录/注册/重置/状态，均免鉴权（前置条件由 handler 校验）。
@@ -71,6 +73,8 @@ type AdminServer struct {
 	version      string             // 构建期版本号（与 --version 同源，经 SetVersionInfo 注入）
 	buildTime    string             // 构建时间
 	goVersion    string             // 编译用 Go 版本
+	components   []catalog.Component // 组件/服务元数据（经 SetCatalog 注入，/admin/meta 返回）
+	services     []catalog.Service
 }
 
 // New 创建独立的管理接口服务器并注册全部内建端点（§8.1/§8.4）。
@@ -85,6 +89,8 @@ func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *ea
 		hotswapMgr:   hotswapMgr,
 		edb:          edb,
 		loginLimiter: newLoginLimiter(),
+		components:   []catalog.Component{},
+		services:     []catalog.Service{},
 	}
 
 	// 注册管理接口专属配置项：初始化标记 + 登录 JWT 签名密钥。
@@ -109,6 +115,19 @@ func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *ea
 	s.auth = newAdminAuth(confMgr, s.initialized, s.jwtSecret, s.adminToken, s.users, addr)
 	s.registerBuiltin()
 	return s
+}
+
+// SetCatalog 注入组件/服务元数据（装配时调用，/admin/meta 返回给 WebUI 全局展示）。
+// 未注入时接口返回空数组（不阻塞页面）。
+func (s *AdminServer) SetCatalog(components []catalog.Component, services []catalog.Service) {
+	s.components = components
+	s.services = services
+	if s.components == nil {
+		s.components = []catalog.Component{}
+	}
+	if s.services == nil {
+		s.services = []catalog.Service{}
+	}
 }
 
 // SetSQLSource 注入用户存储 SQL 脚本源（通常为 internal/db 数据访问层）。
@@ -173,6 +192,7 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodGet, PathConfig, check(s.handleConfigGet))
 	s.srv.AddHandler(http.MethodPut, PathConfig, check(s.handleConfigPut))
 	s.srv.AddHandler(http.MethodGet, PathConfigList, check(s.handleConfigList))
+	s.srv.AddHandler(http.MethodGet, PathMeta, check(s.handleMeta))
 	s.srv.AddHandler(http.MethodGet, PathAuthStatus, check(s.handleAuthStatus))
 	s.srv.AddHandler(http.MethodPost, PathLogin, check(s.handleLogin))
 	s.srv.AddHandler(http.MethodPost, PathRegister, check(s.handleRegister))
@@ -409,6 +429,14 @@ func (s *AdminServer) handleVersion(ctx httpsvr.Context) {
 		"version":    s.version,
 		"build_time": s.buildTime,
 		"go_version": s.goVersion,
+	}, http.StatusOK)
+}
+
+// handleMeta 返回组件/服务元数据（WebUI 全局展示用，无状态、不做缓存）。
+func (s *AdminServer) handleMeta(ctx httpsvr.Context) {
+	_ = writeJSON(ctx.Writer, map[string]any{
+		"components": s.components,
+		"services":   s.services,
 	}, http.StatusOK)
 }
 

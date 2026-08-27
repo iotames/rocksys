@@ -18,6 +18,7 @@ import (
 	"rocksys/internal/adminapi"
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
+	"rocksys/internal/catalog"
 	"rocksys/internal/db"
 	"rocksys/internal/engine"
 	"rocksys/internal/hotswap"
@@ -170,7 +171,7 @@ func buildServer(args []string) (*Server, error) {
 	var hotScriptsDir string
 	if err := cfgMgr.Register(&hotScriptsDir, "HOT_SCRIPTS_DIR", "hotscripts",
 		"外挂脚本统一根目录（相对工作目录；sql/rules/trusted_proxies 等业务外挂子目录均位于其下，内嵌兜底）",
-		"装配期生效，热更后需重启"); err != nil {
+		"修改后需重启服务生效"); err != nil {
 		return nil, fmt.Errorf("register HOT_SCRIPTS_DIR: %w", err)
 	}
 	hotswap.SetHotScriptsDir(hotScriptsDir)
@@ -268,7 +269,7 @@ func buildServer(args []string) (*Server, error) {
 	// Lua 策略执行超时经配置中心注册（默认 100ms，可经 SCRIPT_TIMEOUT 覆盖）。
 	// 装配期生效：script.New 拷贝超时值，热更改值需重启进程才生效。
 	var scriptTimeoutMS int
-	if err := cfgMgr.Register(&scriptTimeoutMS, "SCRIPT_TIMEOUT", "100", "Lua 脚本执行超时(毫秒)", "装配期生效，热更后需重启"); err != nil {
+	if err := cfgMgr.Register(&scriptTimeoutMS, "SCRIPT_TIMEOUT", "100", "Lua 脚本执行超时(毫秒)", "修改后需重启服务生效"); err != nil {
 		return nil, fmt.Errorf("register SCRIPT_TIMEOUT: %w", err)
 	}
 	mgr.RegisterMiddleware(script.New(time.Duration(scriptTimeoutMS)*time.Millisecond, cfgMgr)) // Lua 策略 → chain.Middle
@@ -336,21 +337,21 @@ func buildServer(args []string) (*Server, error) {
 	// dataDB 未就绪时跳过注册（组件降级，不阻断底座）。
 	// ★ MQ_* 运行参数与 MQ_ENABLED 一起无条件注册（不随开关分支），保证 default.env 全量快照恒含 MQ_ 全组。
 	var mqEnabled bool
-	if err := cfgMgr.Register(&mqEnabled, "MQ_ENABLED", "false", "是否启用 mq 异步消息组件（outbox 表建于统一数据访问层业务库，DB_DRIVER/DB_DSN）"); err != nil {
+	if err := cfgMgr.Register(&mqEnabled, "MQ_ENABLED", "false", "是否启用异步消息组件（Outbox 表建于统一数据访问层业务库，DB_DRIVER/DB_DSN）"); err != nil {
 		return nil, fmt.Errorf("register MQ_ENABLED: %w", err)
 	}
 	var mqPollIntervalMS, mqMaxRetries, mqBaseBackoffMS int
 	var mqConsumerBaseURL string
-	if err := cfgMgr.Register(&mqPollIntervalMS, "MQ_POLL_INTERVAL", "1000", "mq 轮询间隔(毫秒)", "装配期生效，热更后需重启"); err != nil {
+	if err := cfgMgr.Register(&mqPollIntervalMS, "MQ_POLL_INTERVAL", "1000", "消息投递轮询间隔(毫秒)", "修改后需重启服务生效"); err != nil {
 		return nil, fmt.Errorf("register MQ_POLL_INTERVAL: %w", err)
 	}
-	if err := cfgMgr.Register(&mqMaxRetries, "MQ_MAX_RETRIES", "3", "mq 最大重试次数（超限转死信；0 视为未设置，回落默认 3）", "装配期生效，热更后需重启"); err != nil {
+	if err := cfgMgr.Register(&mqMaxRetries, "MQ_MAX_RETRIES", "3", "消息投递最大重试次数（超限转死信；0 视为未设置，回落默认 3）", "修改后需重启服务生效"); err != nil {
 		return nil, fmt.Errorf("register MQ_MAX_RETRIES: %w", err)
 	}
-	if err := cfgMgr.Register(&mqBaseBackoffMS, "MQ_BASE_BACKOFF", "100", "mq 指数退避基数(毫秒)", "装配期生效，热更后需重启"); err != nil {
+	if err := cfgMgr.Register(&mqBaseBackoffMS, "MQ_BASE_BACKOFF", "100", "消息重试指数退避基数(毫秒)", "修改后需重启服务生效"); err != nil {
 		return nil, fmt.Errorf("register MQ_BASE_BACKOFF: %w", err)
 	}
-	if err := cfgMgr.Register(&mqConsumerBaseURL, "MQ_CONSUMER_BASE_URL", "", "mq 默认消费方地址（未命中 topic 路由时使用）", "装配期生效，热更后需重启"); err != nil {
+	if err := cfgMgr.Register(&mqConsumerBaseURL, "MQ_CONSUMER_BASE_URL", "", "消息默认消费方地址（未命中 topic 路由时使用）", "修改后需重启服务生效"); err != nil {
 		return nil, fmt.Errorf("register MQ_CONSUMER_BASE_URL: %w", err)
 	}
 	if mqEnabled {
@@ -383,6 +384,7 @@ func buildServer(args []string) (*Server, error) {
 		adminEDB = dataDB.EasyDB()
 	}
 	adminSrv := adminapi.New(cfgMgr.Current().AdminAddr, cfgMgr, mgr, adminEDB)
+	adminSrv.SetCatalog(catalog.DefaultComponents(), catalog.DefaultServices()) // WebUI 全局组件/服务说明
 	// 注入构建期版本信息（--version 同源，经 -ldflags 注入 main 包变量），供 WebUI 左上角展示。
 	adminSrv.SetVersionInfo(Version, BuildTime, GoVersion)
 	if dataDB != nil {

@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 
 	"rocksys/internal/chain"
+	"rocksys/internal/catalog"
 	"rocksys/internal/conf"
 	"rocksys/internal/hotswap"
 
@@ -228,6 +229,40 @@ func TestHandleVersion(t *testing.T) {
 	}
 	if out["go_version"] != "go1.25.3" {
 		t.Errorf("go_version 不符: %v", out["go_version"])
+	}
+}
+
+// TestHandleMeta 验证组件/服务元数据端点：SetCatalog 注入后经 /admin/meta 返回，
+// 未注入时返回空数组（不阻塞 WebUI）。
+func TestHandleMeta(t *testing.T) {
+	s := New("127.0.0.1:19527", nil, nil, nil)
+	ctx := newCtx(http.MethodGet, PathMeta, "")
+	s.handleMeta(ctx)
+	out := decode(t, ctx)
+	comps, compsOK := out["components"].([]any)
+	svcs, svcsOK := out["services"].([]any)
+	if !compsOK || !svcsOK {
+		t.Fatalf("meta 缺少 components/services 数组: %+v", out)
+	}
+	if len(comps) != 0 || len(svcs) != 0 {
+		t.Errorf("未注入 catalog 时应返回空数组，got %d/%d", len(comps), len(svcs))
+	}
+
+	s.SetCatalog(catalog.DefaultComponents(), catalog.DefaultServices())
+	ctx2 := newCtx(http.MethodGet, PathMeta, "")
+	s.handleMeta(ctx2)
+	out2 := decode(t, ctx2)
+	comps2 := out2["components"].([]any)
+	svcs2 := out2["services"].([]any)
+	if len(comps2) != 9 {
+		t.Errorf("components 应含 9 个链中间件，got %d", len(comps2))
+	}
+	if len(svcs2) != 4 {
+		t.Errorf("services 应含 4 个独立服务，got %d", len(svcs2))
+	}
+	first := comps2[0].(map[string]any)
+	if first["name"] != "shield" || first["enabled_key"] != "SHIELD_ENABLED" {
+		t.Errorf("首个组件元数据不符: %+v", first)
 	}
 }
 

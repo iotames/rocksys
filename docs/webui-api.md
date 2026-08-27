@@ -57,6 +57,7 @@
 | 31 | POST | `/admin/shield/whitelist/delete` | 软删白名单条目（可恢复） |
 | 32 | POST | `/admin/shield/whitelist/restore` | 恢复软删白名单条目 |
 | 33 | POST | `/admin/shield/whitelist/import` | 批量导入白名单 |
+| 34 | GET | `/admin/meta` | 组件/服务元数据（WebUI 全局展示，无状态不缓存） |
 
 ---
 
@@ -143,7 +144,7 @@
 ```json
 {
   "listen": ":8080",
-  "upstream": "http://127.0.0.1:8080",
+  "upstream": "http://127.0.0.1:9000",
   "timeout": 18,
   "admin": "127.0.0.1:19527",
   "config_file": "",
@@ -198,7 +199,7 @@
 | `COPY_` | 抄送 |
 | `RESULT_` | 结果 |
 | `AUTH_` | 认证 |
-| `MQ_` | 消息（轮询/重试/退避/消费方地址，无条件注册、装配期生效，热更后需重启） |
+| `MQ_` | 消息（轮询/重试/退避/消费方地址，无条件注册、修改后需重启服务生效） |
 | `REGISTRY_` | 注册中心 |
 | `OBJECT_` | 对象存储 |
 | `SCRIPT_` | 脚本（Lua 策略执行超时） |
@@ -470,6 +471,34 @@
 
 ## 4. 数据字典（前端展示映射）
 
+### 4.0 组件/服务元数据（/admin/meta 返回结构）
+
+`GET /admin/meta` 返回 `components`（9 个链中间件）与 `services`（4 个独立服务）两组元数据，
+供 WebUI 概览/详情/配置等页面全局展示；无状态、不做缓存（前端页面会话内持有）。
+
+**components 字段**（链中间件）：
+
+| 字段 | 说明 |
+|------|------|
+| name | 组件英文名（路由/开关键） |
+| title | 中文名 |
+| desc | 用户视角说明（简明无歧义） |
+| slot | 链槽位：Head / Middle / Tail |
+| slot_label | 环节展示名：入口环节 / 分发环节 / 响应环节 |
+| enabled_key | 自动开关配置键（XXX_ENABLED） |
+| kind | 恒为 `middleware` |
+
+**services 字段**（独立服务）：
+
+| 字段 | 说明 |
+|------|------|
+| name | 服务英文名 |
+| title | 中文名 |
+| desc | 用户视角说明 |
+| kind | 恒为 `component` |
+
+> 元数据权威源为 `internal/catalog`，描述文案变更时同步 `docs/COMPONENTS.md` 语义。
+
 ### 4.1 组件中文名与环节（见 §3.1 表）
 
 ### 4.2 状态枚举 → 展示
@@ -499,5 +528,6 @@
 | 1.2 | 2026-08-19 | 新增 `GET /admin/version`（WebUI 左上角品牌区展示版本号，与 `rocksys --version` 同源） |
 | 1.3 | 2026-08-20 | 登录响应新增 `warnings` 字段 + 新增 `GET /admin/warnings`（数据清理未开启警告，WebUI 常驻置顶横幅数据源） |
 | 1.4 | 2026-08-21 | 端点总览补齐 WAF 监控统计与动态黑白名单端点（`/admin/shield/*` 14 个 + `/admin/logs/prune` + `/admin/logs/storage`），新增 §3.18 shield 管理端点组详解 |
+| 1.5 | 2026-08-27 | 新增 `GET /admin/meta`（组件/服务元数据统一出口，前端不再硬编码说明文案；无状态不缓存） |
 
 > 契约原则：只增不改删；新增字段不影响旧字段语义。
