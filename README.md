@@ -11,6 +11,7 @@
 > 纯静态单页，随二进制分发，无需单独安装。产品设计见 `docs/webui.md`，对接契约见 `docs/webui-api.md`。
 
 ![概览](img1.png)
+![WAF](img2.png)
 
 ## 快速开始
 
