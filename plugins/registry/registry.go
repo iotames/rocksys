@@ -520,15 +520,15 @@ func New(cfgMgr conf.Manager) *Registry {
 	}
 	if cfgMgr != nil {
 		var ttlSec int
-		if err := cfgMgr.Register(&r.addr, "REGISTRY_ADDR", DefaultAddr, "注册服务监听地址", "装配期生效，热更后需重启"); err != nil {
+		if err := cfgMgr.Register(&r.addr, "REGISTRY_ADDR", DefaultAddr, "注册服务监听地址", "修改后需重启服务生效"); err != nil {
 			log.Warn("registry: 注册配置项失败", "name", "REGISTRY_ADDR", "err", err)
 		}
-		if err := cfgMgr.Register(&ttlSec, "REGISTRY_TTL", "30", "心跳超时(秒)", "装配期生效，热更后需重启"); err != nil {
+		if err := cfgMgr.Register(&ttlSec, "REGISTRY_TTL", "30", "服务心跳超时（秒，超时未续约自动摘除）", "修改后需重启服务生效"); err != nil {
 			log.Warn("registry: 注册配置项失败", "name", "REGISTRY_TTL", "err", err)
 		} else if ttlSec > 0 {
 			r.ttl = time.Duration(ttlSec) * time.Second
 		}
-		if err := cfgMgr.Register(&r.staticPath, "REGISTRY_STATIC_FILE", "", "静态实例文件路径（YAML/JSON，空=无静态实例）", "装配期生效，热更后需重启"); err != nil {
+		if err := cfgMgr.Register(&r.staticPath, "REGISTRY_STATIC_FILE", "", "静态实例文件路径（YAML/JSON，空=无静态实例）", "修改后需重启服务生效"); err != nil {
 			log.Warn("registry: 注册配置项失败", "name", "REGISTRY_STATIC_FILE", "err", err)
 		}
 	}

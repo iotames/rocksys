@@ -113,12 +113,18 @@ func (m *confManager) bindBaseVars() {
 	m.logFile = new(string)
 	m.logMaxSize = new(string)
 
-	m.ec.StringVar(m.listenAddr, "ROCKSYS_LISTEN", defaultListenAddr, "监听地址")
-	m.ec.StringVar(m.defaultUpstream, "ROCKSYS_UPSTREAM", defaultDefaultUpstream, "默认后端")
-	m.ec.IntVar(m.timeoutSec, "ROCKSYS_TIMEOUT", defaultUpstreamTimeout, "转发超时(秒)")
-	m.ec.StringVar(m.configFile, "ROCKSYS_CONFIG", defaultConfigFile, "配置文件路径")
-	m.ec.StringVar(m.adminAddr, "ROCKSYS_ADMIN", defaultAdminAddr, "管理接口地址")
-	m.ec.StringVar(m.logLevel, "ROCKSYS_LOG_LEVEL", defaultLogLevel, "日志级别")
+	m.ec.StringVar(m.listenAddr, "ROCKSYS_LISTEN", defaultListenAddr, "监听地址",
+		":8080 = 监听全部网卡；仅本机调试可改 127.0.0.1:8080")
+	m.ec.StringVar(m.defaultUpstream, "ROCKSYS_UPSTREAM", defaultDefaultUpstream, "默认后端",
+		"未命中路由规则时转发到该地址；默认值仅为占位示例，务必改为实际后端地址；切勿与监听端口相同，否则请求会转发回网关自身（自环）")
+	m.ec.IntVar(m.timeoutSec, "ROCKSYS_TIMEOUT", defaultUpstreamTimeout, "转发超时(秒)",
+		"上游无响应超过此时长返回 504")
+	m.ec.StringVar(m.configFile, "ROCKSYS_CONFIG", defaultConfigFile, "配置文件路径",
+		"相对工作目录；空=极简模式（仅环境变量与命令行）")
+	m.ec.StringVar(m.adminAddr, "ROCKSYS_ADMIN", defaultAdminAddr, "管理接口地址",
+		"默认仅监听回环；公网部署务必开启鉴权")
+	m.ec.StringVar(m.logLevel, "ROCKSYS_LOG_LEVEL", defaultLogLevel, "日志级别",
+		"debug / info / warn / error")
 	m.ec.BoolVar(m.logToFile, "ROCKSYS_LOG_TO_FILE", false, "文件存档（E1）")
 	m.ec.StringVar(m.logFile, "ROCKSYS_LOG_FILE", defaultLogFile, "日志文件路径")
 	m.ec.StringVar(m.logMaxSize, "ROCKSYS_LOG_MAX_SIZE", "50", "文件大小上限（整数 MB，0=不限制；E2）")

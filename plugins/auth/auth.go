@@ -82,7 +82,7 @@ func New(cfg *conf.Manager) *Auth {
 		title  string
 	}{
 		{&a.enabled, "AUTH_ENABLED", "false", "是否启用 JWT 认证（false=不挂载；true=挂载并认证）"},
-		{&a.secret, "AUTH_JWT_SECRET", "", "JWT 签名密钥"},
+		{&a.secret, "AUTH_JWT_SECRET", "", "JWT 签名密钥（签发与校验访问令牌）"},
 		{&a.issuer, "AUTH_JWT_ISSUER", "rocksys", "JWT 签发方"},
 		{&a.ttlSec, "AUTH_JWT_TTL", "3600", "JWT 有效期(秒)"},
 	}

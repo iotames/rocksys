@@ -31,8 +31,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ListenAddr != ":8080" {
 		t.Errorf("ListenAddr=%q, want :8080", cfg.ListenAddr)
 	}
-	if cfg.DefaultUpstream != "http://127.0.0.1:8080" {
-		t.Errorf("DefaultUpstream=%q", cfg.DefaultUpstream)
+	if cfg.DefaultUpstream != "http://127.0.0.1:9000" {
+		t.Errorf("DefaultUpstream=%q, want http://127.0.0.1:9000", cfg.DefaultUpstream)
 	}
 	if cfg.AdminAddr != "127.0.0.1:19527" {
 		t.Errorf("AdminAddr=%q", cfg.AdminAddr)
@@ -102,7 +102,7 @@ func TestLoadEnvVar(t *testing.T) {
 func TestLoadEnvOverridesConfigFile(t *testing.T) {
 	cleanup(t)
 	cfgPath := filepath.Join(t.TempDir(), "app.env")
-	content := "ROCKSYS_UPSTREAM = \"http://127.0.0.1:8080\"\nROCKSYS_LISTEN = \":8080\"\n"
+	content := "ROCKSYS_UPSTREAM = \"http://127.0.0.1:9000\"\nROCKSYS_LISTEN = \":8080\"\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestLoadEnvOverridesConfigFile(t *testing.T) {
 // 回归：Register 曾以 .env 后置覆盖环境变量，导致默认 upstream 被静默改回 .env 值。
 func TestRegisterKeepsEnvPriority(t *testing.T) {
 	cleanup(t)
-	if err := os.WriteFile(".env", []byte("ROCKSYS_UPSTREAM = \"http://127.0.0.1:8080\"\n"), 0644); err != nil {
+	if err := os.WriteFile(".env", []byte("ROCKSYS_UPSTREAM = \"http://127.0.0.1:9000\"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("ROCKSYS_UPSTREAM", "http://127.0.0.1:9001")
@@ -174,7 +174,7 @@ func TestSetPersistsToEnvFile(t *testing.T) {
 func TestSetPersistsToConfigFile(t *testing.T) {
 	cleanup(t)
 	cfgPath := filepath.Join(t.TempDir(), "app.env")
-	content := "ROCKSYS_UPSTREAM = \"http://127.0.0.1:8080\"\n"
+	content := "ROCKSYS_UPSTREAM = \"http://127.0.0.1:9000\"\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestSyncArgsUpdatesArgs(t *testing.T) {
 
 	// 两种形态都不存在：跳过不追加
 	before := len(mm.args)
-	mm.syncArgs("ROCKSYS_UPSTREAM", "http://127.0.0.1:8080")
+	mm.syncArgs("ROCKSYS_UPSTREAM", "http://127.0.0.1:9000")
 	if len(mm.args) != before {
 		t.Errorf("未在 args 中的 key 不应追加：len=%d, want %d", len(mm.args), before)
 	}

@@ -13,7 +13,7 @@
 | 项 | 默认值 | 说明 |
 |----|--------|------|
 | `--listen` / `ROCKSYS_LISTEN` | `:8080` | 代理监听地址 |
-| `--upstream` / `ROCKSYS_UPSTREAM` | `http://127.0.0.1:8080` | 默认后端 |
+| `--upstream` / `ROCKSYS_UPSTREAM` | `http://127.0.0.1:9000` | 默认后端（占位示例，务必改为实际后端；勿与监听端口相同） |
 | `--admin` / `ROCKSYS_ADMIN` | `127.0.0.1:19527` | 管理接口（回环，不对外网） |
 | `--timeout` / `ROCKSYS_TIMEOUT` | `18` | 转发超时（秒） |
 | `--config` / `ROCKSYS_CONFIG` | 空 | `bin/.env` 配置文件路径（任意位置） |

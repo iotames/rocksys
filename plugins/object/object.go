@@ -101,7 +101,7 @@ var _ hotswap.Component = (*Object)(nil)
 func New(cfgMgr conf.Manager) *Object {
 	o := &Object{baseDir: defaultBaseDir}
 	if cfgMgr != nil {
-		if err := cfgMgr.Register(&o.baseDir, "OBJECT_BASE_DIR", defaultBaseDir, "对象存储根目录", "装配期生效，热更后需重启；留空回退默认目录"); err != nil {
+		if err := cfgMgr.Register(&o.baseDir, "OBJECT_BASE_DIR", defaultBaseDir, "对象存储根目录", "修改后需重启服务生效；留空回退默认目录"); err != nil {
 			log.Warn("object: 注册配置项失败", "name", "OBJECT_BASE_DIR", "err", err)
 		}
 	}

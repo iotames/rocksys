@@ -4,7 +4,7 @@
 // 借鉴 easywaf request-copy 能力，作为独立挂件挂 chain.Tail 槽位，
 // 不改主架构（engine 转发逻辑零改动）。
 //
-// 配置项：COPY_TARGETS（字符串，逗号分隔的 shadow 后端 URL，空 = 关闭）
+// 配置项：COPY_TARGETS（字符串，分号分隔的影子后端 URL，空 = 关闭）
 //
 //	COPY_TARGETS=http://shadow-a:9100;http://shadow-b:9100
 //
@@ -55,7 +55,7 @@ func New(cfgMgr conf.Manager) *Copy {
 	c.snap.Store(&copyTargets{})
 	if cfgMgr != nil {
 		if err := cfgMgr.Register(&c.targets, "COPY_TARGETS", "",
-			"请求抄送目标（逗号分隔的 shadow 后端 URL，空=关闭）",
+			"请求抄送目标（影子后端 URL，分号分隔；空=关闭）",
 			"示例：http://shadow-a:9100;http://shadow-b:9100"); err != nil {
 			log.Warn("copy: 注册配置项失败", "name", "COPY_TARGETS", "err", err)
 		}

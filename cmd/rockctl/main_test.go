@@ -88,7 +88,7 @@ func TestConfigGet(t *testing.T) {
 	h := func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
-		fmt.Fprint(w, `{"listen":":8080","upstream":"http://127.0.0.1:8080"}`)
+		fmt.Fprint(w, `{"listen":":8080","upstream":"http://127.0.0.1:9000"}`)
 	}
 	if err := runWithServer(t, h, "config", "get"); err != nil {
 		t.Fatalf("config get 失败: %v", err)

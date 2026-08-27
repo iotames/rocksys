@@ -195,7 +195,7 @@ REWRITE_RULES="/api/v1/=uri|/api/;header=X-Proxy-Tag:rewrite"
 
 **作用**：Lua 策略引擎，只做网关策略（安全规则、路由改写、A/B 分流），不落业务数据。
 
-**配置项**：`SCRIPT_ENABLED`（父开关，默认 false）、`SCRIPT_TIMEOUT`（执行超时毫秒，装配期生效）。
+**配置项**：`SCRIPT_ENABLED`（父开关，默认 false）、`SCRIPT_TIMEOUT`（执行超时毫秒，修改后需重启服务生效）。
 
 **使用**：
 
@@ -223,7 +223,7 @@ rockctl script rollback             # 回滚上一版本
 
 **作用**：复制线上请求异步发送到 shadow 后端（流量审计 / 影子验证），不改写响应、不阻塞主链。
 
-**配置项**：`COPY_ENABLED`（父开关，默认 false）、`COPY_TARGETS`（逗号分隔 shadow URL，空 = 关闭）
+**配置项**：`COPY_ENABLED`（父开关，默认 false）、`COPY_TARGETS`（分号分隔影子后端 URL，空 = 关闭）
 
 ```bash
 COPY_TARGETS="http://shadow-a:9100;http://shadow-b:9100"

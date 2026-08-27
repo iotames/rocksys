@@ -16,7 +16,7 @@
 → 第9-15章(P1挂件) → 第16-19章(P2组件) → 第20-22章(业务侧) → 第23章(验证)
 ```
 
-- P0（第 1-8 章）完成后即交付"最小可用"：`rocksys --upstream 127.0.0.1:8080` 裸代理 + 热开关能力。
+- P0（第 1-8 章）完成后即交付"最小可用"：`rocksys --upstream 127.0.0.1:9000` 裸代理 + 热开关能力。
 - P1（第 9-15 章）为标准形态；P2（第 16-19 章）按需开启，可后置或砍掉。
 - ★ **编译依赖说明**：第 3 章 `engine.New(cfgMgr, ch *chain.Chain)` 和 `Forward(df *dataflow.DataFlow)` 引用了第 4/5 章才定义的类型。第 3 章实现时需**同时创建** `chain.Chain` 和 `dataflow.DataFlow` 的最小骨架类型（仅结构体+字段声明，不带方法），使 Go 编译器通过。完整方法在第 4/5 章定义后补全。这是一种常见的"预声明编译桩"模式——骨架定义 30 行即可，不影响独立可交付性。
 
@@ -137,7 +137,7 @@ package conf
 // Config 底座全部配置的只读载体
 type Config struct {
     ListenAddr      string        // 监听地址，默认 ":8080"
-    DefaultUpstream string        // 默认后端，默认 "http://127.0.0.1:8080"
+    DefaultUpstream string        // 默认后端，默认 "http://127.0.0.1:9000"（占位示例，需改为实际后端；勿与监听端口相同）
     UpstreamTimeout time.Duration // 转发超时，默认 18s
     ConfigFile      string        // .env 配置文件路径，空=极简模式（只用环境变量+命令行）
     AdminAddr       string        // 管理接口监听地址，默认 "127.0.0.1:19527"
@@ -238,7 +238,7 @@ func Load(args []string) (*Manager, error) {
     //   禁止用 (*int)(&cfg.UpstreamTimeout) 强转后直接把秒数赋给 Duration——5 会被当成 5ns 而非 5s。
     var timeoutSec int
     ec.StringVar(&cfg.ListenAddr, "ROCKSYS_LISTEN", ":8080", "监听地址")
-    ec.StringVar(&cfg.DefaultUpstream, "ROCKSYS_UPSTREAM", "http://127.0.0.1:8080", "默认后端")
+    ec.StringVar(&cfg.DefaultUpstream, "ROCKSYS_UPSTREAM", "http://127.0.0.1:9000", "默认后端")
     ec.IntVar(&timeoutSec, "ROCKSYS_TIMEOUT", 18, "转发超时(秒)")
     ec.StringVar(&cfg.ConfigFile, "ROCKSYS_CONFIG", "", "配置文件路径")
     ec.StringVar(&cfg.AdminAddr, "ROCKSYS_ADMIN", "127.0.0.1:19527", "管理接口地址")
@@ -295,7 +295,7 @@ func parseArgsToMap(args []string) map[string]string
 | 命令行参数 | 环境变量 | 含义 | 默认 |
 |---|---|---|---|
 | `--listen` | `ROCKSYS_LISTEN` | 监听地址 | `:8080` |
-| `--upstream` | `ROCKSYS_UPSTREAM` | 默认后端 | `http://127.0.0.1:8080` |
+| `--upstream` | `ROCKSYS_UPSTREAM` | 默认后端 | `http://127.0.0.1:9000`（占位示例） |
 | `--timeout` | `ROCKSYS_TIMEOUT` | 转发超时(秒) | `18` |
 | `--config` | `ROCKSYS_CONFIG` | .env 配置文件路径 | 空=极简模式 |
 | `--admin` | `ROCKSYS_ADMIN` | 管理接口地址 | `127.0.0.1:19527` |

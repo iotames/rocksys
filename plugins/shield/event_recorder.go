@@ -232,22 +232,22 @@ func NewEventRecorder(cfgMgr conf.Manager, dataDB *db.DB) *EventRecorder {
 	}
 	var table string
 	var bufRows, flushRows, flushSec int
-	if err := cfgMgr.Register(&table, "SHIELD_EVENT_TABLE", "shield_event", "拦截事件表名", "装配期生效，热更后需重启"); err != nil {
+	if err := cfgMgr.Register(&table, "SHIELD_EVENT_TABLE", "shield_event", "拦截事件表名", "修改后需重启服务生效"); err != nil {
 		log.Warn("shield: 注册拦截事件配置项失败", "name", "SHIELD_EVENT_TABLE", "err", err.Error())
 	} else if table != "" {
 		r.tableName = table
 	}
-	if err := cfgMgr.Register(&bufRows, "SHIELD_EVENT_BUFFER", "1024", "异步落库缓冲通道大小", "装配期生效，热更后需重启"); err != nil {
+	if err := cfgMgr.Register(&bufRows, "SHIELD_EVENT_BUFFER", "1024", "拦截事件落库缓冲队列长度（超出丢弃并计数，不阻塞请求）", "修改后需重启服务生效"); err != nil {
 		log.Warn("shield: 注册拦截事件配置项失败", "name", "SHIELD_EVENT_BUFFER", "err", err.Error())
 	} else if bufRows > 0 {
 		r.ch = make(chan *ShieldEvent, bufRows)
 	}
-	if err := cfgMgr.Register(&flushRows, "SHIELD_EVENT_FLUSH_ROWS", "200", "批量 INSERT 行数阈值", "装配期生效，热更后需重启"); err != nil {
+	if err := cfgMgr.Register(&flushRows, "SHIELD_EVENT_FLUSH_ROWS", "200", "拦截事件批量写库行数阈值", "修改后需重启服务生效"); err != nil {
 		log.Warn("shield: 注册拦截事件配置项失败", "name", "SHIELD_EVENT_FLUSH_ROWS", "err", err.Error())
 	} else if flushRows > 0 {
 		r.flushRows = flushRows
 	}
-	if err := cfgMgr.Register(&flushSec, "SHIELD_EVENT_FLUSH_INTERVAL", "5", "flush 间隔秒数", "装配期生效，热更后需重启"); err != nil {
+	if err := cfgMgr.Register(&flushSec, "SHIELD_EVENT_FLUSH_INTERVAL", "5", "拦截事件批量写库间隔（秒）", "修改后需重启服务生效"); err != nil {
 		log.Warn("shield: 注册拦截事件配置项失败", "name", "SHIELD_EVENT_FLUSH_INTERVAL", "err", err.Error())
 	} else if flushSec > 0 {
 		r.flushInterval = time.Duration(flushSec) * time.Second
