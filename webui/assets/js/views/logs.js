@@ -165,11 +165,7 @@
     if (store.storageError) return '<span class="muted">存储占用不可用：' + esc(store.storageError) + '</span>';
     if (!store.logsStorage) return '<span class="muted">存储占用加载中…</span>';
     const s = store.logsStorage;
-    return [
-      '文件日志 <b>' + fmtBytes(Number(s.file_bytes) || 0) + '</b>',
-      '数据库表 <b>' + fmtBytes(Number(s.db_bytes) || 0) + '</b>',
-      '总计 <b>' + fmtBytes(Number(s.total_bytes) || 0) + '</b>',
-    ].join(' · ');
+    return '日志库占用 <b>' + fmtBytes(Number(s.total_bytes) || 0) + '</b>';
   }
 
   function renderStorage() {
@@ -236,7 +232,7 @@
       wrap.innerHTML = '<div class="card">' + Rock.comp.empty.message({ text: '所选时间范围无访问日志' }) + '</div>';
       return;
     }
-    wrap.innerHTML = logsTable.html(store.logs, { total: store.logsTotal || 0, maxHeight: '640px' });
+    wrap.innerHTML = logsTable.html(store.logs, { total: store.logsTotal || 0 });
   }
 
   function render() {

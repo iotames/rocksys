@@ -115,10 +115,12 @@
   // 聚合统计 + 明细（DB 未配置时 503 → 置 wafDbOff 展示降级态）
   async function loadStats() {
     try {
-      store.wafStats = await api.get('/admin/shield/stats?days=' + statsDays + '&top=10');
+      store.wafStats = await api.get('/admin/shield/stats?days=' + statsDays + '&top=' + Rock.views.topIPs.topN());
+      Rock.views.topIPs.setData(store.wafStats);
       store.wafStatsError = null;
     } catch (e) {
       store.wafStats = null;
+      Rock.views.topIPs.setData(null);
       store.wafStatsError = e.message || '加载失败';
     }
   }
@@ -233,30 +235,18 @@
       '<div class="waf-stats-right">' +
       '<div class="card-sub">类别分布（近 ' + esc(String(s.days)) + ' 天）</div>' +
       (typeRows
-        ? '<div class="table-wrap" style="max-height:260px"><table class="table"><thead><tr><th>类别</th><th>拦截次数</th></tr></thead><tbody>' + typeRows + '</tbody></table></div>'
+        ? '<div class="table-wrap"><table class="table"><thead><tr><th>类别</th><th>拦截次数</th></tr></thead><tbody>' + typeRows + '</tbody></table></div>'
         : '<div class="empty">暂无拦截记录</div>') +
       '</div></div>';
   }
 
-  function topIPHTML() {
-    if (store.wafStatsError || !store.wafStats) return '';
-    const rows = store.wafStats.top_ips || [];
-    if (!rows.length) return '';
-    return '<div class="card"><div class="card-title">Top 攻击源 IP <span class="card-sub">近 ' + esc(String(store.wafStats.days)) + ' 天</span></div>' +
-      '<div class="table-wrap" style="max-height:280px"><table class="table"><thead><tr><th>IP</th><th>拦截次数</th></tr></thead><tbody>' +
-      rows.map(r =>
-        '<tr><td class="mono">' + esc(r.client_ip || '') + '</td>' +
-        '<td class="mono">' + fmtInt(Number(r.cnt) || 0) + '</td></tr>'
-      ).join('') +
-      '</tbody></table></div></div>';
-  }
 
   // 明细表渲染：表格 + 分页栏交给 dataTable 实例（server 模式喂总数）；错误态由视图兜底
   function eventsHTML() {
     if (store.wafEventsError) {
       return '<div class="empty">' + esc(store.wafEventsError) + '</div>';
     }
-    return eventsTable.html(store.wafEvents || [], { total: store.wafEventsTotal || 0, maxHeight: '520px' });
+    return eventsTable.html(store.wafEvents || [], { total: store.wafEventsTotal || 0 });
   }
 
   function renderEventsWrap() {
@@ -319,7 +309,7 @@
       Rock.comp.select.options([['7', '近 7 天'], ['14', '近 14 天'], ['30', '近 30 天'], ['90', '近 90 天']], String(statsDays)) +
       '</select></div>' +
       statsHTML() + '</div>' +
-      topIPHTML() +
+      Rock.views.topIPs.html() +
       '<div class="card">' +
       eventsBar.html() +
       '<div class="log-toolbar" style="margin-top:-6px">' +
@@ -330,6 +320,8 @@
       '</div>';
 
     drawDailyChart();
+
+    Rock.views.topIPs.wire();
 
     // 统计天数切换：改即拉
     const daysSel = $('#waf-days');
@@ -501,6 +493,8 @@
     },
   };
 
+  // 注入攻击源卡片协作钩子：Top N 变更/批量加黑成功后重新拉取统计并渲染
+  Rock.views.topIPs.bindHooks({ refresh: function () { loadStats().then(render); } });
   // 注入页面上下文：主 Tab HTML 与当前 Tab（黑白名单子视图渲染主 Tab 用）
   Rock.views.blacklist.bindPage({
     tabsHTML: tabsHTML,

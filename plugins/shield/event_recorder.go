@@ -122,8 +122,8 @@ type ShieldEvent struct {
 	BlockType  BlockType // 拦截类别
 	ClientIP   string
 	Method     string
-	Path       string    // URL 路径
-	RawURL     string    // 含查询串的原始 URL（攻击特征常在此）
+	Path       string // URL 路径
+	RawURL     string // 含查询串的原始 URL（攻击特征常在此）
 	UserAgent  string
 	Host       string
 	StatusCode int    // 拦截响应码（403/413/429）
@@ -180,8 +180,8 @@ func newEvent(ctx *chain.Context, bt BlockType, ruleHit string) *ShieldEvent {
 // 异步落库：拦截热路径只做非阻塞 ch <- event（满则丢弃计 dropped，不阻塞转发）；
 // 后台 goroutine 攒批 INSERT。SHIELD_EVENT_LOG_ENABLED=false 时只内存计数不落库。
 type EventRecorder struct {
-	edb      *easydb.EasyDb // 统一数据访问层连接
-	sqls     db.SQLSource   // SQL 脚本源（按驱动方言选 sql/<dbtype>/）
+	edb       *easydb.EasyDb // 统一数据访问层连接
+	sqls      db.SQLSource   // SQL 脚本源（按驱动方言选 sql/<dbtype>/）
 	tableName string
 
 	// 配置项字段（构造时经 conf.Manager.Register 注册，热更直接写入）。

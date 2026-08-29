@@ -249,4 +249,3 @@ func TestShield_DBImportThenRebuild(t *testing.T) {
 		t.Fatalf("应 403, got %d", w.Code)
 	}
 }
-

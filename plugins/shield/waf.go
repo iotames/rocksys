@@ -27,11 +27,11 @@ type wafSnapshot struct {
 	maxBodySize     int64               // 请求体上限字节（0 = 不限）
 
 	// 检测模式（来自规则文件，小写/原样）。
-	sqlPatterns   []string
-	xssPatterns   []string
-	pathPatterns  []string
-	crawlerUAs    []string
-	riskPaths     map[string]struct{} // 文件风险路径 + 配置追加（小写）
+	sqlPatterns  []string
+	xssPatterns  []string
+	pathPatterns []string
+	crawlerUAs   []string
+	riskPaths    map[string]struct{} // 文件风险路径 + 配置追加（小写）
 }
 
 // ---------------------------------------------------------------------------

@@ -4,9 +4,8 @@
 // 的唯一通道：Forward 完成后 Adapter 回调，此时 ctx.RespCode/RespHeader/RespBody
 // 与 ctx.DF 三时间戳均已就绪，据此构造 AccessRecord 异步落盘并聚合到 Metrics。
 //
-// 存储后端可热切换（OBS_STORE=db|file，见 store.go/dim.go）：
-// 默认 db 复用统一数据访问层 internal/db 写 access_log 表；file（OBS_STORE=file）
-// 已弃用，将不再被支持（仅显式配置时启用，启动打弃用告警）。
+// 访问日志统一写数据库（复用统一数据访问层 internal/db 写 access_log 表，
+// 依赖 DB_DRIVER/DB_DSN）；数据访问层未就绪时降级丢弃（不阻断转发）。
 package obs
 
 import (
@@ -14,7 +13,6 @@ import (
 	"errors"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,12 +27,7 @@ import (
 )
 
 // 默认配置（§14）。
-const (
-	defaultLogDir        = "logs"
-	defaultRetentionDays = 30
-	defaultStore         = "db" // 访问日志存储后端（默认）：db | file（已弃用）
-	defaultLogPruneDays  = 7    // access_log 表默认保留天数（自动清理开启后生效）
-)
+const defaultLogPruneDays = 7 // access_log 表默认保留天数（自动清理开启后生效）
 
 // 指标窗口：1 分钟滑动窗口 × 100 桶（每桶 0.6s）。
 const (
@@ -132,12 +125,9 @@ func percentile(sorted []int64, p float64) int64 {
 
 // Obs 可观测性中间件：挂 chain.Tail，实现 chain.ResponseHook。
 type Obs struct {
-	cfg           conf.Manager
-	storeCfg      string // *string 注册：OBS_STORE（db|file，默认 db；file 已弃用）
-	logDir        string // *string 注册：OBS_LOG_DIR
-	retentionDays int    // *int 注册：OBS_RETENTION_DAYS（仅 file 后端清理用，file 已弃用）
-	enabled       bool   // *bool 注册：OBS_ENABLED
-	dataDB        *db.DB // 统一数据访问层：默认 db 后端依赖（nil 时回退 file 并告警）
+	cfg     conf.Manager
+	enabled bool   // *bool 注册：OBS_ENABLED
+	dataDB  *db.DB // 统一数据访问层（nil 时降级 discardStore，日志不落盘）
 
 	// access_log 自动清理（DB 后端专用，数据保留见 DATA_DICT 维护约定）：
 	// 默认不开启，未开启时登录管理后台有警告提示。
@@ -158,25 +148,17 @@ var (
 )
 
 // New 创建 obs 挂件并注册自身配置项（§14）。
-// dataDB 为统一数据访问层（可 nil）：默认 db 存储后端依赖它（DB_DRIVER/DB_DSN），
-// 未就绪则回退 file 并告警（file 已弃用，仅作过渡保留）。
+// dataDB 为统一数据访问层（可 nil）：访问日志写 access_log 表依赖它（DB_DRIVER/DB_DSN），
+// 未就绪时降级 discardStore（日志不落盘，仅告警）。
 func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	o := &Obs{
-		cfg:           cfgMgr,
-		storeCfg:      defaultStore,
-		logDir:        defaultLogDir,
-		retentionDays: defaultRetentionDays,
-		dataDB:        dataDB,
-		metrics:       NewMetrics(),
+		cfg:     cfgMgr,
+		enabled: false,
+		dataDB:  dataDB,
+		metrics: NewMetrics(),
 	}
-	if err := cfgMgr.Register(&o.storeCfg, "OBS_STORE", defaultStore, "访问日志存储后端（默认 db；file 已弃用，将不再被支持）"); err != nil {
-		log.Warn("obs: 注册配置项失败", "name", "OBS_STORE", "err", err)
-	}
-	if err := cfgMgr.Register(&o.logDir, "OBS_LOG_DIR", defaultLogDir, "访问日志目录"); err != nil {
-		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_DIR", "err", err)
-	}
-	if err := cfgMgr.Register(&o.retentionDays, "OBS_RETENTION_DAYS", strconv.Itoa(defaultRetentionDays), "访问日志保留天数"); err != nil {
-		log.Warn("obs: 注册配置项失败", "name", "OBS_RETENTION_DAYS", "err", err)
+	if dataDB == nil {
+		log.Warn("obs: 数据访问层未就绪，访问日志不落盘（请配置 DB_DRIVER/DB_DSN）")
 	}
 	if err := cfgMgr.Register(&o.pruneLogEnabled, "OBS_LOG_PRUNE_ENABLED", "false", "是否开启访问日志（access_log 表）自动清理（默认不开启；未开启时登录管理后台有警告提示）"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_PRUNE_ENABLED", "err", err)
@@ -184,7 +166,7 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	if err := cfgMgr.Register(&o.enabled, "OBS_ENABLED", "false", "是否启用访问日志与指标观测（false=不挂载）"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_ENABLED", "err", err)
 	}
-	if err := cfgMgr.Register(&o.pruneLogDays, "OBS_LOG_RETENTION_DAYS", strconv.Itoa(defaultLogPruneDays), "访问日志保留天数（自动清理开启后生效；DB 后端专用，与已弃用 file 后端的 OBS_RETENTION_DAYS 相互独立）"); err != nil {
+	if err := cfgMgr.Register(&o.pruneLogDays, "OBS_LOG_RETENTION_DAYS", strconv.Itoa(defaultLogPruneDays), "访问日志保留天数（自动清理开启后生效）"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_RETENTION_DAYS", "err", err)
 	}
 	o.sink.Store(NewAsyncStore(o.buildStore()))
@@ -200,9 +182,8 @@ func (o *Obs) Slot() chain.Slot { return chain.Tail }
 // Handle 占位：响应处理全在 OnResponse，不参与转发前逻辑（§14）。
 func (o *Obs) Handle(ctx *chain.Context) (next bool) { return false }
 
-// Start 按当前配置重建存储后端（热更 OBS_STORE/OBS_LOG_DIR/留存天数 / Enable 时调用）。
-// 原子替换 AsyncStore：旧后端排空缓冲后关闭，新请求写入新后端。
-// 同时确保 access_log 自动清理循环在运行（幂等；Disable 后再 Enable 可恢复）。
+// Start 重建存储后端并确保 access_log 自动清理循环在运行
+// （Enable 热更时调用；幂等，Disable 后再 Enable 可恢复）。
 func (o *Obs) Start(cfg any) error {
 	o.rebuildStore()
 	o.startPruneLoop()
@@ -238,28 +219,16 @@ func (o *Obs) Count(q Query) (int64, error) {
 	return o.sink.Load().(*AsyncStore).Count(q)
 }
 
-// StorageSize 当前日志存储总占用（字节）：
-// file 为 OBS_LOG_DIR 下所有 access-*.jsonl 合计（遗留数据，file 已弃用）；
-// db 为 access_log 表 + 索引占用。两者独立统计并求和（与当前启用后端无关，
-// 切换后端后旧数据仍计入）。
-type StorageSize struct {
-	FileBytes  int64 `json:"file_bytes"`  // 文件日志占用
-	DBBytes    int64 `json:"db_bytes"`    // 数据库日志表占用
-	TotalBytes int64 `json:"total_bytes"` // 合计
-}
-
-// StorageSize 统计两类后端的日志存储占用。
-func (o *Obs) StorageSize() StorageSize {
-	var fs, dbs int64
-	if v, err := NewFileStore(o.logDir, 0).SizeBytes(); err == nil {
-		fs = v
+// StorageSize 当前日志存储总占用（字节）：access_log 表 + 索引占用。
+func (o *Obs) StorageSize() int64 {
+	if o.dataDB == nil {
+		return 0
 	}
-	if o.dataDB != nil {
-		if v, err := NewDBStore(o.dataDB, accessLogTable).SizeBytes(); err == nil {
-			dbs = v
-		}
+	v, err := NewDBStore(o.dataDB, accessLogTable).SizeBytes()
+	if err != nil {
+		return 0
 	}
-	return StorageSize{FileBytes: fs, DBBytes: dbs, TotalBytes: fs + dbs}
+	return v
 }
 
 // OnResponse 实现 chain.ResponseHook：构造 AccessRecord → 异步落盘 → 聚合指标。
@@ -286,29 +255,16 @@ func (o *Obs) OnResponse(ctx *chain.Context) error {
 	return nil
 }
 
-// buildStore 按 OBS_STORE 配置构造底层存储后端。
-// 默认（含空值）与非法值均走 db；file 仅显式配置时启用并打弃用告警
-// （file 将不再被支持）；db 因数据访问层未就绪/初始化失败时回退 file 并告警
-// （过渡保留，避免日志静默丢失）。
+// buildStore 构造底层存储后端：复用统一数据访问层写 access_log 表；
+// 数据访问层未就绪/初始化失败时降级 discardStore（日志不落盘，不阻断转发）。
 func (o *Obs) buildStore() Store {
-	store := strings.ToLower(strings.TrimSpace(o.storeCfg))
-	switch store {
-	case "file":
-		log.Warn("obs: OBS_STORE=file 已弃用，将不再被支持，请改用 db 存储")
-		return NewFileStore(o.logDir, o.retentionDays)
-	case "db", "":
-		// 默认 db
-	default:
-		log.Warn("obs: 未知存储后端，回退默认 db 存储", "store", o.storeCfg)
-	}
 	if o.dataDB == nil {
-		log.Warn("obs: OBS_STORE=db 但数据访问层未就绪，回退 file 存储（file 已弃用，请配置 DB_DRIVER/DB_DSN）")
-		return NewFileStore(o.logDir, o.retentionDays)
+		return discardStore{}
 	}
 	st := NewDBStore(o.dataDB, accessLogTable)
 	if err := st.EnsureTable(); err != nil {
-		log.Warn("obs: 数据库存储初始化失败，回退 file 存储（file 已弃用）", "err", err.Error())
-		return NewFileStore(o.logDir, o.retentionDays)
+		log.Warn("obs: 数据库存储初始化失败，访问日志不落盘", "err", err.Error())
+		return discardStore{}
 	}
 	return st
 }
@@ -369,13 +325,9 @@ func (o *Obs) pruneLoop(stop <-chan struct{}) {
 	}
 }
 
-// pruneOnce 执行一次清理：开关开启且当前为 db 后端时，清理保留期外的 access_log 记录。
-// file 后端（已弃用）自带按天清理，跳过；数据访问层未就绪跳过。
+// pruneOnce 执行一次清理：开关开启时清理保留期外的 access_log 记录；数据访问层未就绪跳过。
 func (o *Obs) pruneOnce() {
 	if !o.pruneLogEnabled {
-		return
-	}
-	if strings.EqualFold(strings.TrimSpace(o.storeCfg), "file") {
 		return
 	}
 	if o.dataDB == nil {

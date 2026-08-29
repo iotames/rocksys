@@ -1,12 +1,10 @@
 package obs
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,34 +40,38 @@ func (f *fakeConfMgr) Set(name, value string) error { return nil }
 func (f *fakeConfMgr) List() []conf.ConfigItem      { return nil }
 func (f *fakeConfMgr) SyncDefaultFile() error       { return nil }
 
-// newTestObs 构造写往 t.TempDir() 的 Obs：dataDB=nil，默认 db 后端不可用，
-// buildStore 回退 file（过渡兜底），测试读写日志文件。
+// newTestObs 构造使用 sqlite 临时库的 Obs（访问日志写库场景）。
 func newTestObs(t *testing.T) (*Obs, *fakeConfMgr) {
 	t.Helper()
+	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
 	f := newFakeConf()
-	o := New(f, nil)
-	o.logDir = t.TempDir()
+	o := New(f, d)
 	if err := o.Start(nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	// 释放文件句柄（Windows 上句柄不关则 TempDir 清理失败；Close 幂等，与测试内 Shutdown 的 Flush 不冲突）。
+	// 排空异步队列（Windows 上句柄不关则 TempDir 清理失败；Close 幂等，与测试内 Shutdown 不冲突）。
 	t.Cleanup(func() { _ = o.sink.Load().(*AsyncStore).Close() })
 	return o, f
 }
 
-// newTestObsDB 构造使用 sqlite 数据访问层的 Obs（OBS_STORE=db 场景）。
+// newTestObsDB 构造使用 sqlite 数据访问层的 Obs。
 func newTestObsDB(t *testing.T) (*Obs, *db.DB) {
 	t.Helper()
 	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
+	t.Cleanup(func() { _ = d.Close() })
 	f := newFakeConf()
 	o := New(f, d)
-	o.logDir = t.TempDir()
 	if err := o.Start(nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	t.Cleanup(func() { _ = o.sink.Load().(*AsyncStore).Close() })
 	return o, d
 }
 
@@ -94,7 +96,7 @@ func newCtx(r *http.Request, status int, body []byte, shieldMs, bizMs int64) *ch
 // New 应注册 §14 配置项；Name/Slot/Handle 符合接口约定。
 func TestNewRegistersConfig(t *testing.T) {
 	o, f := newTestObs(t)
-	for _, n := range []string{"OBS_STORE", "OBS_LOG_DIR", "OBS_RETENTION_DAYS"} {
+	for _, n := range []string{"OBS_ENABLED", "OBS_LOG_PRUNE_ENABLED", "OBS_LOG_RETENTION_DAYS"} {
 		if _, ok := f.regs[n]; !ok {
 			t.Errorf("应注册配置项 %s", n)
 		}
@@ -110,7 +112,7 @@ func TestNewRegistersConfig(t *testing.T) {
 	}
 }
 
-// OnResponse 后日志文件存在且 JSON 行可解析、字段正确（平铺维度）。
+// OnResponse 后日志写入 access_log 表，平铺维度字段正确。
 func TestOnResponseWritesLog(t *testing.T) {
 	o, _ := newTestObs(t)
 
@@ -124,33 +126,32 @@ func TestOnResponseWritesLog(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 
-	path := filepath.Join(o.logDir, "access-"+time.Now().Format("2006-01-02")+".jsonl")
-	data, err := os.ReadFile(path)
+	rows, err := o.Query(Query{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour)})
 	if err != nil {
-		t.Fatalf("日志文件不存在: %v", err)
+		t.Fatalf("Query: %v", err)
 	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("JSON 行不可解析: %v, line=%q", err, data)
+	if len(rows) != 1 {
+		t.Fatalf("应有 1 条日志，实际 %d", len(rows))
 	}
+	m := rows[0]
 	if m[DimTraceID] != "trace-001" || m[DimTenantID] != "tenant-1" {
 		t.Errorf("trace/tenant = %q/%q", m[DimTraceID], m[DimTenantID])
 	}
 	if m[DimPath] != "/api/test" || m[DimMethod] != http.MethodPost {
 		t.Errorf("path/method = %q/%q", m[DimPath], m[DimMethod])
 	}
-	if m[DimStatusCode] != float64(200) || m[DimUpstream] != "http://upstream:8080" {
+	if m[DimStatusCode] != int64(200) || m[DimUpstream] != "http://upstream:8080" {
 		t.Errorf("status/upstream = %v/%q", m[DimStatusCode], m[DimUpstream])
 	}
-	if m[DimShieldMs] != float64(5) || m[DimBizMs] != float64(20) || m[DimTotalMs] != float64(25) {
+	if m[DimShieldMs] != int64(5) || m[DimBizMs] != int64(20) || m[DimTotalMs] != int64(25) {
 		t.Errorf("耗时 = %v/%v/%v，期望 5/20/25", m[DimShieldMs], m[DimBizMs], m[DimTotalMs])
 	}
-	if m[DimReqBytes] != float64(5) || m[DimRespBytes] != float64(2) {
+	if m[DimReqBytes] != int64(5) || m[DimRespBytes] != int64(2) {
 		t.Errorf("字节 = %v/%v，期望 5/2", m[DimReqBytes], m[DimRespBytes])
 	}
 }
 
-// 多条请求写入同一文件，每行一条 JSON。
+// 多条请求各写一行记录。
 func TestOnResponseMultipleLines(t *testing.T) {
 	o, _ := newTestObs(t)
 	for i := 0; i < 5; i++ {
@@ -163,22 +164,12 @@ func TestOnResponseMultipleLines(t *testing.T) {
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(o.logDir, "access-"+time.Now().Format("2006-01-02")+".jsonl")
-	f, err := os.Open(path)
+	total, err := o.Count(Query{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	var n int
-	for sc.Scan() {
-		if !json.Valid(sc.Bytes()) {
-			t.Errorf("第 %d 行非合法 JSON: %q", n+1, sc.Bytes())
-		}
-		n++
-	}
-	if n != 5 {
-		t.Errorf("应有 5 行日志，实际 %d", n)
+	if total != 5 {
+		t.Errorf("应有 5 条日志，实际 %d", total)
 	}
 }
 
@@ -228,7 +219,7 @@ func TestMetricsWindowSlides(t *testing.T) {
 	}
 }
 
-// Shutdown flush 内存缓冲 → 日志全部落盘；重复调用幂等。
+// Shutdown flush 内存缓冲 → 日志全部落库；重复调用幂等。
 func TestShutdownFlush(t *testing.T) {
 	o, _ := newTestObs(t)
 	for i := 0; i < 3; i++ {
@@ -243,10 +234,12 @@ func TestShutdownFlush(t *testing.T) {
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatalf("重复 Shutdown: %v", err)
 	}
-	path := filepath.Join(o.logDir, "access-"+time.Now().Format("2006-01-02")+".jsonl")
-	data, _ := os.ReadFile(path)
-	if got := strings.Count(string(data), "\n"); got != 3 {
-		t.Errorf("flush 后应有 3 行日志，实际 %d", got)
+	total, err := o.Count(Query{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Errorf("flush 后应有 3 条日志，实际 %d", total)
 	}
 }
 
@@ -260,41 +253,18 @@ func TestStopBridgesShutdown(t *testing.T) {
 	if err := o.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	path := filepath.Join(o.logDir, "access-"+time.Now().Format("2006-01-02")+".jsonl")
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("Stop 后日志应已落盘: %v", err)
-	}
-}
-
-// 留存清理：超过保留天数的日志被删除，当日保留。
-func TestRetentionCleanup(t *testing.T) {
-	dir := t.TempDir()
-	s := NewFileStore(dir, 30)
-
-	old := filepath.Join(dir, "access-2020-01-01.jsonl")
-	if err := os.WriteFile(old, []byte("x\n"), 0o644); err != nil {
+	total, err := o.Count(Query{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour)})
+	if err != nil {
 		t.Fatal(err)
 	}
-	keep := filepath.Join(dir, "access-"+time.Now().Format("2006-01-02")+".jsonl")
-	if err := os.WriteFile(keep, []byte("x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	s.mu.Lock()
-	s.cleanupOld()
-	s.mu.Unlock()
-
-	if _, err := os.Stat(old); !os.IsNotExist(err) {
-		t.Error("超过留存天数的日志应被清理")
-	}
-	if _, err := os.Stat(keep); err != nil {
-		t.Error("当日日志不应被清理")
+	if total != 1 {
+		t.Errorf("Stop 后应已落库 1 条，实际 %d", total)
 	}
 }
 
 // 队列满时降级丢弃并计数，不阻塞请求（AsyncStore）。
 func TestAsyncStoreQueueFullDrops(t *testing.T) {
-	a := NewAsyncStore(NewFileStore(t.TempDir(), 30))
+	a := NewAsyncStore(discardStore{})
 	a.mu.Lock()
 	a.pending = make([]*AccessRecord, asyncCap)
 	a.mu.Unlock()
@@ -461,116 +431,6 @@ func TestAdminLogsFilters(t *testing.T) {
 	}
 }
 
-// FileStore.Query 直接按条件过滤（跨天/时间范围/路径）。
-func TestFileStoreQuery(t *testing.T) {
-	dir := t.TempDir()
-	s := NewFileStore(dir, 30)
-	defer s.Close() // 释放文件句柄（Windows：句柄不关则 TempDir 清理失败）
-	base := time.Now()
-	mk := func(offset time.Duration, path string) *AccessRecord {
-		return &AccessRecord{
-			Time: base.Add(offset), TraceID: "tid", TenantID: "t1", Path: path,
-			Method: http.MethodGet, StatusCode: 200, TotalMs: 1,
-		}
-	}
-	recs := []*AccessRecord{
-		mk(-time.Hour, "/api/old"),
-		mk(-time.Minute, "/api/a"),
-		mk(-time.Minute, "/api/b"),
-	}
-	if err := s.Write(recs); err != nil {
-		t.Fatal(err)
-	}
-
-	// 全部（默认上限内），倒序：最新在前
-	rows, err := s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 3 {
-		t.Errorf("应有 3 条，实际 %d", len(rows))
-	}
-	if rows[0][DimPath] != "/api/b" || rows[2][DimPath] != "/api/old" {
-		t.Errorf("倒序排列错误: %v", rows)
-	}
-	// 时间范围收窄（最近 10 分钟内）
-	rows, _ = s.Query(Query{From: base.Add(-10 * time.Minute), To: base.Add(time.Hour)})
-	if len(rows) != 2 {
-		t.Errorf("时间过滤应有 2 条，实际 %d", len(rows))
-	}
-	// path 精确
-	rows, _ = s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), Path: "/api/a"})
-	if len(rows) != 1 || rows[0][DimPath] != "/api/a" {
-		t.Errorf("path 精确过滤错误: %v", rows)
-	}
-	// path 模糊
-	rows, _ = s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), PathLike: "/api/"})
-	if len(rows) != 3 {
-		t.Errorf("path_like 应有 3 条，实际 %d", len(rows))
-	}
-	rows, _ = s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), Limit: 2})
-	if len(rows) != 2 {
-		t.Errorf("limit=2 应返回 2 条，实际 %d", len(rows))
-	}
-	if rows[0][DimPath] != "/api/b" {
-		t.Errorf("limit 截断应取最新 2 条（倒序），实际 %v", rows[0][DimPath])
-	}
-	// offset 分页：page2 = 跳过最新 2 条后的剩余 1 条；Count 与总数一致
-	page2, _ := s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), Limit: 2, Offset: 2})
-	if len(page2) != 1 || page2[0][DimPath] != "/api/old" {
-		t.Errorf("offset=2 应返回剩余 1 条 /api/old，实际 %v", page2)
-	}
-	total, err := s.Count(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour)})
-	if err != nil || total != 3 {
-		t.Errorf("Count 应为 3，实际 %d (err=%v)", total, err)
-	}
-	// 状态分组（'4' = 4xx）
-	err = s.Write([]*AccessRecord{mk4xx(-2 * time.Minute)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, _ = s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), StatusGroup: "4"})
-	if len(rows) != 1 || rows[0][DimStatusCode] != float64(404) {
-		t.Errorf("status_group=4 应只有 1 条 404，实际 %v", rows)
-	}
-	total, _ = s.Count(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), StatusGroup: "4"})
-	if total != 1 {
-		t.Errorf("status_group=4 计数应为 1，实际 %d", total)
-	}
-	// 仅异常
-	total, _ = s.Count(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), OnlyError: true})
-	if total != 1 {
-		t.Errorf("only_error 计数应为 1，实际 %d", total)
-	}
-	// 耗时排序
-	recs2 := []*AccessRecord{
-		&AccessRecord{Time: base.Add(-30 * time.Minute), TraceID: "s1", TenantID: "t1", Path: "/sort/a", Method: http.MethodGet, StatusCode: 200, TotalMs: 30},
-		&AccessRecord{Time: base.Add(-29 * time.Minute), TraceID: "s2", TenantID: "t1", Path: "/sort/b", Method: http.MethodGet, StatusCode: 200, TotalMs: 10},
-	}
-	if err := s.Write(recs2); err != nil {
-		t.Fatal(err)
-	}
-	rows, _ = s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), PathLike: "/sort/", Sort: "total_desc"})
-	if len(rows) != 2 || rows[0][DimPath] != "/sort/a" {
-		t.Errorf("total_desc 应耗时高的在前，实际 %v", rows)
-	}
-	rows, _ = s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), PathLike: "/sort/", Sort: "total_asc"})
-	if len(rows) != 2 || rows[0][DimPath] != "/sort/b" {
-		t.Errorf("total_asc 应耗时低的在前，实际 %v", rows)
-	}
-}
-
-// mk4xx 构造一条 404 记录（状态分组/仅异常测试用）。
-func mk4xx(offset time.Duration) *AccessRecord {
-	return &AccessRecord{
-		Time: base4xx.Add(offset), TraceID: "tid404", TenantID: "t1", Path: "/missing",
-		Method: http.MethodGet, StatusCode: 404, TotalMs: 1,
-	}
-}
-
-// base4xx 与 TestFileStoreQuery 的 base 对齐（包内共享基准时间）。
-var base4xx = time.Now()
-
 // DBStore 写读 + 过滤（sqlite 临时库）。
 func TestDBStoreWriteQuery(t *testing.T) {
 	d, err := db.Open("sqlite", filepath.Join(t.TempDir(), "obs.db"))
@@ -619,7 +479,6 @@ func TestDBStoreWriteQuery(t *testing.T) {
 	}
 }
 
-// OBS_STORE 热切换：db → file，切换后新日志写入新后端，查询只读当前后端。
 // TestDBStoreTypeNormalize 字符串列内容为纯数字时（如 trace_id="123"）不得被底层
 // decodeAny 强转成数值：查询返回的类型必须与维度注册表一致（DimString→string、DimInt→int64）。
 func TestDBStoreTypeNormalize(t *testing.T) {
@@ -666,89 +525,58 @@ func TestDBStoreTypeNormalize(t *testing.T) {
 	}
 }
 
-func TestStoreHotSwitch(t *testing.T) {
-	o, dataDB := newTestObsDB(t)
-	defer dataDB.Close()
-
-	// 默认存储为 db（默认后端）
+// 数据访问层未就绪（dataDB=nil）时降级 discardStore：写入不 panic、查询恒空、统计为 0。
+func TestDiscardStoreWhenDBNil(t *testing.T) {
+	f := newFakeConf()
+	o := New(f, nil)
+	if err := o.Start(nil); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = o.sink.Load().(*AsyncStore).Close() })
+	if got := o.sink.Load().(*AsyncStore).Name(); got != "discard" {
+		t.Fatalf("dataDB=nil 应降级 discard 后端，实际 %s", got)
+	}
 	r := httptest.NewRequest(http.MethodGet, "/api/one", nil)
 	if err := o.OnResponse(newCtx(r, 200, []byte("ok"), 1, 1)); err != nil {
-		t.Fatal(err)
+		t.Fatalf("OnResponse 不应报错: %v", err)
 	}
-	if o.sink.Load().(*AsyncStore).Name() != "db" {
-		t.Fatalf("默认存储应为 db，实际 %s", o.sink.Load().(*AsyncStore).Name())
+	if err := o.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
 	}
+	rows, err := o.Query(Query{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour)})
+	if err != nil || len(rows) != 0 {
+		t.Errorf("discard 后端查询应恒空，实际 %v (err=%v)", rows, err)
+	}
+	if v := o.StorageSize(); v != 0 {
+		t.Errorf("discard 后端 StorageSize 应为 0，实际 %d", v)
+	}
+}
 
-	// 热切换到 file（已弃用，过渡保留）
-	o.storeCfg = "file"
-	if err := o.Start(nil); err != nil {
-		t.Fatalf("Start 切换存储: %v", err)
-	}
-	if got := o.sink.Load().(*AsyncStore).Name(); got != "file" {
-		t.Fatalf("切换后存储应为 file，实际 %s", got)
-	}
-	r2 := httptest.NewRequest(http.MethodGet, "/api/two", nil)
-	ctx2 := newCtx(r2, 200, []byte("ok"), 1, 1)
-	if err := o.OnResponse(ctx2); err != nil {
+// /admin/logs/storage 返回日志存储总占用。
+func TestAdminStorage(t *testing.T) {
+	o, _ := newTestObs(t)
+	// 写一条日志
+	r := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	if err := o.OnResponse(newCtx(r, 200, []byte("ok"), 1, 1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
-	// 查询只读当前后端（file）：仅含切换后写入的一条
-	now := time.Now()
-	rows, err := o.Query(Query{From: now.Add(-time.Hour), To: now.Add(time.Hour)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0][DimPath] != "/api/two" {
-		t.Errorf("file 后端应只有切换后的一条 /api/two，实际 %v", rows)
-	}
-	// 旧 db 数据保留在库中，可切回查看
-	o.storeCfg = "db"
-	if err := o.Start(nil); err != nil {
-		t.Fatalf("Start 切回 db: %v", err)
-	}
-	rows, err = o.Query(Query{From: now.Add(-time.Hour), To: now.Add(time.Hour)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0][DimPath] != "/api/one" {
-		t.Errorf("db 后端应保留切换前的 /api/one，实际 %v", rows)
-	}
-}
+	mgr := hotswap.NewManager(chain.New(), nil)
+	mgr.RegisterMiddleware(o)
+	h := NewAdminHandler(mgr)
 
-// FileStore.SizeBytes 统计 access-*.jsonl 文件合计字节。
-func TestFileStoreSizeBytes(t *testing.T) {
-	dir := t.TempDir()
-	s := NewFileStore(dir, 30)
-	defer s.Close() // 释放文件句柄（Windows：句柄不关则 TempDir 清理失败）
-	// 目录不存在 → 0
-	if v, err := s.SizeBytes(); err != nil || v != 0 {
-		t.Errorf("空目录 SizeBytes = %d, %v，期望 0", v, err)
+	rec := httptest.NewRecorder()
+	h.Storage(rec, httptest.NewRequest(http.MethodGet, "/admin/logs/storage", nil))
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("storage 响应非 JSON: %v, body=%q", err, rec.Body.String())
 	}
-	recs := []*AccessRecord{
-		{Time: time.Now(), TraceID: "t1", Path: "/a", Method: http.MethodGet, StatusCode: 200, RespBytes: 100},
-		{Time: time.Now(), TraceID: "t2", Path: "/b", Method: http.MethodGet, StatusCode: 200, RespBytes: 200},
-	}
-	if err := s.Write(recs); err != nil {
-		t.Fatal(err)
-	}
-	// 无关文件不计入
-	if err := os.WriteFile(filepath.Join(dir, "other.log"), []byte("xxxx"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	v, err := s.SizeBytes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v <= 0 {
-		t.Errorf("SizeBytes 应为正数，实际 %d", v)
-	}
-	data, _ := os.ReadFile(filepath.Join(dir, "access-"+time.Now().Format("2006-01-02")+".jsonl"))
-	if v != int64(len(data)) {
-		t.Errorf("SizeBytes = %d，文件实际 %d", v, len(data))
+	if v := got["total_bytes"].(float64); v <= 0 {
+		t.Errorf("total_bytes 应 > 0，实际 %v", v)
 	}
 }
 
@@ -788,40 +616,6 @@ func TestDBStoreSizeBytes(t *testing.T) {
 	}
 	if v1 < v0 {
 		t.Errorf("写入后 SizeBytes 不应变小：%d → %d", v0, v1)
-	}
-}
-
-// /admin/logs/storage 返回 file/db/total 占用。
-func TestAdminStorage(t *testing.T) {
-	o, _ := newTestObs(t)
-	// 写一条 file 日志
-	r := httptest.NewRequest(http.MethodGet, "/api/test", nil)
-	if err := o.OnResponse(newCtx(r, 200, []byte("ok"), 1, 1)); err != nil {
-		t.Fatal(err)
-	}
-	if err := o.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	mgr := hotswap.NewManager(chain.New(), nil)
-	mgr.RegisterMiddleware(o)
-	h := NewAdminHandler(mgr)
-
-	rec := httptest.NewRecorder()
-	h.Storage(rec, httptest.NewRequest(http.MethodGet, "/admin/logs/storage", nil))
-
-	var got map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("storage 响应非 JSON: %v, body=%q", err, rec.Body.String())
-	}
-	if got["file_bytes"] == nil || got["db_bytes"] == nil || got["total_bytes"] == nil {
-		t.Errorf("storage 应含 file_bytes/db_bytes/total_bytes，实际 %v", got)
-	}
-	if v := got["file_bytes"].(float64); v <= 0 {
-		t.Errorf("file_bytes 应 > 0，实际 %v", v)
-	}
-	if got["total_bytes"].(float64) != got["file_bytes"].(float64)+got["db_bytes"].(float64) {
-		t.Errorf("total 应等于 file+db，实际 %v", got)
 	}
 }
 

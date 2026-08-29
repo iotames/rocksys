@@ -206,18 +206,15 @@ rockctl script rollback             # 回滚上一版本
 
 ### 3.5 obs — RockObs（转发链中间件，Tail + ResponseHook）
 
-**作用**：访问日志（异步落盘，存储后端可切换）+ 指标聚合 + 查询 API。
+**作用**：访问日志（异步落库）+ 指标聚合 + 查询 API。
 
-**配置项**：`OBS_ENABLED`（父开关，默认 false）、`OBS_STORE`（默认 `db`，可选 `file`——已弃用，将不再被支持）、`OBS_LOG_DIR`（默认 logs，仅 file 遗留用）、`OBS_RETENTION_DAYS`（默认 30）、`OBS_LOG_PRUNE_ENABLED`（access_log 自动清理子开关，默认 false）。
+**配置项**：`OBS_ENABLED`（父开关，默认 false）、`OBS_LOG_PRUNE_ENABLED`（access_log 自动清理子开关，默认 false）、`OBS_LOG_RETENTION_DAYS`（保留天数，默认 7）。
 
-**存储后端**：
-- `db`（默认）：复用统一数据访问层（`DB_DRIVER`/`DB_DSN`，默认 sqlite `rocksys.db`）写 `access_log` 表；SQL 外置 `sql/<dbtype>/`。dataDB 未就绪时回退 file 并告警。`access_log` 表字段/枚举见 `docs/DATA_DICT.md`。
-- `file`（已弃用）：JSONL 文件 `logs/access-YYYY-MM-DD.jsonl`（按天切分、超期清理），仅显式配置 `OBS_STORE=file` 时启用，将不再被支持。
-- 切换语义：改 `OBS_STORE` 触发配置热更，新日志写入新后端；查询只读当前启用的后端，旧数据保留（db 表在库、file 文件在磁盘，切回可见）。
+**存储**：访问日志统一写数据库——复用统一数据访问层（`DB_DRIVER`/`DB_DSN`，默认 sqlite `rocksys.db`）写 `access_log` 表；SQL 外置 `sql/<dbtype>/`。数据访问层未就绪/建表失败时降级丢弃日志并告警（不阻断转发）。`access_log` 表字段/枚举见 `docs/DATA_DICT.md`。
 
 **异步落盘**：日志写入有界队列（4096 条，满则丢弃告警），后台 goroutine 批量写入当前后端；`Flush` 保证停机前全部落盘。
 
-**查询**：`GET /admin/metrics` 返回 QPS / P50 / P95 / P99 / 错误率；`GET /admin/logs` 按时间范围（精确到分）+ path 精确/模糊过滤返回 JSONL（详见 webui-api.md §3.11）；`GET /admin/logs/storage` 返回日志存储总占用（file 文件 + db 表，WebUI 日志页顶部展示）。
+**查询**：`GET /admin/metrics` 返回 QPS / P50 / P95 / P99 / 错误率；`GET /admin/logs` 按时间范围（精确到分）+ path 精确/模糊过滤返回 JSONL（详见 webui-api.md §3.11）；`GET /admin/logs/storage` 返回日志库占用（access_log 表 + 索引，WebUI 日志页顶部展示）。
 
 ### 3.6 copy — 请求抄送（转发链中间件，Tail + ResponseHook）
 

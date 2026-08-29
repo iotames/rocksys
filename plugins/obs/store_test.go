@@ -36,13 +36,17 @@ func (s *failStore) Write(batch []*AccessRecord) error {
 	return nil
 }
 func (s *failStore) Query(q Query) ([]map[string]any, error) { return nil, nil }
-func (s *failStore) Count(q Query) (int64, error)                { return 0, nil }
+func (s *failStore) Count(q Query) (int64, error)            { return 0, nil }
 func (s *failStore) SizeBytes() (int64, error)               { return 0, nil }
 func (s *failStore) Flush(ctx context.Context) error         { return nil }
 func (s *failStore) Close() error                            { return nil }
 func (s *failStore) setFail(f bool)                          { s.mu.Lock(); s.fail = f; s.mu.Unlock() }
 func (s *failStore) calls() int                              { s.mu.Lock(); defer s.mu.Unlock(); return s.writeCalls }
-func (s *failStore) saved() []*AccessRecord                  { s.mu.Lock(); defer s.mu.Unlock(); return append([]*AccessRecord(nil), s.records...) }
+func (s *failStore) saved() []*AccessRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*AccessRecord(nil), s.records...)
+}
 
 // waitFor 轮询直到 cond 满足或超时（worker 异步处理，断言前必须先等完成信号）。
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
@@ -136,7 +140,7 @@ func TestFlushAllRetry(t *testing.T) {
 
 // TestQueueFullDropNotCountedAsFail 队列满丢弃：计入 drop 但不计入连续失败。
 func TestQueueFullDropNotCountedAsFail(t *testing.T) {
-	a := NewAsyncStore(NewFileStore(t.TempDir(), 30))
+	a := NewAsyncStore(discardStore{})
 	a.mu.Lock()
 	a.pending = make([]*AccessRecord, asyncCap)
 	a.mu.Unlock()

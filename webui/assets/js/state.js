@@ -104,7 +104,6 @@
   // 枚举值配置项（编辑态渲染下拉而非手填）：key → 可选值数组（首个为默认/推荐）
   const ENUM_KEYS = {
     DB_DRIVER: ['sqlite', 'mysql', 'postgres'],
-    OBS_STORE: ['db', 'file'], // db 默认；file 已弃用，将不再被支持
     ROCKSYS_LOG_LEVEL: ['debug', 'info', 'warn', 'error'],
     SHIELD_RATE_LIMIT_BY: ['ip'], // 当前仅支持 ip
   };
@@ -121,7 +120,7 @@
   const INT_KEYS = [
     'ROCKSYS_TIMEOUT', 'ROCKSYS_LOG_MAX_SIZE', 'DB_PORT', 'AUTH_JWT_TTL',
     'SHIELD_RATE_LIMIT_RPS', 'SHIELD_RATE_LIMIT_BURST', 'SHIELD_MAX_BODY_SIZE',
-    'OBS_RETENTION_DAYS', 'OBS_LOG_RETENTION_DAYS',
+    'OBS_LOG_RETENTION_DAYS',
     'SHIELD_EVENT_BUFFER', 'SHIELD_EVENT_FLUSH_ROWS', 'SHIELD_EVENT_FLUSH_INTERVAL',
     'SHIELD_EVENT_RETENTION_DAYS', 'REGISTRY_TTL',
     'MQ_MAX_RETRIES', 'MQ_BASE_BACKOFF', 'MQ_POLL_INTERVAL',

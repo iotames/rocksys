@@ -100,11 +100,11 @@
     return st.value;
   }
 
-  function setValue(id, v) {
+  function setValue(id, v, keepInitial) {
     const st = instances[id];
     if (!st) return;
     st.value = v || '';
-    st.initial = st.value;
+    if (!keepInitial) st.initial = st.value; // keepInitial=true：保留脏基线（如"恢复默认"回填后应保持可保存）
     const input = $('#' + id);
     if (input) input.value = st.value;
     highlight(id);

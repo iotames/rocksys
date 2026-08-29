@@ -219,12 +219,19 @@ func (h *AdminHandler) Stats(w http.ResponseWriter, r *http.Request) {
 			row["type_name"] = BlockType(bt).String()
 		}
 	}
+	// 给 Top IP 行附「是否在黑名单」（与拦截判定同源：外挂文件 ∪ DB 活跃条目），
+	// 供 WebUI 攻击源表标注与批量加黑（已在黑名单的行禁选）。
+	for _, row := range topIPs {
+		ip, _ := row["client_ip"].(string)
+		row["in_blacklist"] = h.shield.InBlacklist(ip)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"days":    days,
-		"total":   total,
-		"daily":   daily,
-		"top_ips": topIPs,
+		"days":              days,
+		"total":             total,
+		"daily":             daily,
+		"top_ips":           topIPs,
+		"blacklist_addable": h.shield.IPListEnabled(true), // DB 黑名单可用 → WebUI 显示勾选列与批量加黑按钮
 	})
 }
 

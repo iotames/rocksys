@@ -5,8 +5,8 @@
 //     新增字段先在此登记（名称/数据类型/存储形态/语义），再决定采集与展示；
 //  2. 索引维度（indexed）承载查询过滤/排序：固定 struct 字段 + DB 固定列，
 //     类型安全、可走索引；负载维度（payload）仅记录与展示：写 Extras map，
-//     DB 侧入 extra JSON 列，file 侧直接进 JSONL，新增零结构改动；
-//  3. 存储后端（file/db）只感知维度名，不感知字段语义，二者解耦。
+//     DB 侧入 extra JSON 列，新增零结构改动；
+//  3. 存储后端只感知维度名，不感知字段语义，二者解耦。
 package obs
 
 import (
@@ -108,7 +108,7 @@ type AccessRecord struct {
 	ReqBytes   int64     // DimReqBytes
 	RespBytes  int64     // DimRespBytes
 	// Extras 负载维度集合（key 必须先在 Dims 注册为 payload 维度）。
-	// 序列化时平铺进顶层 JSON，DB 侧存 extra 列、file 侧直接进 JSONL。
+	// 序列化时平铺进顶层 JSON，DB 侧存 extra 列。
 	Extras map[string]any
 }
 

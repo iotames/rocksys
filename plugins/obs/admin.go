@@ -139,14 +139,14 @@ func (h *AdminHandler) Logs(w http.ResponseWriter, r *http.Request) {
 }
 
 // Storage GET /admin/logs/storage → 日志存储总占用（§14 Admin API）。
-// 响应：{"file_bytes":..,"db_bytes":..,"total_bytes":..}（file 与 db 独立统计后求和）。
+// 响应：{"total_bytes":..}（access_log 表 + 索引占用）。
 func (h *AdminHandler) Storage(w http.ResponseWriter, r *http.Request) {
 	if h.obs == nil {
 		http.Error(w, "obs 未注册", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(h.obs.StorageSize())
+	_ = json.NewEncoder(w).Encode(map[string]any{"total_bytes": h.obs.StorageSize()})
 }
 
 // Prune POST /admin/logs/prune → 手动触发访问日志清理（按保留天数删 access_log 旧记录）。

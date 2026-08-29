@@ -567,6 +567,13 @@ func (s *Shield) current() *shieldSnapshot {
 	return nil
 }
 
+// InBlacklist IP 是否命中当前生效黑名单（外挂 rules/ip_blacklist.txt ∪ DB 活跃条目，
+// 与 Handle 拦截判定同源）。供管理端点标注 Top 攻击源 IP「是否在黑名单」用。
+func (s *Shield) InBlacklist(ip string) bool {
+	snap := s.current()
+	return snap != nil && snap.ipBlacklist.contains(ip)
+}
+
 // splitList 逗号分隔解析：去空白、去空项。
 func splitList(s string) []string {
 	if s == "" {

@@ -1,10 +1,9 @@
 // 访问日志存储抽象：Store 接口 + 通用异步写入包装 AsyncStore。
 //
-// 存储后端可热切换（OBS_STORE=db|file，默认 db）：Obs 持有当前 AsyncStore 的原子引用，
-// 配置热更时重建底层 Store 并替换（见 obs.go rebuildStore）。
-// 异步排队是通用能力（file/db 都受益于批量写入），故与具体后端解耦：
+// Obs 持有当前 AsyncStore 的原子引用，Start 时重建底层 Store 并替换（见 obs.go rebuildStore）。
+// 异步排队是通用能力（批量写入 + 队列满降级），故与具体后端解耦：
 //   - AsyncStore：pending 队列 + worker 批量落盘 + 队列满降级丢弃（不阻塞请求）
-//   - FileStore / DBStore：仅实现同步的底层写入与查询
+//   - DBStore / discardStore：仅实现同步的底层写入与查询
 package obs
 
 import (
@@ -49,7 +48,7 @@ func (q Query) sortCode() int {
 // Store 访问日志存储后端接口。
 // Write 为同步批量写（异步排队由 AsyncStore 承担）；Query 返回平铺维度 map（按 q.Sort 排序）。
 type Store interface {
-	// Name 存储后端名（"file" / "db"）。
+	// Name 存储后端名（"db" / "discard"）。
 	Name() string
 	// Write 同步写入一批记录；失败返回 error（调用方负责告警/丢弃）。
 	Write(batch []*AccessRecord) error
@@ -57,22 +56,34 @@ type Store interface {
 	Query(q Query) ([]map[string]any, error)
 	// Count 按相同过滤条件（不含 limit/offset）统计总数，配合 Query 实现服务端分页。
 	Count(q Query) (int64, error)
-	// SizeBytes 返回该后端已存储日志的总字节数（file 为 access-*.jsonl 文件合计；db 为表+索引）。
+	// SizeBytes 返回该后端已存储日志的总字节数（db 为表+索引占用）。
 	SizeBytes() (int64, error)
-	// Flush 冲刷后端缓冲（file 无缓冲返回 nil；DB 由事务/连接层保证）。
+	// Flush 冲刷后端缓冲（由事务/连接层保证，实现恒返回 nil）。
 	Flush(ctx context.Context) error
-	// Close 释放后端资源（FileStore 关文件；DBStore 连接由 dataDB 统一管理，no-op）。
+	// Close 释放后端资源（DBStore 连接由 dataDB 统一管理，no-op）。
 	Close() error
 }
+
+// discardStore 数据访问层未就绪时的降级后端：丢弃全部写入（查询恒空），
+// 保证 DB 不可用时访问日志采集不阻塞请求、不 panic（底座仅反向代理，不阻断转发）。
+type discardStore struct{}
+
+func (discardStore) Name() string                          { return "discard" }
+func (discardStore) Write(batch []*AccessRecord) error     { return nil }
+func (discardStore) Query(Query) ([]map[string]any, error) { return nil, nil }
+func (discardStore) Count(Query) (int64, error)            { return 0, nil }
+func (discardStore) SizeBytes() (int64, error)             { return 0, nil }
+func (discardStore) Flush(context.Context) error           { return nil }
+func (discardStore) Close() error                          { return nil }
 
 // asyncCap 异步队列上限，超出降级丢弃（不阻塞请求）。
 const asyncCap = 4096
 
 // obs 底层写失败重试与告警常量（集中定义，禁止魔数散落多处）。
 const (
-	obsRetryTimes    = 1                 // 底层写失败后的重试次数（总尝试 = obsRetryTimes + 1）
+	obsRetryTimes    = 1                     // 底层写失败后的重试次数（总尝试 = obsRetryTimes + 1）
 	obsRetryDelay    = 50 * time.Millisecond // 重试间隔
-	obsFailThreshold = 10                // 连续失败阈值：达到后告警升级为 Error
+	obsFailThreshold = 10                    // 连续失败阈值：达到后告警升级为 Error
 )
 
 // AsyncStore 通用异步写入包装：为任意 Store 提供"异步排队 + 批量落盘 + 队列满降级"语义。
@@ -211,9 +222,9 @@ func (a *AsyncStore) ConsecutiveFails() int64 { return a.consecutiveFails.Load()
 // writeBatchWithRetry 写一批记录：失败重试 obsRetryTimes 次（间隔 obsRetryDelay）。
 // 成功 → consecutiveFails 清零，返回 nil；
 // 全部失败 → drop 计数累加整批、consecutiveFails+1，达 obsFailThreshold 告警升级
-// log.Error（提示运维检查 DB 或热切 OBS_STORE），否则 log.Warn；返回最终 err。
+// log.Error（提示运维检查数据库），否则 log.Warn；返回最终 err。
 // 注意：consecutiveFails 只统计底层 Write 失败；Write 成功后的 s.Flush 失败
-// （当前 FileStore/DBStore Flush 恒返回 nil，实际无影响）不计入。
+// （当前 DBStore Flush 恒返回 nil，实际无影响）不计入。
 func (a *AsyncStore) writeBatchWithRetry(s Store, batch []*AccessRecord) error {
 	var err error
 	for i := 0; i <= obsRetryTimes; i++ {
@@ -229,7 +240,7 @@ func (a *AsyncStore) writeBatchWithRetry(s Store, batch []*AccessRecord) error {
 	fails := a.consecutiveFails.Add(1)
 	a.drop.Add(int64(len(batch)))
 	if fails >= obsFailThreshold {
-		log.Error("obs: 访问日志写入连续失败，请检查数据库或热切 OBS_STORE", "store", s.Name(), "err", err, "consecutive_fails", fails, "drop_count", a.drop.Load())
+		log.Error("obs: 访问日志写入连续失败，请检查数据库", "store", s.Name(), "err", err, "consecutive_fails", fails, "drop_count", a.drop.Load())
 	} else {
 		log.Warn("obs: 访问日志写入失败，丢弃该批", "store", s.Name(), "err", err, "consecutive_fails", fails, "drop_count", a.drop.Load())
 	}

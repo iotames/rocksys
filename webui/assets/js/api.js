@@ -75,12 +75,12 @@
       }
       if (!r.ok) {
         if (r.status >= 500) bridgeUnreachable(true);
+        // body 只读一次：优先取 JSON 的 error/message，否则取纯文本原文（如 http.Error 文案）
         let msg = '';
         try {
-          const j = await r.json();
-          msg = j.error || j.message || '';
-        } catch (e) { /* 非 JSON 响应 */ }
-        if (!msg) { try { msg = (await r.text()).slice(0, 200); } catch (e) { /* ignore */ } }
+          const t = await r.text();
+          try { const j = JSON.parse(t); msg = j.error || j.message || ''; } catch (e) { msg = t; }
+        } catch (e) { /* body 不可读 */ }
         throw new ApiError(msg || ('HTTP ' + r.status), r.status);
       }
       bridgeUnreachable(false);

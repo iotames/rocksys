@@ -61,6 +61,9 @@
 | 35 | GET | `/admin/shield/rules` | WAF 规则文件清单（外挂覆写状态/生效行数/修改时间，WebUI·文件编辑 Tab） |
 | 36 | GET | `/admin/shield/rules/file` | 读单个规则文件当前生效内容 + 内嵌默认内容（`?name=`，文件名白名单校验） |
 | 37 | POST | `/admin/shield/rules/save` | 保存规则文件到 `HOT_SCRIPTS_DIR/rules/`（原子写，ScriptHub ≤3s 自动热更生效；body `{name, content}`，上限 512KB） |
+| 38 | GET | `/admin/proxy/trusted` | 可信代理文件清单（外挂覆写状态/生效行数/修改时间，WebUI·全局配置可信代理页签） |
+| 39 | GET | `/admin/proxy/trusted/file` | 读可信代理文件当前生效内容 + 内嵌默认内容（`?name=`，仅允许装配的 `TRUSTED_PROXIES_FILE`） |
+| 40 | POST | `/admin/proxy/trusted/save` | 保存可信代理文件到 `HOT_SCRIPTS_DIR/trusted_proxies/`（原子写，保存前先解析校验非法 IP/CIDR 直接 400；ScriptHub ≤3s 自动热更生效；body `{name, content}`，上限 512KB） |
 
 ---
 
@@ -360,7 +363,7 @@
 | resp_bytes | int | 响应流量（字节） |
 | （扩展维度） | 不定 | 负载维度（如 `request_body`），由 obs 维度注册表定义，平铺输出 |
 
-**数据来源**：当前启用的 obs 存储后端（默认 `OBS_STORE=db` 查 `access_log` 表；`OBS_STORE=file` 读 `logs/access-YYYY-MM-DD.jsonl`，已弃用），切换后端后只查当前后端。`access_log` 表字段定义见 `docs/DATA_DICT.md`。**按 `sort` 排序（缺省完成时间倒序），`limit`/`offset` 服务端分页（WebUI 每页 20/50/100）**；状态分组/仅异常/耗时排序均由后端执行。
+**数据来源**：`access_log` 表（复用统一数据访问层，`DB_DRIVER`/`DB_DSN`）；数据访问层未就绪时返回空。`access_log` 表字段定义见 `docs/DATA_DICT.md`。**按 `sort` 排序（缺省完成时间倒序），`limit`/`offset` 服务端分页（WebUI 每页 20/50/100）**；状态分组/仅异常/耗时排序均由后端执行。
 
 **失败 `400`**：时间格式非法（应为 `YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`）/ `from` 晚于 `to`，响应体文本为错误原因。
 **失败 `503`**：观测组件未注册。
@@ -372,17 +375,26 @@
 **响应 200**（`application/json`）：
 
 ```json
-{"file_bytes":1048576,"db_bytes":40960,"total_bytes":1089536}
+{"total_bytes":1089536}
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| file_bytes | int | 文件日志占用（`OBS_LOG_DIR` 下所有 `access-*.jsonl` 合计，file 后端；file 已弃用，为遗留数据） |
-| db_bytes | int | 数据库日志表占用（`access_log` 表 + 索引，db 后端；`dataDB` 未就绪时为 0） |
-| total_bytes | int | 合计 = file_bytes + db_bytes |
+| total_bytes | int | 日志库占用（`access_log` 表 + 索引；数据访问层未就绪时为 0） |
 
-> 与当前启用后端无关：切换 `OBS_STORE` 后旧数据仍计入（db 表保留在库、file 数据保留在磁盘）。默认后端为 `db`；`OBS_STORE=file` 已弃用，将不再被支持。
 > WebUI 日志页顶部展示该统计。
+
+### 3.11.2 GET/POST /admin/proxy/trusted* — 可信代理文件在线编辑
+
+WebUI「可信代理」页数据源（实现 `internal/netutil/proxies_admin.go`）。文件固定为装配配置的 `TRUSTED_PROXIES_FILE`（相对 `HOT_SCRIPTS_DIR/trusted_proxies/`，默认 `trusted_proxies.txt`），保存落点为外挂目录，ScriptHub ≤3s 自动重读快照热更生效。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /admin/proxy/trusted` | 文件清单：`{"files":[{name,title,desc,override,lines,modified?,bytes?}]}` |
+| `GET /admin/proxy/trusted/file?name=` | 当前生效内容 + 内嵌默认内容：`{name,content,embedded,override,modified,hot_path,max_tokens}` |
+| `POST /admin/proxy/trusted/save` | body `{name, content}` → 原子写外挂文件（上限 512KB）；保存前先解析校验，非法 IP/CIDR 返回 400 且不落盘（空内容合法 = 回退内嵌默认） |
+
+> 安全约束：文件名仅允许 `TRUSTED_PROXIES_FILE`；保存端点仅 POST（防本机恶意页面无凭证触发）。
 
 ### 3.12 GET /admin/auth/status — 认证状态
 
@@ -459,7 +471,7 @@
 |------|------|
 | `GET /admin/shield/metrics` | 近 1 分钟实时计数（内存滑动窗口，DB 未配置也可用）；响应 `{window_seconds,total,by_type,written,dropped}` |
 | `GET /admin/shield/events` | 拦截明细（JSONL）；query：`from`/`to`（日期或分钟精度）、`block_type`（1-10）、`client_ip`、`limit`（1-10000，缺省 500）、`offset`；总数经 `X-Total-Count` 头回传 |
-| `GET /admin/shield/stats` | 聚合统计；响应 `{days,total,daily:[{day,block_type,cnt}],top_ips:[{client_ip,cnt}]}` |
+| `GET /admin/shield/stats` | 聚合统计；响应 `{days,total,daily:[{day,block_type,cnt}],top_ips:[{client_ip,cnt,in_blacklist}],blacklist_addable}`（`in_blacklist`=该 IP 是否命中当前生效黑名单，与拦截判定同源；`blacklist_addable`=DB 黑名单是否可用，WebUI 据此显示勾选列与批量加黑按钮） |
 | `POST /admin/shield/prune` | 手动清理拦截明细；body `{"days":N}`（0-3650，缺省用配置默认值）；响应 `{"ok":true,"deleted":N}` |
 
 **动态黑白名单**（WAF 方案 DB 化，DB 未配置时端点统一 503；副作用一律 POST）：

@@ -88,6 +88,6 @@ Nginx 与 rockSys 同机（经 127.0.0.1 转发）无需配置可信代理；Ngi
 
 ## 日志与留存
 
-- obs 启用后：访问日志默认写入 `access_log` 表（`OBS_STORE=db`，复用 `DB_DRIVER`/`DB_DSN`；数据库不可用时回退 JSONL 文件并告警）。`OBS_STORE=file` 已弃用，将不再被支持。WebUI「日志」页支持按时间范围（精确到分）+ 路径精确/模糊过滤查询。全部数据表字段/枚举定义见 `docs/DATA_DICT.md`。
+- obs 启用后：访问日志写入 `access_log` 表（复用 `DB_DRIVER`/`DB_DSN`；数据访问层未就绪时降级丢弃并告警）。WebUI「日志」页支持按时间范围（精确到分）+ 路径精确/模糊过滤查询。全部数据表字段/枚举定义见 `docs/DATA_DICT.md`。
 - 指标：`GET /admin/metrics`（1 分钟滑动窗口），WebUI 概览页「运行指标」查看趋势。
 - 业务日志与网关日志分离；如需聚合到统一平台，可对接日志采集器消费 `logs/` 目录。

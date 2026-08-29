@@ -4,7 +4,7 @@
 //   - GET  /admin/shield/rules        规则文件清单（含是否外挂覆写/行数/修改时间）
 //   - GET  /admin/shield/rules/file   读单个文件当前生效内容 + 内嵌默认内容（?name=）
 //   - POST /admin/shield/rules/save   保存到 HOT_SCRIPTS_DIR/rules/<name>（原子写；
-//                                      ScriptHub 监控 ≤3s 自动重建规则快照热更生效）
+//     ScriptHub 监控 ≤3s 自动重建规则快照热更生效）
 //
 // 安全约束：文件名走白名单（ruleFileMetas，禁止路径穿越）、内容大小上限 512KB、
 // 副作用端点 postOnly（防本机恶意页面无凭证触发）。

@@ -76,9 +76,7 @@ DISPATCH_RULES = /api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz;/
 REWRITE_RULES = /api/v1/=uri|/api/;header=X-Proxy-Tag:rewrite
 
 # ===== 观测 obs =====
-OBS_STORE = db               # 访问日志存储后端（默认）：db（数据库，复用 DB_DRIVER/DB_DSN）| file（JSONL，已弃用，将不再被支持）
-OBS_LOG_DIR = logs           # 仅 file 后端使用（遗留）
-OBS_RETENTION_DAYS = 30
+# ===== 观测 obs =====（访问日志统一写 access_log 表，复用 DB_DRIVER/DB_DSN；无存储后端切换配置）
 
 # ===== 抄送 copy =====
 COPY_TARGETS =

@@ -124,9 +124,9 @@ func TestIPListStore_ImportIdempotent(t *testing.T) {
 	// 含注释、空行、重复项
 	imported, skipped, err := s.Import([]string{
 		"10.0.0.1",
-		"",          // 空行跳过
-		"# 注释",      // 注释跳过
-		"10.0.0.1",  // 重复
+		"",           // 空行跳过
+		"# 注释",       // 注释跳过
+		"10.0.0.1",   // 重复
 		"10.0.0.0/8", // CIDR
 	}, "批量来源", 1, now)
 	if err != nil {

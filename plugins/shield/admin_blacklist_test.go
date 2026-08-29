@@ -216,3 +216,21 @@ func TestAdmin_IPListDisabled(t *testing.T) {
 
 // itoa 测试辅助。
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// InBlacklist 与拦截判定同源：未加入不命中，AddIPList 落库并重建快照后命中。
+func TestShield_InBlacklist(t *testing.T) {
+	h, s := newAdminListTest(t, true)
+	if s.InBlacklist("1.2.3.4") {
+		t.Fatal("未加入前不应命中黑名单")
+	}
+	if _, err := s.AddIPList(true, "1.2.3.4", "测试", BlockIPBlacklist, nil); err != nil {
+		t.Fatalf("AddIPList: %v", err)
+	}
+	if !s.InBlacklist("1.2.3.4") {
+		t.Fatal("加入后应命中黑名单")
+	}
+	if s.InBlacklist("5.6.7.8") {
+		t.Fatal("其他 IP 不应命中黑名单")
+	}
+	_ = h
+}

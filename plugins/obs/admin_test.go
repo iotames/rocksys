@@ -38,7 +38,7 @@ func TestAdminObsPruneMethodCheck(t *testing.T) {
 // 500 错误不应回显底层错误细节：dataDB 未就绪时 PruneLog 返回内部错误，
 // 响应只给固定文案，细节仅写服务端日志。
 func TestAdminObsPruneErrorNoDetail(t *testing.T) {
-	o, _ := newTestObs(t) // dataDB=nil，PruneLog 必然失败
+	o := New(newFakeConf(), nil) // dataDB=nil，PruneLog 必然失败
 	h := &AdminHandler{obs: o}
 
 	rec := httptest.NewRecorder()

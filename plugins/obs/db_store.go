@@ -1,4 +1,4 @@
-// DBStore 访问日志数据库存储后端（OBS_STORE=db）：
+// DBStore 访问日志数据库存储后端：
 // 复用统一数据访问层 internal/db（DB_DRIVER/DB_DSN，默认 sqlite rocksys.db），
 // SQL 全部外置 sql/<dbtype>/（外置目录优先、嵌入兜底，遵循项目铁律）。
 // 表结构：14 个索引列（维度化固定列）+ extra JSON 列（负载维度），见 dim.go。
@@ -21,8 +21,8 @@ const accessLogTable = "access_log"
 
 // DBStore 数据库存储后端。
 type DBStore struct {
-	edb  *easydb.EasyDb
-	sqls db.SQLSource // SQL 脚本源（internal/db 数据访问层）
+	edb       *easydb.EasyDb
+	sqls      db.SQLSource // SQL 脚本源（internal/db 数据访问层）
 	tableName string
 }
 

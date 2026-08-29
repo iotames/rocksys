@@ -1165,7 +1165,7 @@ func (s *AdminServer) RegisterPlugin(path string, h func(http.ResponseWriter, *h
 | POST | `/admin/script/rollback` | `{"name":"rule1","version":0}` | `{"ok":true}` | 回滚脚本 |
 | GET | `/admin/shield/metrics` | — | `{"window_seconds":60,"total":N,"by_type":{...}}` | WAF 近 1 分钟实时计数（内存，无需查库） |
 | GET | `/admin/shield/events` | — | JSONL | 拦截明细（from/to/block_type/client_ip/limit 过滤） |
-| GET | `/admin/shield/stats` | — | `{"days":N,"total":N,"daily":[...],"top_ips":[...]}` | WAF 聚合统计 |
+| GET | `/admin/shield/stats` | — | `{"days":N,"total":N,"daily":[...],"top_ips":[{client_ip,cnt,in_blacklist}],"blacklist_addable":bool}` | WAF 聚合统计 |
 | POST | `/admin/shield/prune` | `{"days":N}` | `{"ok":true,"deleted":N}` | 手动清理拦截明细（保留期外） |
 | GET / POST | `/admin/shield/blacklist` | POST `{"ip","title","block_type","expires_at"}` | `{"total":N,"rows":[...]}` / `{"ok":true,"id":N}` | 黑名单列表 / 新增 |
 | POST | `/admin/shield/blacklist/update` | `{"id","title","block_type","expires_at"}` | `{"ok":true}` | 更新黑名单条目 |
@@ -1701,7 +1701,7 @@ type AccessRecord struct {
     Extras     map[string]any // 负载维度（如 request_body），序列化平铺进 JSON
 }
 
-// 存储后端接口（store.go）：file / db 两个实现，OBS_STORE 热切换（默认 db，file 已弃用）。
+// 存储后端接口（store.go）：DBStore / discardStore（数据访问层未就绪时降级）两个实现。
 type Store interface {
     Name() string
     Write(batch []*AccessRecord) error
@@ -1718,14 +1718,13 @@ type Metrics struct {
 
 ### 核心流程
 
-请求结束 → 从 `dataflow.DataFlow` 提取 `AccessRecord` → `AsyncStore.Write`（有界异步队列）→ worker 批量写当前底层 `Store`（`FileStore` 写 JSONL / `DBStore` 写 `access_log` 表）→ 聚合到 `Metrics`。
+请求结束 → 从 `dataflow.DataFlow` 提取 `AccessRecord` → `AsyncStore.Write`（有界异步队列）→ worker 批量写底层 `Store`（`DBStore` 写 `access_log` 表）→ 聚合到 `Metrics`。
 
-### 存储后端与热切换
+### 存储后端
 
-- 配置项 `OBS_STORE`（默认 `db`）：`db` = 数据库（复用统一数据访问层 `internal/db`，`DB_DRIVER`/`DB_DSN` 默认 sqlite `rocksys.db`），写 `access_log` 表；`file` = JSONL 文件（`OBS_LOG_DIR`，默认 logs）——**已弃用，将不再被支持**：显式配置 `OBS_STORE=file` 时打弃用告警，仅过渡保留。
-- 切换语义：配置热更 → hotswap 对 enabled 的 obs 调 `Start(nil)` → 按当前配置重建底层 Store 并原子替换 `AsyncStore`（旧后端排空缓冲后关闭）。
-- 查询只读当前启用的后端；旧数据保留（db 表保留在库、file 文件保留在磁盘，切回即可再看）。
-- db 后端因 dataDB 未就绪（`DB_DRIVER`/`DB_DSN` 无效）或建表失败：回退 `file` 并告警（过渡兜底，避免日志静默丢失），不阻断底座。
+- 访问日志统一写数据库：复用统一数据访问层 `internal/db`（`DB_DRIVER`/`DB_DSN` 默认 sqlite `rocksys.db`）写 `access_log` 表。
+- Enable 热更 → hotswap 对 enabled 的 obs 调 `Start(nil)` → 重建底层 Store 并原子替换 `AsyncStore`（旧后端排空缓冲后关闭）。
+- dataDB 未就绪（`DB_DRIVER`/`DB_DSN` 无效）或建表失败：降级 `discardStore`（日志不落盘，仅告警），不阻断底座。
 - DB 表 `access_log`：14 个索引列 + `extra` JSON 列（负载维度），SQL 全部外置 `sql/<dbtype>/`（外置优先、嵌入兜底，遵循 SQL 铁律）。
 
 ### Shutdown
@@ -1741,17 +1740,10 @@ func (o *Obs) Shutdown(ctx context.Context) error
 ### 写失败重试与告警（P2）
 
 - 底层 `Write` 失败自动重试 1 次（间隔 50ms）；仍失败丢弃该批并告警（`log.Warn`）。
-- 连续失败 ≥10 次告警升级 `log.Error`（提示运维检查 DB 或热切 `OBS_STORE`）；成功写入后计数清零。
+- 连续失败 ≥10 次告警升级 `log.Error`（提示运维检查数据库）；成功写入后计数清零。
 - 队列满丢弃（异步队列 4096 上限）**不计入**连续失败。
 - `/admin/metrics` 暴露 `drop_count`（累计丢弃条数）与 `consecutive_fails`（当前连续失败次数）。
 - 重试次数/间隔/阈值集中为包级常量（`obsRetryTimes`/`obsRetryDelay`/`obsFailThreshold`），禁止魔数散落。
-
-### 文件管理（file 后端，已弃用）
-
-- 按天切分：`logs/access-2024-01-01.jsonl`（每行一个平铺维度 JSON）
-- 保留 30 天，超期自动 `os.Remove`。
-- 写盘失败不阻塞请求（降级丢弃 + 计数告警）。
-- 仅显式配置 `OBS_STORE=file` 或 db 不可用（回退兜底）时启用，将不再被支持。
 
 ### Admin API
 

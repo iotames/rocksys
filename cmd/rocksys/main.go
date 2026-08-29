@@ -278,7 +278,7 @@ func buildServer(args []string) (*Server, error) {
 	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）。
 	// SQL 脚本外挂覆写目录统一为 HOT_SCRIPTS_DIR/sql（默认 hotscripts/sql，内嵌 sql/ 兜底；不再有独立 SQL_DIR 配置）。
 	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；obs 的默认 db 存储与 mq 等依赖方因此不可用。
-	// ★ 必须先于 obs 创建：默认 OBS_STORE=db，obs 复用本数据访问层；未就绪时回退 file 并告警（file 已弃用）。
+	// ★ 必须先于 obs 创建：obs 复用本数据访问层写 access_log 表；未就绪时 obs 降级丢弃日志并告警。
 	var dataDB *db.DB
 	var dbDriver, dbDSN string
 	if err := cfgMgr.Register(&dbDriver, "DB_DRIVER", "sqlite", "数据库驱动名（sqlite/mysql/postgres）"); err != nil {
@@ -462,6 +462,25 @@ func buildServer(args []string) (*Server, error) {
 	} {
 		if err := adminSrv.RegisterPlugin(ep.path, ep.h); err != nil {
 			return nil, fmt.Errorf("register shield %s: %w", ep.path, err)
+		}
+	}
+
+	// 可信代理文件在线编辑（WebUI「可信代理」页）：清单 / 读文件 / 保存外挂覆写。
+	// 保存落点 HOT_SCRIPTS_DIR/trusted_proxies/，ScriptHub 监控自动热更，无需重启。
+	proxyAdmin, err := netutil.NewProxiesAdmin(scriptHub, trustedProxiesFile)
+	if err != nil {
+		return nil, fmt.Errorf("new proxies admin: %w", err)
+	}
+	for _, ep := range []struct {
+		path string
+		h    http.HandlerFunc
+	}{
+		{netutil.PathProxyTrusted, proxyAdmin.List},
+		{netutil.PathProxyTrustedFile, proxyAdmin.File},
+		{netutil.PathProxyTrustedSave, proxyAdmin.Save()},
+	} {
+		if err := adminSrv.RegisterPlugin(ep.path, ep.h); err != nil {
+			return nil, fmt.Errorf("register proxy %s: %w", ep.path, err)
 		}
 	}
 

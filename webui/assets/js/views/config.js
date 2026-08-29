@@ -153,11 +153,15 @@
     }
     if (!store.configListLoaded && !store.switchesLoaded && !store.baseLoaded) { skeleton(); return; }
     const groups = buildConfigGroups();
-    if (!configActiveGroup || !groups.some(g => g.name === configActiveGroup)) {
+    // 'proxy' 为功能页签（非配置分组），不参与默认分组回退
+    if (!configActiveGroup || (configActiveGroup !== 'proxy' && !groups.some(g => g.name === configActiveGroup))) {
       configActiveGroup = groups.length ? groups[0].name : 'gateway';
     }
+    // 可信代理为功能页签（非配置分组）：追加在配置分组之后
+    const tabItems = groups.map(g => ({ name: g.name, label: g.label, count: g.items.length }));
+    tabItems.push({ name: 'proxy', label: '可信代理' });
     const tabs = Rock.comp.tabs.tabsHTML(
-      groups.map(g => ({ name: g.name, label: g.label, count: g.items.length })),
+      tabItems,
       configActiveGroup,
       { act: 'cfg-tab' }
     );
@@ -177,6 +181,11 @@
       '<div class="cfg-link-grid">' + linkGridHTML('service') + '</div>' +
       '</div>';
     const panel = $('#config-group-panel');
+    if (configActiveGroup === 'proxy') {
+      // 可信代理页签：外挂文件在线编辑（views/proxy.js，无独立路由）
+      Rock.views.proxy.renderPanel(panel);
+      return;
+    }
     const active = groups.find(g => g.name === configActiveGroup);
     ce.render(panel, active ? active.items : []);
   }
