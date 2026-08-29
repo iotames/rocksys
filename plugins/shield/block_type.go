@@ -8,11 +8,18 @@
 // 的表头/列注释一一对应，新增或改动枚举值时必须同步更新 SQL 注释（DBA 依赖注释理解数据）。
 package shield
 
-// BlockType 拦截类别（SMALLINT 存储，0 保留表示"未设置/全部"）。
+// BlockType 拦截类别（SMALLINT 存储）。
+//
+// ★ 语境分离口径（详见 docs/IP_BLACKLIST_PLAN.md §5.2）：
+//   - shield_event 拦截事件永远只写 1-10（真实拦截动作）；
+//   - 0（其他）与 11（人工收录）仅出现在 ip_blacklist 表语境（拉黑条目来源标记）；
+//   - 查询参数 0=全部 属语境分离的另一含义（过滤语义），与本枚举值语义区分；
+//   - 拦截明细过滤校验保持 0-10 不变。
 type BlockType int
 
 // 拦截类别常量（数值稳定，禁止改动已有值）。
 const (
+	BlockOther            BlockType = 0  // 其他（仅 ip_blacklist 语境：非拦截识别的兜底来源，如批量导入未标注）
 	BlockIPBlacklist      BlockType = 1  // IP 黑名单（403）
 	BlockRateLimit        BlockType = 2  // 令牌桶限流（429）
 	BlockMethodNotAllowed BlockType = 3  // 方法白名单（403）
@@ -23,6 +30,7 @@ const (
 	BlockXSS              BlockType = 8  // XSS（403）
 	BlockCrawlerUA        BlockType = 9  // 爬虫/扫描器 UA（403）
 	BlockPathRuleDeny     BlockType = 10 // 路径/UA 规则 deny（403）
+	BlockManual           BlockType = 11 // 人工收录（仅 ip_blacklist 语境：管理员人工录入的拉黑条目）
 )
 
 // blockTypeCount 枚举总数（滑动窗口计数器数组长度按此分配）。
@@ -30,6 +38,7 @@ const blockTypeCount = 10
 
 // blockTypeNames 类别名注册表（WebUI 展示与 admin API 输出共用）。
 // 索引 = BlockType 值 - 1；新增类别须同步追加。
+// 注意：0 与 11 不在数组内（语境特殊，见 BlockType 注释），由 String() 特判。
 var blockTypeNames = [blockTypeCount]string{
 	"IP黑名单",
 	"限流",
@@ -43,8 +52,14 @@ var blockTypeNames = [blockTypeCount]string{
 	"路径规则",
 }
 
-// String 返回类别中文名（越界值返回"未知"）。
+// String 返回类别中文名（0="其他"、11="人工收录"仅黑名单语境；越界值返回"未知"）。
 func (b BlockType) String() string {
+	switch b {
+	case BlockOther:
+		return "其他"
+	case BlockManual:
+		return "人工收录"
+	}
 	if b >= 1 && int(b) <= len(blockTypeNames) {
 		return blockTypeNames[b-1]
 	}

@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"rocksys/internal/adminapi"
+	"rocksys/internal/catalog"
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
-	"rocksys/internal/catalog"
 	"rocksys/internal/db"
 	"rocksys/internal/engine"
 	"rocksys/internal/hotswap"
@@ -71,6 +71,7 @@ type Server struct {
 	adminSrv *adminapi.AdminServer
 	dataDB   *db.DB                // 统一数据访问层（DB_DRIVER/DB_DSN），mq 等插件复用；nil 表示未启用
 	recorder *shield.EventRecorder // WAF 拦截事件记录器（dataDB 就绪时创建，setter 注入 shield；nil 表示未启用）
+	autoBan  *shield.AutoBanEngine // 自动拉黑引擎（dataDB 就绪时创建，按配置启动；nil 表示未启用）
 }
 
 func main() {
@@ -135,6 +136,10 @@ func main() {
 	_ = srv.mgr.Shutdown(ctx)
 	_ = srv.cfgMgr.Shutdown(ctx)
 	// WAF 拦截事件记录器：停机前 flush 缓冲通道内剩余事件（防丢），须先于 dataDB 关闭。
+	// 自动拉黑引擎：随 shield 停机停止（处理同步写库，无缓冲需 flush）。
+	if srv.autoBan != nil {
+		srv.autoBan.Stop()
+	}
 	if srv.recorder != nil {
 		srv.recorder.Stop()
 	}
@@ -304,6 +309,7 @@ func buildServer(args []string) (*Server, error) {
 	// 装配方式：DB 就绪后经 setter 注入（shield.New 签名不变，保持挂件独立性）；
 	// dataDB 未就绪时跳过——内存滑动窗口计数仍可用，仅明细落库/查询端点降级。
 	var recorder *shield.EventRecorder
+	var autoBan *shield.AutoBanEngine // 自动拉黑引擎（dataDB 就绪时创建，按配置启动）
 	// ★ 有意无条件装配（与 SHIELD_ENABLED 解耦）：SHIELD_ENABLED 支持配置热更，
 	// 若仅在启用时才创建 recorder，热更 false→true 后 recorder 不会出现，故始终装配；
 	// shield 禁用时仅两个空转 goroutine（flush/prune）+ 空表，成本可忽略。
@@ -320,6 +326,14 @@ func buildServer(args []string) (*Server, error) {
 		// 攻击证据归档表（WAF 方案 §4.3：本期仅建表，无业务逻辑）。
 		if err := shield.EnsureAttackArchiveTable(dataDB.EasyDB(), dataDB); err != nil {
 			log.Warn("shield: 攻击证据归档表初始化失败（本期仅建表，不影响防护）", "err", err.Error())
+		}
+
+		// IP 黑名单增强 STEP A4：自动拉黑引擎（配置项无条件注册，default.env 全量快照恒含）。
+		// SHIELD_AUTO_BAN_ENABLED=true 时随 shield 生命周期启动；运行期开关热更关闭则循环空转
+		// （每轮开始读配置最新值，开关/阈值/窗口/TTL 均支持热更）。
+		autoBan = shield.NewAutoBanEngine(cfgMgr, shieldMw, recorder)
+		if autoBan.Enabled() {
+			autoBan.Start()
 		}
 	}
 
@@ -432,6 +446,10 @@ func buildServer(args []string) (*Server, error) {
 	if err := adminSrv.RegisterPlugin(shield.PathShieldPrune, shieldAdmin.Prune); err != nil {
 		return nil, fmt.Errorf("register shield prune: %w", err)
 	}
+	// 小黑屋（当前在押的限时封禁条目预览；IP_BLACKLIST_PLAN §3.7）。
+	if err := adminSrv.RegisterPlugin(shield.PathShieldJail, shieldAdmin.Jail); err != nil {
+		return nil, fmt.Errorf("register shield jail: %w", err)
+	}
 	// 动态 IP 黑白名单管理（WAF 方案 §6.1）：列表 GET + 新增 POST 共用 path；
 	// 更新/软删/恢复/导入为独立 POST 端点。DB 未配置时端点统一 503。
 	for _, ep := range []struct {
@@ -443,6 +461,8 @@ func buildServer(args []string) (*Server, error) {
 		{shield.PathBlacklistDelete, shieldAdmin.BlacklistDelete()},
 		{shield.PathBlacklistRestore, shieldAdmin.BlacklistRestore()},
 		{shield.PathBlacklistImport, shieldAdmin.BlacklistImport()},
+		{shield.PathBlacklistSyncFile, shieldAdmin.BlacklistSyncFile()},
+		{shield.PathBlacklistBan, shieldAdmin.BlacklistBan()},
 		{shield.PathWhitelist, shieldAdmin.Whitelist()},
 		{shield.PathWhitelistUpdate, shieldAdmin.WhitelistUpdate()},
 		{shield.PathWhitelistDelete, shieldAdmin.WhitelistDelete()},
@@ -533,6 +553,7 @@ func buildServer(args []string) (*Server, error) {
 		adminSrv: adminSrv,
 		dataDB:   dataDB,
 		recorder: recorder,
+		autoBan:  autoBan,
 	}, nil
 }
 

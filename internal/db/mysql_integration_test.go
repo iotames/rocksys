@@ -222,7 +222,7 @@ func TestMySQLDialect(t *testing.T) {
 		// 带参数插入（占位符 ? 在 MySQL 上验证）
 		ins, _ := d.SQL("admin_users_insert.sql")
 		if _, err := d.EasyDB().Exec(strings.ReplaceAll(ins, "{table}", table),
-			"admin", "hash-1", "2026-08-06T00:00:00Z", "2026-08-06T00:00:00Z"); err != nil {
+			"admin", "hash-1", "2026-08-06 00:00:00", "2026-08-06 00:00:00"); err != nil {
 			t.Fatalf("admin 插入失败: %v", err)
 		}
 
@@ -245,7 +245,7 @@ func TestMySQLDialect(t *testing.T) {
 		}
 		upd, _ := d.SQL("admin_users_update.sql")
 		if _, err := d.EasyDB().Exec(strings.ReplaceAll(upd, "{table}", table),
-			"admin2", "hash-2", "2026-08-06T01:00:00Z", u.ID); err != nil {
+			"admin2", "hash-2", "2026-08-06 01:00:00", u.ID); err != nil {
 			t.Fatalf("admin update 失败: %v", err)
 		}
 		// 首行 get：返回更新后的唯一行

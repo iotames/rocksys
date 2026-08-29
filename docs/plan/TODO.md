@@ -33,14 +33,14 @@
 
 | 序 | STEP 文档 | 内容 | 状态 |
 |---|---|---|---|
-| A1 | [STEP1_schema_enum.md](ip_blacklist/STEP1_schema_enum.md) | warn_times 列 + block_type 枚举 0/11（三处红线同步） | 待实施 |
-| A2 | [STEP2_store_sql.md](ip_blacklist/STEP2_store_sql.md) | store 覆盖 warn_times/续封转永久/排序 {order}/jail SQL | 待实施 |
-| A3 | [STEP3_endpoints.md](ip_blacklist/STEP3_endpoints.md) | sync_file / ban / jail / sort 四组端点 | 待实施 |
-| A4 | [STEP4_auto_ban.md](ip_blacklist/STEP4_auto_ban.md) | 自动拉黑引擎 + 四配置项 + 装配 | 待实施 |
-| A5 | [STEP5_frontend_lists.md](ip_blacklist/STEP5_frontend_lists.md) | 黑白名单页/TOP 批量/state.js 枚举数组 | 待实施 |
-| A6 | [STEP6_frontend_ban_ui.md](ip_blacklist/STEP6_frontend_ban_ui.md) | 拦截明细「IP封禁」垂直切片（含 events in_blacklist） | 待实施 |
-| A7 | [STEP7_frontend_jail.md](ip_blacklist/STEP7_frontend_jail.md) | 首页 tabs + 小黑屋页签 | 待实施 |
-| A8 | [STEP8_verify_docs.md](ip_blacklist/STEP8_verify_docs.md) | 全量回归 + 文档同步收尾 | 待实施 |
+| A1 | [STEP1_schema_enum.md](ip_blacklist/STEP1_schema_enum.md) | warn_times 列 + block_type 枚举 0/11（三处红线同步） | 已实施 |
+| A2 | [STEP2_store_sql.md](ip_blacklist/STEP2_store_sql.md) | store 覆盖 warn_times/续封转永久/排序 {order}/jail SQL | 已实施 |
+| A3 | [STEP3_endpoints.md](ip_blacklist/STEP3_endpoints.md) | sync_file / ban / jail / sort 四组端点 | 已实施 |
+| A4 | [STEP4_auto_ban.md](ip_blacklist/STEP4_auto_ban.md) | 自动拉黑引擎 + 四配置项 + 装配 | 已实施 |
+| A5 | [STEP5_frontend_lists.md](ip_blacklist/STEP5_frontend_lists.md) | 黑白名单页/TOP 批量/state.js 枚举数组 | 已实施 |
+| A6 | [STEP6_frontend_ban_ui.md](ip_blacklist/STEP6_frontend_ban_ui.md) | 拦截明细「IP封禁」垂直切片（含 events in_blacklist） | 已实施 |
+| A7 | [STEP7_frontend_jail.md](ip_blacklist/STEP7_frontend_jail.md) | 首页 tabs + 小黑屋页签 | 已实施 |
+| A8 | [STEP8_verify_docs.md](ip_blacklist/STEP8_verify_docs.md) | 全量回归 + 文档同步收尾 | 已实施 |
 
 ## 2. 全局红线（每个 STEP 都适用）
 
@@ -61,3 +61,11 @@
 | 2026-08-29 | B3 | /admin/db/schema + /admin/db/exec 端点、SetTableSpecs 装配注入、buildTableSpecs 7 表清单（含 SHIELD_EVENT_TABLE 实值）、一致性单测（cmd/rocksys/main_test.go）；全量测试+vet 通过，curl 冒烟过（旧进程占端口教训见 STEP3 回填区） |
 | 2026-08-29 | B4 | 子代理实施前端（database.js 新页/codeEditor sql 高亮/路由菜单），主代理浏览器回归 §4 全清单通过（A→执行→D→执行→无差异闭环 + 失败中断态 + 常驻 toast） |
 | 2026-08-29 | B5 | 全量 go test + vet + 生产构建通过；文档同步五份（webui-api §3.19/webui §4.11/DATA_DICT §5/PROJECT_STRUCTURE/母文件状态行）；项目一完成，git 提交，项目二解锁 |
+| 2026-08-30 | A1 | warn_times 列（三方言）+ 枚举 0/11 + DATA_DICT 同步 + 落库完成（存量 413 条默认 0；教训：改 sql/ 须同步 bin/hotscripts/）；mysql/pg 真库端到端同步集成测试通过（schema_sync_integration_test.go）；连带修两个既有测试缺陷（UTC 日分桶比对、越界样本 11→12） |
+| 2026-08-30 | A2 | store 层 warn_times/BanInsert/RestoreBan 三分支/GetByIP/Jail/{order} 排序白名单 + 校验 0-11；★三方言真库集成（ip_list_ban_integration_test.go，-tags integration + DSN 门控）抓出并修复 4 个 sqlite 测不出的问题：①pg insert_returning_id 丢失 RETURNING 子句（插入成功但 Scan ErrNoRows）②15 份脚本正文 ?N 占位符 mysql 不支持（约定：注释标序号、正文纯 ?）③RestoreBan 对已永久条目误报转永久 ④永久条目恢复被降级为限时；TestMySQLDialect RFC3339 字面量入 DATETIME 的既有缺陷一并修复 |
+| 2026-08-30 | A3 | sync_file/ban/jail/sort 四组端点落地 + 单测四件；curl 冒烟全过（幂等 skipped=403、三态文案、jail 数据、sort 生效）；教训：冒烟前必须 ps 查杀旧 rocksys 实例（8月29 的进程占着 19527 导致两轮 404 误判） |
+| 2026-08-30 | A4 | 自动拉黑引擎（四配置热更/Go 侧聚合/四态/InWhitelist 补充）+ 单测 8 件；dev 实战验证通过（注入 3 次→自动拉黑 127.0.0.1，真实类别 7、warn=1） |
+| 2026-08-30 | A5 | 子代理实施（枚举数组/封禁次数列/标题消歧/排序下拉/label/从文件同步/TOP 改 import）；主代理浏览器回归全过（sort 请求实测、同步 toast 幂等 skipped=403） |
+| 2026-08-30 | A6 | 子代理实施（events in_blacklist/detailModal actions/操作列/封禁弹窗）；主代理浏览器回归全过（预填真实类别、提交 24h → warn_times=2 恢复累计、按钮转灰 3/3） |
+| 2026-08-30 | A7 | 前次中断会话遗留代码经子代理全量核对契约无误 + 回填；主代理浏览器回归全过（两页签、小黑屋两行在押数据、跳转、总览不受影响、零 JS 错误） |
+| 2026-08-30 | A8 | 全量 sqlite 测试+vet+生产构建+mysql/pg 真库集成全过；文档同步五份（CONFIGURATION 四配置项/webui-api 三端点+sort+in_blacklist/webui §4.12+小黑屋/DATA_DICT 终核零差异/母文件状态行）；修正 webui.md §6 TOP 加黑端点过时描述；两项目完成，git 提交，汇报用户 |

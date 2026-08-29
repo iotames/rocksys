@@ -31,26 +31,33 @@ type DiffItem struct {
 // DiffInput 单表比对的输入（期望脚本已做 {table} 占位符替换）。
 type DiffInput struct {
 	Table         string
-	ExpectedDDL   string   // 建表脚本文本（{table} 已替换）
-	ExpectedIndex string   // 建索引脚本文本（可空 = 无独立索引脚本）
+	ExpectedDDL   string // 建表脚本文本（{table} 已替换）
+	ExpectedIndex string // 建索引脚本文本（可空 = 无独立索引脚本）
 	ActualCols    []CatalogColumn
 	ActualIndexes []string
 }
 
 // typeAliases 归一化别名（跨表达差异，仅影响 E 级判定准确性）。
+// 按字母 token 整词替换（不能子串替换——bigint 含 int 会被误伤）。
 var typeAliases = map[string]string{
-	"timestampwithtimezone":   "timestamptz",
+	"timestampwithtimezone":    "timestamptz",
 	"timestampwithouttimezone": "timestamp",
 	"charactervarying":         "varchar",
+	"int":                      "integer", // pg 脚本 INT ↔ format_type integer
 }
 
-// normType 类型串归一化：小写去空白 + 常见跨表达别名。
+// typeTokenRe 归一化串中的字母 token（非字母字符原样保留，如括号与数字）。
+var typeTokenRe = regexp.MustCompile(`[a-z]+`)
+
+// normType 类型串归一化：小写去空白 + 字母 token 整词别名。
 func normType(t string) string {
 	n := strings.ToLower(strings.Join(strings.Fields(t), ""))
-	for from, to := range typeAliases {
-		n = strings.ReplaceAll(n, from, to)
-	}
-	return n
+	return typeTokenRe.ReplaceAllStringFunc(n, func(tok string) string {
+		if to, ok := typeAliases[tok]; ok {
+			return to
+		}
+		return tok
+	})
 }
 
 // serialBase 自增列的期望类型归一：pg 脚本写 SERIAL/BIGSERIAL，catalog 呈
@@ -59,7 +66,7 @@ var serialBase = map[string]string{
 	"bigserial": "bigint", "serial": "integer", "smallserial": "smallint",
 }
 
-// normDefault 默认值字面归一：剥 pg 类型转换（''::text）、去引号。
+// normDefault 默认值字面归一：剥 pg 类型转换（”::text）、去引号。
 func normDefault(v string) string {
 	if i := strings.Index(v, "::"); i >= 0 {
 		v = v[:i]

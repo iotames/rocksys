@@ -29,16 +29,19 @@ const (
 	PathShieldPrune   = "/admin/shield/prune"
 
 	// 动态 IP 黑白名单管理（WAF 方案 §6.1；副作用一律 POST，防本机恶意页面无凭证触发）。
-	PathBlacklist        = "/admin/shield/blacklist"
-	PathBlacklistUpdate  = "/admin/shield/blacklist/update"
-	PathBlacklistDelete  = "/admin/shield/blacklist/delete"
-	PathBlacklistRestore = "/admin/shield/blacklist/restore"
-	PathBlacklistImport  = "/admin/shield/blacklist/import"
-	PathWhitelist        = "/admin/shield/whitelist"
-	PathWhitelistUpdate  = "/admin/shield/whitelist/update"
-	PathWhitelistDelete  = "/admin/shield/whitelist/delete"
-	PathWhitelistRestore = "/admin/shield/whitelist/restore"
-	PathWhitelistImport  = "/admin/shield/whitelist/import"
+	PathBlacklist         = "/admin/shield/blacklist"
+	PathBlacklistUpdate   = "/admin/shield/blacklist/update"
+	PathBlacklistDelete   = "/admin/shield/blacklist/delete"
+	PathBlacklistRestore  = "/admin/shield/blacklist/restore"
+	PathBlacklistImport   = "/admin/shield/blacklist/import"
+	PathBlacklistSyncFile = "/admin/shield/blacklist/sync_file"
+	PathBlacklistBan      = "/admin/shield/blacklist/ban"
+	PathShieldJail        = "/admin/shield/jail"
+	PathWhitelist         = "/admin/shield/whitelist"
+	PathWhitelistUpdate   = "/admin/shield/whitelist/update"
+	PathWhitelistDelete   = "/admin/shield/whitelist/delete"
+	PathWhitelistRestore  = "/admin/shield/whitelist/restore"
+	PathWhitelistImport   = "/admin/shield/whitelist/import"
 )
 
 // AdminHandler shield 插件端点 handler。
@@ -88,7 +91,8 @@ func (h *AdminHandler) Metrics(w http.ResponseWriter, r *http.Request) {
 //   - limit：单页条数（缺省 500，最大 10000）；
 //   - offset：分页偏移（缺省 0）。
 //
-// 响应：application/x-ndjson，每行一个平铺 JSON；总数经 X-Total-Count 响应头回传
+// 响应：application/x-ndjson，每行一个平铺 JSON（含 in_blacklist 标记：该行 IP 是否在
+// 黑名单快照中，供前端行内封禁按钮置灰）；总数经 X-Total-Count 响应头回传
 // （与 limit/offset 配合实现服务端分页）；参数非法返回 400。
 func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 	if h.shield == nil {
@@ -156,7 +160,11 @@ func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
 	enc := json.NewEncoder(w)
+	// 逐行附「是否在黑名单」标记（与 stats TOP 同源：内存快照 InBlacklist，支持 CIDR，零 DB 查询），
+	// 供 WebUI 拦截明细行内「IP封禁」按钮置灰（已在黑名单的行禁选）。
 	for _, row := range rows {
+		ip, _ := row["client_ip"].(string)
+		row["in_blacklist"] = h.shield.InBlacklist(ip)
 		_ = enc.Encode(row)
 	}
 }
@@ -283,6 +291,10 @@ func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
 //	POST /admin/shield/blacklist/delete  软删（body: id）
 //	POST /admin/shield/blacklist/restore 恢复（body: id）
 //	POST /admin/shield/blacklist/import  批量导入（body: text 每行一个 IP/CIDR + title/block_type）
+//	POST /admin/shield/blacklist/sync_file 从外挂规则文件 rules/ip_blacklist.txt 同步入库（幂等）
+//	POST /admin/shield/blacklist/ban     专用封禁端点（body: ip/title/block_type/duration="24h"|"permanent"；
+//	                                     无记录新增、软删/过期恢复续封 warn_times+1，活跃报"已在黑名单"）
+//	GET  /admin/shield/jail              小黑屋（当前在押的限时封禁条目；query: limit 默认 20 上限 100）
 //	/admin/shield/whitelist 同构（无 block_type/expires_at）
 //
 // 全部变更写库成功后主动重建快照（立即生效，不等 TTL 兜底）。
@@ -300,6 +312,12 @@ func (h *AdminHandler) BlacklistRestore() http.HandlerFunc {
 }
 func (h *AdminHandler) BlacklistImport() http.HandlerFunc {
 	return h.postOnly(func(w http.ResponseWriter, r *http.Request) { h.importIPList(w, r, true) })
+}
+func (h *AdminHandler) BlacklistSyncFile() http.HandlerFunc {
+	return h.postOnly(h.syncBlacklistFile)
+}
+func (h *AdminHandler) BlacklistBan() http.HandlerFunc {
+	return h.postOnly(h.banIPList)
 }
 func (h *AdminHandler) Whitelist() http.HandlerFunc { return h.listOrAdd(false) }
 func (h *AdminHandler) WhitelistUpdate() http.HandlerFunc {
@@ -362,8 +380,8 @@ func (h *AdminHandler) listIPList(w http.ResponseWriter, r *http.Request, isBlac
 	f := ListFilter{IP: q.Get("ip"), Limit: 500}
 	if v := q.Get("block_type"); v != "" && isBlack {
 		bt, err := strconv.Atoi(v)
-		if err != nil || bt < 0 || bt > blockTypeCount {
-			http.Error(w, "block_type 应为 0-10 的整数", http.StatusBadRequest)
+		if err != nil || bt < 0 || bt > int(BlockManual) {
+			http.Error(w, "block_type 应为 0-11 的整数（0=不限；11=人工收录）", http.StatusBadRequest)
 			return
 		}
 		f.BlockType = BlockType(bt)
@@ -387,6 +405,9 @@ func (h *AdminHandler) listIPList(w http.ResponseWriter, r *http.Request, isBlac
 		}
 		f.Offset = n
 	}
+	// 排序键：经 store 层白名单映射（ip_list_store.go blacklistSortWhitelist），
+	// 非法/缺省回默认 id DESC；白名单实现忽略该字段，不受影响。
+	f.Sort = q.Get("sort")
 	rows, total, err := h.shield.ListIPList(isBlack, f)
 	if err != nil {
 		log.Error("shield: 黑白名单列表查询失败", "kind", ipListKindName(isBlack), "err", err.Error())
@@ -416,6 +437,10 @@ func (h *AdminHandler) addIPList(w http.ResponseWriter, r *http.Request, isBlack
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	// 黑名单 block_type：缺省（未传）→ 11 人工收录；显式值 0-11 由 mgmt 层校验。
+	if isBlack && body.BlockType == 0 {
+		body.BlockType = int(BlockManual)
 	}
 	id, err := h.shield.AddIPList(isBlack, body.IP, body.Title, BlockType(body.BlockType), exp)
 	if err != nil {
@@ -495,7 +520,7 @@ func (h *AdminHandler) restoreIPList(w http.ResponseWriter, r *http.Request, isB
 }
 
 // importIPList 批量导入：body 为纯文本（每行一个精确 IP/CIDR，兼容外挂文件格式），
-// query 可选 title / block_type（黑名单默认 1）。
+// query 可选 title / block_type（黑名单缺省 11 人工收录；显式值 0-11，0=其他兜底来源）。
 func (h *AdminHandler) importIPList(w http.ResponseWriter, r *http.Request, isBlack bool) {
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -514,11 +539,11 @@ func (h *AdminHandler) importIPList(w http.ResponseWriter, r *http.Request, isBl
 		http.Error(w, "text 必填（每行一个精确 IP 或 CIDR）", http.StatusBadRequest)
 		return
 	}
-	bt := 1
+	bt := int(BlockManual) // 黑名单缺省 11 人工收录（IP_BLACKLIST_PLAN §5.3）
 	if v := r.URL.Query().Get("block_type"); v != "" && isBlack {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > blockTypeCount {
-			http.Error(w, "block_type 应为 1-10 的整数", http.StatusBadRequest)
+		if err != nil || n < 0 || n > int(BlockManual) {
+			http.Error(w, "block_type 应为 0-11 的整数（0=其他；缺省 11=人工收录）", http.StatusBadRequest)
 			return
 		}
 		bt = n
@@ -531,6 +556,125 @@ func (h *AdminHandler) importIPList(w http.ResponseWriter, r *http.Request, isBl
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "imported": imported, "skipped": skipped})
+}
+
+// syncBlacklistFile 从外挂规则文件 rules/ip_blacklist.txt 同步 IP 入库（IP_BLACKLIST_PLAN §3.3）。
+// 读取复用 Shield 现有 ruleLoader 路径（外挂优先、内嵌兜底；勿另造读取），
+// 解析复用导入语义（# 注释/空行忽略），逐行 validIPEntry 校验后走 ImportIPList
+// （title 固定"来自 ip_blacklist.txt 同步"、block_type=11 人工收录）。幂等：重复同步 skipped 递增。
+func (h *AdminHandler) syncBlacklistFile(w http.ResponseWriter, r *http.Request) {
+	imported, skipped, err := h.shield.SyncBlacklistFile()
+	if err != nil {
+		// 文案三要素：发生了什么（同步失败/无可同步内容）+ 为什么 + 下一步（检查文件）。
+		log.Error("shield: 从文件同步黑名单失败", "err", err.Error())
+		http.Error(w, "从 rules/ip_blacklist.txt 同步黑名单失败："+err.Error()+"。请检查外挂目录 hotscripts/rules/ip_blacklist.txt（或内嵌规则文件）是否存在且包含有效 IP 行后重试", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "imported": imported, "skipped": skipped})
+}
+
+// banIPList 专用封禁端点（IP_BLACKLIST_PLAN §3.5 决策 10）：body
+// {ip, title, block_type(1-11，缺省 11 人工收录), duration("24h"|"permanent"，缺省 24h)}。
+// 服务端换算 expires_at；三态：无记录 → 封禁入库（warn_times=1）；
+// 活跃 → 400"已在黑名单"+ 去向指引（不过载 addIPList、保留其既有报错 UX）；
+// 软删/过期 → 恢复续封（按所选时长 + warn_times+1，满 5 转永久时响应注明 to_permanent）。
+// 成功后 BanIP 内部已重建快照（立即生效）。
+func (h *AdminHandler) banIPList(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IP        string `json:"ip"`
+		Title     string `json:"title"`
+		BlockType int    `json:"block_type"`
+		Duration  string `json:"duration"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	if body.IP == "" {
+		http.Error(w, "ip 必填（精确 IP），请补充后重试", http.StatusBadRequest)
+		return
+	}
+	if body.BlockType == 0 {
+		body.BlockType = int(BlockManual) // 缺省 11 人工收录（IP_BLACKLIST_PLAN §3.5）
+	}
+	if body.BlockType < 1 || body.BlockType > int(BlockManual) {
+		http.Error(w, "block_type 应为 1-11 的整数（缺省 11=人工收录），请修正后重试", http.StatusBadRequest)
+		return
+	}
+	if body.Title == "" {
+		body.Title = "人工封禁"
+	}
+	exp, err := banDurationToExpires(body.Duration, time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	written, perm, err := h.shield.BanIP(body.IP, body.Title, BlockType(body.BlockType), exp)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrIPListDisabled):
+			http.Error(w, "IP 黑名单未启用（DB 未配置），封禁无法入库。请先配置数据库后重试，或改用外挂文件 rules/ip_blacklist.txt 维护黑名单", http.StatusServiceUnavailable)
+		case errors.Is(err, ErrInvalidIP):
+			http.Error(w, "封禁失败：ip 应为精确 IP 或 CIDR。请核对来源 IP 后重试", http.StatusBadRequest)
+		default:
+			log.Error("shield: 封禁入库失败", "ip", body.IP, "err", err.Error())
+			http.Error(w, "封禁入库失败（数据库写入异常），请稍后重试", http.StatusInternalServerError)
+		}
+		return
+	}
+	if !written {
+		// 活跃条目双保险（前端按钮本应置灰）：说清现状 + 指引去向。
+		http.Error(w, "该 IP 已在黑名单中且记录当前生效，无需重复封禁。请到「WAF安全防护 → IP 黑名单」列表查看/管理该条目（如需调整时长可修改其过期时间）", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":           true,
+		"to_permanent": perm, // true = 累计封禁达 5 次，本次已由限时转永久
+	})
+}
+
+// banDurationToExpires 封禁时长 → expires_at（服务端换算，前端只传枚举）。
+// "24h" → now+24h；"permanent" → nil（永久）；空 → 缺省 24h；其他 → 错误（三要素文案）。
+func banDurationToExpires(duration string, now time.Time) (*time.Time, error) {
+	switch duration {
+	case "", "24h":
+		exp := now.Add(24 * time.Hour)
+		return &exp, nil
+	case "permanent":
+		return nil, nil
+	default:
+		return nil, errors.New(`封禁失败：duration 仅支持 "24h" 或 "permanent"（收到 ` + duration + `）。请改用合法时长后重试`)
+	}
+}
+
+// Jail GET /admin/shield/jail → 小黑屋（IP_BLACKLIST_PLAN §3.7）：当前在押的
+// 限时封禁条目（未软删、未过期、expires_at 非空），临近解封的在前。
+// query limit：默认 20、上限 100，非法/越界回默认（首页轻量预览，不报错）。
+// 响应 {total, rows}，rows 含 ip/block_type/hit_count/warn_times/created_at/expires_at。
+func (h *AdminHandler) Jail(w http.ResponseWriter, r *http.Request) {
+	if h.shield == nil {
+		http.Error(w, "shield 未注册", http.StatusServiceUnavailable)
+		return
+	}
+	if !h.shield.IPListEnabled(true) {
+		http.Error(w, "IP 黑名单未启用（DB 未配置），小黑屋不可用", http.StatusServiceUnavailable)
+		return
+	}
+	limit := 0 // 0 → store 层回默认 20（非法/越界同样由 store 收敛）
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n // 非法值（err != nil）保持 0 回默认
+		}
+	}
+	rows, total, err := h.shield.Jail(limit)
+	if err != nil {
+		log.Error("shield: 小黑屋查询失败", "err", err.Error())
+		http.Error(w, "小黑屋查询失败（数据库异常），请稍后重试", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"total": total, "rows": rows})
 }
 
 // parseExpiresAt 解析过期时间（RFC3339；空 = 永久）。

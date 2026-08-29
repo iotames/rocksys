@@ -59,6 +59,12 @@ SHIELD_WAF_XSS = true
 SHIELD_WAF_PATH_TRAVERSAL = true
 SHIELD_WAF_RISK_PATH = true
 SHIELD_WAF_CRAWLER_UA = true
+# 自动拉黑（风控规则引擎）：窗口内同一 IP 拦截次数（排除 block_type=1 黑名单自我拦截）
+# 达阈值即自动写入黑名单（仅精确 IP，按跨类别合计取最多类别为拉黑原因）
+SHIELD_AUTO_BAN_ENABLED = false  # 自动拉黑开关：false=不启动引擎（默认）；true=后台扫描自动拉黑（开启需重启；其余三项每轮读配置支持热更）
+SHIELD_AUTO_BAN_THRESHOLD = 50   # 统计窗口内拦截次数阈值（达到即触发拉黑）
+SHIELD_AUTO_BAN_WINDOW = 10m     # 统计窗口（Go duration，如 10m/1h）
+SHIELD_AUTO_BAN_TTL = 24h        # 拉黑时长（0=永久）；软删/过期条目被再次命中恢复续封时取本值 ×10
 
 # ===== 脚本外挂统一入口 =====
 # 各挂件外挂子目录固定：sql/（数据访问层 SQL）、rules/（WAF 规则）、trusted_proxies/（可信代理）

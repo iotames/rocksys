@@ -128,11 +128,12 @@
 
 ---
 
-### 2.5 ip_blacklist — 动态 IP 黑名单表（9 列）
+### 2.5 ip_blacklist — 动态 IP 黑名单表（10 列）
 
 **说明**：管理面录入/批量导入的动态黑名单（持久化权威），与外挂 `rules/ip_blacklist.txt` 取**并集**；
 请求热路径只读内存快照（性能红线：热路径零 DB 查询），本表仅管理操作/启动加载/后台刷新访问。
-`block_type` 复用 §3.1 枚举（仅管理面过滤/统计，非运行时匹配依据）；运行时只按 `ip` 精确/CIDR 匹配。
+`block_type` 复用 §3.1 枚举（仅管理面过滤/统计，非运行时匹配依据）；黑名单条目语境可用 0（其他）/11（人工收录），拦截事件语境只写 1-10（见 §3.1 语境说明）；运行时只按 `ip` 精确/CIDR 匹配。
+★ 存量库升级：本项目无自动迁移机制，`warn_times` 列经 WebUI「服务 → 数据库 → 表结构」检查并执行自动生成的 ALTER 落库（详见 `docs/DB_SCHEMA_SYNC_PLAN.md`）。
 软删除/过期语义：`deleted_at` 非 NULL 或 `expires_at` 已过期（UTC now）的条目不参与匹配。
 
 | 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
@@ -142,6 +143,7 @@
 | `title` | 备注 | 拉黑原因备注 | `Azure 云段扫描器` | TEXT / TEXT / VARCHAR(64) | `''` |
 | `block_type` | 拉黑类别 | 拉黑原因类别（复用 §3.1 枚举，仅管理面过滤统计） | `7`（SQL注入） | INTEGER / SMALLINT / SMALLINT | `1` |
 | `hit_count` | 命中计数 | 命中拦截计数（异步累加，观测/排序用） | `12` | INTEGER / INT / INT | `0` |
+| `warn_times` | 封禁次数 | 该 IP 被人工/风控封禁的累计次数（人工封禁与自动拉黑共用计数；限时封禁累计达 5 次自动转永久） | `3` | INTEGER / INT / INTEGER | `0` |
 | `expires_at` | 过期时间 | 过期时间（UTC）；NULL=永久，过期条目不参与匹配 | `2026-09-01T00:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
 | `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除，不参与匹配 | `2026-08-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
 | `created_at` | 创建时间 | 创建时间（UTC） | `2026-08-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
@@ -196,6 +198,10 @@
 | 8 | XSS | XSS 特征 | 403 |
 | 9 | 爬虫/扫描器UA | 爬虫 UA 特征 | 403 |
 | 10 | 路径/UA规则deny | 外挂规则 deny | 403 |
+| 0 | 其他 | ★ 仅 ip_blacklist 表语境（黑名单条目来源兜底，非拦截识别类别）；shield_event 拦截事件永远只写 1-10 | — |
+| 11 | 人工收录 | ★ 仅 ip_blacklist 表语境（管理员人工录入/批量导入/从文件同步的拉黑条目）；shield_event 拦截事件永远只写 1-10 | — |
+
+★ 语境分离：`block_type=0` 在拦截明细**查询参数**语境 =「全部」（现有行为不变）；在黑名单条目**存储**语境 =「其他」。两语境分离，查询过滤不改。
 
 ### 3.2 status_code — 拦截响应码（shield_event.status_code）
 

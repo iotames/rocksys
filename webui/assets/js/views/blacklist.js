@@ -34,9 +34,23 @@
 
   function buildInstances() {
     const isBlack = ipListState.kind === 'black';
-    const btOptions = [['', '全部类别']].concat(BLOCK_TYPES.map(function (t) { return [String(t[0]), t[1]]; }));
+    // 类别筛选选项：排除 0（0=其他仅为存储兜底，查询语境 0=全部，不提供筛选）
+    const btOptions = [['', '全部类别']].concat(
+      BLOCK_TYPES.filter(function (t) { return t[0] !== 0; }).map(function (t) { return [String(t[0]), t[1]]; })
+    );
+    // 排序选项（仅黑名单）：与后端 sort 白名单映射（ip_list_store.go blacklistSortWhitelist）一一对应，均固定 DESC
+    const sortOptions = [
+      ['', '排序：默认（最近添加）'],
+      ['hit_count', '按命中次数'],
+      ['warn_times', '按封禁次数'],
+      ['created_at', '按封禁时间'],
+      ['expires_at', '按解封时间'],
+      ['updated_at', '按最后更新'],
+      ['block_type', '按封禁原因类别'],
+    ];
     const fields = [{ type: 'text', key: 'ip', placeholder: 'IP 模糊', width: '140px' }];
     if (isBlack) fields.push({ type: 'select', key: 'blockType', options: btOptions });
+    if (isBlack) fields.push({ type: 'select', key: 'sort', options: sortOptions });
     fields.push({ type: 'check', key: 'validOnly', label: '仅有效' });
     ipBar = Rock.comp.filterBar.create({
       ns: 'waf-iplist-filter',
@@ -53,6 +67,7 @@
       cols.push(
         { key: 'block_type', label: '类别', render: function (r) { return esc(typeName(r.block_type)); } },
         { key: 'hit_count', label: '命中', render: function (r) { return fmtInt(Number(r.hit_count) || 0); } },
+        { key: 'warn_times', label: '封禁次数', render: function (r) { return fmtInt(Number(r.warn_times) || 0); } },
         { key: 'expires_at', label: '过期时间', render: function (r) { return esc(r.expires_at || '永久'); } }
       );
     }
@@ -85,12 +100,16 @@
     return ipListState.kind === 'black' ? '/admin/shield/blacklist' : '/admin/shield/whitelist';
   }
 
+  // 当前是否黑名单视图（类别/排序/封禁次数/同步按钮均仅黑名单有）
+  function isBlack() { return ipListState.kind === 'black'; }
+
   async function loadIPList() {
     const s = ipBar.state();
     const st = ipTable.state();
     const p = [];
     if (s.ip) p.push('ip=' + encodeURIComponent(s.ip));
     if (s.blockType) p.push('block_type=' + s.blockType);
+    if (isBlack() && s.sort) p.push('sort=' + encodeURIComponent(s.sort)); // 排序仅黑名单（服务端白名单映射，非法回默认）
     if (s.validOnly) p.push('valid_only=1');
     ipListState.limit = st.pageSize;
     ipListState.offset = st.offset;
@@ -128,7 +147,6 @@
   function render(host) {
     host = host || $('#page-waf');
     if (!host) return;
-    const isBlack = ipListState.kind === 'black';
     const btOptions = BLOCK_TYPES.map(function (t) {
       return '<option value="' + t[0] + '"' + (String(t[0]) === ipListState.blockType ? ' selected' : '') + '>' + esc(t[1]) + '</option>';
     }).join('');
@@ -144,20 +162,27 @@
         ipListState.kind,
         { act: 'waf-iplist-kind', nameAttr: 'data-kind' }
       ) +
-      '<div class="card"><div class="card-title">' + (isBlack ? '黑名单' : '白名单') + '条目 <span class="card-sub">' + (isBlack ? 'DB 表 ∪ 外挂 rules/ip_blacklist.txt（.env 已不再支持黑名单）' : 'DB 表 ∪ .env SHIELD_IP_WHITELIST') + '</span></div>' +
+      '<div class="card"><div class="card-title" data-tip="' + esc(isBlack()
+        ? '数据来自数据库 ip_blacklist 表；外挂 rules/ip_blacklist.txt 仅参与拦截判定、不在此展示，可经「从文件同步」入库统一管理'
+        : '数据来自数据库 ip_blacklist 表（白名单侧）') + '">' + (isBlack() ? '黑名单条目（DB表）' : '白名单条目（DB表）') +
+      ' <span class="card-sub">' + (isBlack() ? 'DB 表 ∪ 外挂 rules/ip_blacklist.txt（.env 已不再支持黑名单）' : 'DB 表 ∪ .env SHIELD_IP_WHITELIST') + '</span></div>' +
       ipBar.html() +
       '<div class="log-toolbar" style="margin-top:-6px">' +
       '<button class="btn btn-sm btn-primary" data-act="waf-iplist-query">查询</button>' +
       '<button class="btn btn-sm btn-text" data-act="waf-iplist-reset">重置</button>' +
+      (isBlack()
+        ? '<button class="btn btn-sm btn-text" data-act="waf-iplist-sync-file" data-tip="从外挂规则文件 rules/ip_blacklist.txt 同步 IP 入库。因文件无过期时间/备注等维护字段，同步入数据库后便于统一管理、统计与自动拉黑">从文件同步</button>'
+        : '') +
       '</div>' +
       '<div id="iplist-table-wrap">' + ipListRowsHTML() + '</div>' +
       '</div>' +
-      '<div class="card"><div class="card-title">新增' + (isBlack ? '黑名单' : '白名单') + '条目</div>' +
+      '<div class="card"><div class="card-title">新增' + (isBlack() ? '黑名单' : '白名单') + '条目</div>' +
       '<div class="log-toolbar">' +
       '<input class="input input-sm" id="iplist-add-ip" placeholder="精确 IP 或 CIDR（必填）" style="width:180px">' +
       '<input class="input input-sm" id="iplist-add-title" placeholder="备注（可选）" style="width:160px">' +
-      (isBlack
-        ? '<select class="select select-sm" id="iplist-add-bt">' + btOptions + '</select>' +
+      (isBlack()
+        ? '<span class="muted" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填备注栏">拉黑原因类别</span>' +
+          '<select class="select select-sm" id="iplist-add-bt" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填备注栏">' + btOptions + '</select>' +
           '<span class="tool-group"><span class="muted">过期时间</span>' +
           '<input class="input input-sm" type="datetime-local" id="iplist-add-expires" title="留空 = 永久有效"></span>'
         : '') +
@@ -166,8 +191,9 @@
       '<div class="card"><div class="card-title">批量导入 <span class="card-sub">每行一个 IP/CIDR，重复自动跳过</span></div>' +
       '<textarea class="input" id="iplist-import-text" rows="10" placeholder="每行一个：精确 IP 或 CIDR（兼容外挂文件格式）&#10;示例：192.168.1.100、2001:db8::1、10.0.0.0/8、2001:db8::/32&#10;# 开头为注释、空行忽略"></textarea>' +
       '<div class="log-toolbar">' +
-      (isBlack
-        ? '<select class="select select-sm" id="iplist-import-bt">' + btOptions + '</select>'
+      (isBlack()
+        ? '<span class="muted" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填备注栏">拉黑原因类别</span>' +
+          '<select class="select select-sm" id="iplist-import-bt" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填备注栏">' + btOptions + '</select>'
         : '') +
       '<button class="btn btn-sm" data-act="waf-iplist-import">批量导入</button>' +
       '</div></div>';
@@ -205,7 +231,6 @@
   }
 
   async function add() {
-    const isBlack = ipListState.kind === 'black';
     const ipEl = $('#iplist-add-ip');
     const ip = (ipEl || {}).value || '';
     if (!ip) { toast('ip 必填（精确 IP 或 CIDR）', 'error'); markInvalid(ipEl); return; }
@@ -215,8 +240,10 @@
       return;
     }
     const body = { ip: ip.trim(), title: ($('#iplist-add-title') || {}).value || '' };
-    if (isBlack) {
-      body.block_type = Number(($('#iplist-add-bt') || {}).value) || 1;
+    if (isBlack()) {
+      // 缺省兜底 11 = 人工收录（决策 1：人工添加默认不再写 1）
+      body.block_type = Number(($('#iplist-add-bt') || {}).value);
+      if (!(body.block_type >= 0 && body.block_type <= 11)) body.block_type = 11;
       // 过期时间：datetime-local 本地时间 → RFC3339（UTC）；留空 = 永久
       const exp = ($('#iplist-add-expires') || {}).value || '';
       if (exp) {
@@ -278,8 +305,10 @@
       markInvalid(textEl);
       return;
     }
-    const isBlack = ipListState.kind === 'black';
-    const q = isBlack ? ('?block_type=' + (Number(($('#iplist-import-bt') || {}).value) || 1)) : '';
+    // 缺省兜底 11 = 人工收录；注意 0（其他）是合法存储值，不能简单 `|| 11`（会被吞掉）
+    let bt = Number(($('#iplist-import-bt') || {}).value);
+    if (!(bt >= 0 && bt <= 11)) bt = 11;
+    const q = isBlack() ? ('?block_type=' + bt) : '';
     try {
       const r = await api.post(ipListBase() + '/import' + q)(text);
       toast('已导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条', 'success');
@@ -288,6 +317,19 @@
       await loadIPList();
     } catch (e) {
       toast('导入失败：' + e.message, 'error');
+    }
+  }
+
+  // 从外挂规则文件 rules/ip_blacklist.txt 同步 IP 入库（后端解析导入，响应 {imported, skipped}）
+  async function syncFile() {
+    try {
+      const r = await api.post('/admin/shield/blacklist/sync_file')('');
+      toast('已从文件同步导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条', 'success');
+      ipTable.go(1); // 回第 1 页
+      await loadIPList();
+    } catch (e) {
+      // 异常常驻提示（文案三要素）：说清发生了什么 + 为什么 + 下一步怎么办
+      toast('从文件同步失败：' + (e.message || '未知错误') + '。请确认外挂文件 rules/ip_blacklist.txt 存在且内容为合法 IP/CIDR（# 注释与空行忽略），修正后重试', 'error');
     }
   }
 
@@ -302,5 +344,6 @@
     del: del,
     restore: restore,
     importRows: importRows,
+    syncFile: syncFile,
   };
 })();

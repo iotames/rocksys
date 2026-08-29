@@ -36,12 +36,21 @@ func TestBlockTypeEnum(t *testing.T) {
 			t.Errorf("BlockType(%d) 应有注册名", bt)
 		}
 	}
-	for _, bt := range []BlockType{0, blockTypeCount + 1, -1} {
+	for _, bt := range []BlockType{0, blockTypeCount + 2, -1} {
 		if bt.Valid() {
 			t.Errorf("BlockType(%d) 不应合法", bt)
 		}
+	}
+	// 0（其他）/11（人工收录）为 ip_blacklist 语境合法枚举（非拦截语境），有注册名而非「未知」
+	if got := BlockType(0).String(); got != "其他" {
+		t.Errorf("BlockType(0) 应为 其他，got %q", got)
+	}
+	if got := BlockType(11).String(); got != "人工收录" {
+		t.Errorf("BlockType(11) 应为 人工收录，got %q", got)
+	}
+	for _, bt := range []BlockType{blockTypeCount + 2, -1} {
 		if bt.String() != "未知" {
-			t.Errorf("BlockType(%d) 越界应返回 未知", bt)
+			t.Errorf("BlockType(%d) 越界应返回 未知", int(bt))
 		}
 	}
 }
@@ -254,7 +263,7 @@ func TestEventRecorderStats(t *testing.T) {
 	}
 	var cnt int64
 	for _, row := range daily {
-		if row["day"] != base.Format("2006-01-02") {
+		if row["day"] != base.UTC().Format("2006-01-02") { // SQL 按存储 UTC 时间的日期分桶，比对须同口径（跨时区/午夜边界鲁棒）
 			continue
 		}
 		if row["block_type"].(int64) == int64(BlockXSS) {

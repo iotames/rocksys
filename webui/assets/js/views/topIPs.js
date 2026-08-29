@@ -2,7 +2,7 @@
  * RockSys 管控控制台 - views/topIPs.js 攻击源 IP Top N 卡片（拦截统计 Tab 子模块）
  * 数据来源：GET /admin/shield/stats → {days, top_ips:[{client_ip,cnt,in_blacklist}], blacklist_addable}
  * 能力：Top N 下拉（10/20/30/50/100，改即拉）/ 勾选列 + 全选 / 黑名单标注（与拦截判定
- * 同源，已在黑名单的行禁选）/ 批量加入黑名单（逐个 POST，确认框）/ 地区列（TODO 占位，
+ * 同源，已在黑名单的行禁选）/ 批量加入黑名单（一次 import 请求，确认框）/ 地区列（TODO 占位，
  * 待接入 IP 归属地库）。
  * 宿主协作（waf.js）：setData() 喂统计数据 → html() 出卡片 → wire(hooks) 绑交互；
  * hooks = { refresh(): 数据变更后由宿主重新拉取并渲染 }。
@@ -32,7 +32,8 @@
 
   // ── 行为 ────────────────────────────────────────────────────────────
 
-  // 批量把勾选 IP 加入黑名单（永久、类别=IP黑名单）；成功后经 hooks.refresh 刷新标注
+  // 批量把勾选 IP 加入黑名单（永久、类别=人工收录 11）：一次 import 请求（body=每行一个 IP），
+  // 重复/已在黑名单的 IP 由后端计入 skipped 不报错；成功后经 hooks.refresh 刷新标注
   async function addCheckedToBlacklist() {
     const ips = [...document.querySelectorAll('.waf-topip-check:checked')].map(cb => cb.getAttribute('data-ip'));
     if (!ips.length) { toast('请先勾选要加黑的 IP', 'warn'); return; }
@@ -43,17 +44,13 @@
       danger: true,
     });
     if (!ok) return;
-    let added = 0, failed = 0;
-    for (const ip of ips) {
-      try {
-        await api.post('/admin/shield/blacklist')({ ip: ip, title: 'Top 攻击源（拦截统计加入）', block_type: 1 });
-        added++;
-      } catch (e) {
-        failed++;
-        toast(ip + ' 加入失败：' + e.message, 'error');
-      }
+    // 照抄 blacklist.js import 调用方式：api.post 对字符串 body 走 JSON 字符串编码，后端已双向兼容
+    try {
+      const r = await api.post('/admin/shield/blacklist/import?title=' + encodeURIComponent('攻击源TOP批量加黑') + '&block_type=11')(ips.join('\n'));
+      toast('已导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条', 'success');
+    } catch (e) {
+      toast('批量加黑失败：' + (e.message || '未知错误') + '。请稍后重试或逐个手工加入', 'error');
     }
-    if (added) toast('已加入黑名单 ' + added + ' 个 IP' + (failed ? '（失败 ' + failed + ' 个）' : ''), failed ? 'warn' : 'success');
     hooks.refresh();
   }
 

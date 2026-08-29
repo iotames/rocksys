@@ -58,11 +58,20 @@ func (s *Shield) ListIPList(isBlack bool, f ListFilter) ([]map[string]any, int64
 	return st.List(f, time.Now())
 }
 
+// validBlackBlockType 黑名单语境 block_type 校验：0-11 放宽口径
+// （0=其他兜底来源、1-10 真实拦截类别、11=人工收录；见 block_type.go 语境分离注释）。
+func validBlackBlockType(bt BlockType) bool {
+	return bt >= BlockOther && bt <= BlockManual
+}
+
 // AddIPList 新增一条（写库成功后重建快照，立即生效）。ip 非法返回 ErrInvalidIP；
-// ip 已存在返回 ErrIPExists。
+// ip 已存在返回 ErrIPExists。黑名单 block_type 合法域 0-11、缺省 11 人工收录；白名单忽略。
 func (s *Shield) AddIPList(isBlack bool, ip, title string, bt BlockType, exp *time.Time) (int64, error) {
 	if !validIPEntry(ip) {
 		return 0, ErrInvalidIP
+	}
+	if isBlack && !validBlackBlockType(bt) {
+		return 0, fmt.Errorf("shield: block_type 应为 0-11 的整数（缺省 11=人工收录）")
 	}
 	st, err := s.ipStore(isBlack)
 	if err != nil {
@@ -122,8 +131,11 @@ func (s *Shield) RestoreIPList(isBlack bool, id int64) error {
 }
 
 // ImportIPList 批量导入（每行一个精确 IP/CIDR；注释/空行忽略；重复幂等跳过）。
-// 返回成功导入数与跳过数。
+// 返回成功导入数与跳过数。黑名单 block_type 合法域 0-11、缺省 11 人工收录；白名单忽略。
 func (s *Shield) ImportIPList(isBlack bool, ips []string, title string, bt BlockType) (int, int, error) {
+	if isBlack && !validBlackBlockType(bt) {
+		return 0, 0, fmt.Errorf("shield: block_type 应为 0-11 的整数（缺省 11=人工收录）")
+	}
 	st, err := s.ipStore(isBlack)
 	if err != nil {
 		return 0, 0, err
@@ -139,6 +151,95 @@ func (s *Shield) ImportIPList(isBlack bool, ips []string, title string, bt Block
 		s.rebuildAfter("import")
 	}
 	return imported, skipped, nil
+}
+
+// BanIP 封禁三态入库（决策 8/10，自动拉黑/人工封禁共用；写库成功后重建快照）：
+//   - 无记录 → 封禁入库（warn_times=1 起算）；
+//   - 活跃条目（未删未过期）→ 跳过（written=false）；
+//   - 软删/过期条目 → 恢复续封（warn_times+1，expires_at 按调用方时长重设；
+//     累计达 5 次且为限时 → 转永久，perm=true 供端点提示）。
+//
+// 返回 (是否写入, 是否转永久, error)。
+func (s *Shield) BanIP(ip, title string, bt BlockType, exp *time.Time) (written, perm bool, err error) {
+	st, err := s.ipStore(true) // 封禁仅黑名单语境
+	if err != nil {
+		return false, false, err
+	}
+	if !validIPEntry(ip) {
+		return false, false, ErrInvalidIP
+	}
+	cur, err := st.GetByIP(ip)
+	switch {
+	case errors.Is(err, ErrIPNotExists):
+		if _, err := st.BanInsert(ip, title, bt, exp, time.Now()); err != nil {
+			return false, false, err
+		}
+		s.rebuildAfter("ban_insert")
+		return true, false, nil
+	case err != nil:
+		return false, false, err
+	case banEntryActive(cur, time.Now()):
+		return false, false, nil // 活跃条目：已在封禁中，跳过
+	default:
+		perm, err := st.RestoreBan(ip, exp, time.Now())
+		if err != nil {
+			return false, false, err
+		}
+		s.rebuildAfter("ban_restore")
+		return true, perm, nil
+	}
+}
+
+// SyncBlacklistFile 从外挂规则文件 rules/ip_blacklist.txt 同步 IP 入库（IP_BLACKLIST_PLAN §3.3）。
+// 读取复用 Shield 现有 ruleLoader 路径（外挂优先、内嵌兜底），解析复用 parseRuleLines
+// （# 注释/空行忽略），逐行 validIPEntry 校验（非法行计入 skipped），有效行走
+// ImportIPList(true, lines, "来自 ip_blacklist.txt 同步", BlockManual)（幂等跳过已存在）。
+// 文件缺失/为空（无可同步内容）返回错误，端点据此回 400。
+func (s *Shield) SyncBlacklistFile() (imported, skipped int, err error) {
+	rl, err := newRuleLoader(s.hub)
+	if err != nil {
+		return 0, 0, err
+	}
+	lines, err := rl.loadLines(ruleFileIPBlacklist)
+	if err != nil {
+		return 0, 0, err
+	}
+	valid := make([]string, 0, len(lines))
+	for _, ip := range lines {
+		if validIPEntry(ip) {
+			valid = append(valid, ip)
+		} else {
+			skipped++
+		}
+	}
+	if len(valid) == 0 {
+		return 0, skipped, errors.New("规则文件中无有效 IP 行（文件缺失或仅有注释/空行）")
+	}
+	imp, skip, err := s.ImportIPList(true, valid, "来自 ip_blacklist.txt 同步", BlockManual)
+	return imp, skipped + skip, err
+}
+
+// Jail 小黑屋查询（IP_BLACKLIST_PLAN §3.7）：当前在押的限时封禁条目，
+// 临近解封的在前。limit 由 store 层收敛（默认 20、上限 100）。
+func (s *Shield) Jail(limit int) ([]map[string]any, int64, error) {
+	st, err := s.ipStore(true)
+	if err != nil {
+		return nil, 0, err
+	}
+	return st.Jail(time.Now(), limit)
+}
+
+// banEntryActive 判断封禁条目当前是否生效中（未软删且未过期或永久）。
+// expires_at 为存储层归一字符串（RFC3339；"" = 永久）；解析失败视为已过期（放行续封）。
+func banEntryActive(e *BanEntry, now time.Time) bool {
+	if e.Deleted {
+		return false
+	}
+	if e.ExpiresAt == "" {
+		return true
+	}
+	exp, err := time.Parse(time.RFC3339, e.ExpiresAt)
+	return err == nil && exp.After(now)
 }
 
 // validIPEntry 校验管理面录入/导入的 ip 为精确 IP 或 CIDR。

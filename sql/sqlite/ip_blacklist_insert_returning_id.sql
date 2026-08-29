@@ -1,6 +1,6 @@
--- 插入一条黑名单并返回新行自增 id（SQLite 支持 RETURNING，3.35+）。
--- 由 IPListStore.Insert 在驱动不支持 LastInsertId 时使用；SQLite 正常走 ip_blacklist_insert.sql + LastInsertId。
--- 参数：?1=ip ?2=title ?3=block_type ?4=expires_at（可空） ?5=created_at(UTC) ?6=updated_at(UTC)
-INSERT INTO {table} (ip, title, block_type, expires_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
-RETURNING id
+-- 插入一条黑名单（占位符风格同 ip_blacklist_insert.sql）。
+-- 说明：本方言支持 Result.LastInsertId，IPListStore.Insert 走 ip_blacklist_insert.sql；
+-- 此脚本仅为三方言文件集齐平保留（与 postgres/ip_blacklist_insert_returning_id.sql 对应），
+-- 在本方言路径下不会被执行。
+INSERT INTO {table} (ip, title, block_type, warn_times, expires_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)

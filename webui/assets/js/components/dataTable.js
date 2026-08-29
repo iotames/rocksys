@@ -122,6 +122,7 @@
           fields: d.fields,
           row: row,
           width: d.width,
+          actions: d.actions, // 可选 footer 按钮插槽（透传 detailModal）
         });
       };
     }

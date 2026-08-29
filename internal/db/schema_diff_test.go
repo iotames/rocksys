@@ -215,8 +215,8 @@ func TestCatalogSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CatalogColumns: %v", err)
 	}
-	if len(cols) != 9 {
-		t.Fatalf("ip_blacklist 应有 9 列，got %d: %+v", len(cols), cols)
+	if len(cols) != 10 {
+		t.Fatalf("ip_blacklist 应有 10 列（含 warn_times），got %d: %+v", len(cols), cols)
 	}
 	if cols[1].Name != "ip" || cols[1].Nullable != "NO" {
 		t.Errorf("列归一化结果异常: %+v", cols[1])

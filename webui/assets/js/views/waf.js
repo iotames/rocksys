@@ -3,8 +3,9 @@
  * 数据来源（admin API）：
  *   - GET  /admin/shield/metrics  近 1 分钟实时计数（内存滑动窗口，DB 未配置也可用）
  *   - GET  /admin/shield/stats    按日 × 类别聚合 + Top 攻击源 IP（查询时聚合）
- *   - GET  /admin/shield/events   拦截明细（JSONL，时间/类别/IP 过滤）
+ *   - GET  /admin/shield/events   拦截明细（JSONL，时间/类别/IP 过滤；行含 in_blacklist 标记）
  *   - POST /admin/shield/prune    手动清理拦截明细（保留期外）
+ *   - POST /admin/shield/blacklist/ban 行内「IP封禁」（操作列/详情弹层共用弹窗，IP_BLACKLIST_PLAN §3.5）
  *   - POST /admin/logs/prune      手动清理访问日志（保留期外）
  * 页面结构：实时计数卡 → 按日趋势图（Canvas 柱状）+ 类别分布 → Top IP → 明细表。
  * prune 未开启警告由全局常驻置顶横幅承载（main.js renderPruneBanner，登录/刷新后经
@@ -43,7 +44,10 @@
   function qFrom(s) { return dateRange.from(s || eventsBar.state()); }
   function qTo(s) { return dateRange.to(s || eventsBar.state()); }
 
-  const TYPE_OPTIONS = [['', '类别：全部']].concat(BLOCK_TYPES.map(t => [String(t[0]), t[1]]));
+  // 拦截明细类别筛选：排除 0（0=其他仅黑名单表存储兜底，拦截事件不会落 0，查询语境亦不提供）
+  const TYPE_OPTIONS = [['', '类别：全部']].concat(
+    BLOCK_TYPES.filter(t => t[0] !== 0).map(t => [String(t[0]), t[1]])
+  );
 
   // 明细筛选栏：时间范围（dateRange 仅完整区间即改即查）+ 类别 + 来源 IP；查询/重置按钮留在视图
   const eventsBar = Rock.comp.filterBar.create({
@@ -67,10 +71,13 @@
       { key: 'method', label: '方法', render: r => '<span class="method method-' + esc(String(r.method || '').toLowerCase()) + '">' + esc(r.method || '') + '</span>' },
       { key: 'raw_url', label: 'URL', render: r => { const u = r.raw_url || r.path || ''; return '<span class="log-path" title="' + esc(u) + '">' + esc(truncate(u, 50)) + '</span>'; } },
       { key: 'status_code', label: '状态', render: r => '<span class="status status-red">' + (Number(r.status_code) || '-') + '</span>' },
+      { key: 'ban_op', label: '操作', width: '96px', render: r => banBtnHTML(r) },
     ],
     rowKey: expKey, // time|trace_id|client_ip
     detail: {
       title: () => '拦截明细',
+      // 详情弹层 footer 注入「IP封禁」（与表格操作列共用同一封禁弹窗，避免双份实现）
+      actions: [{ label: 'IP封禁', className: 'btn-primary', onClick: r => openBanModal(r) }],
       fields: [
         { key: 'time', label: '时间', render: r => esc(fmtDateTime(r.time)) },
         { key: 'trace_id', label: '链路 ID' },
@@ -259,6 +266,115 @@
     const key = el.getAttribute('data-key') || '';
     const row = (store.wafEvents || []).find(r => expKey(r) === key);
     if (row) eventsTable.onDetail(row);
+  }
+
+  // ── 行内「IP封禁」（IP_BLACKLIST_PLAN §3.5：表格操作列 + 详情弹层共用同一弹窗）──
+
+  // 操作列按钮：已在黑名单的行置灰 + tooltip（与攻击源 TOP「在黑名单不可选」同语义）；
+  // client_ip/block_type 写入 data 属性属 col.render 显式信任边界，须 esc 转义
+  function banBtnHTML(r) {
+    const ip = String(r.client_ip || '');
+    if (!ip) return '<span class="muted">—</span>';
+    if (r.in_blacklist) {
+      return '<button class="btn btn-sm" disabled title="该 IP 已在黑名单，无需重复封禁（可到「黑白名单」页签查看/管理该条目）">IP封禁</button>';
+    }
+    return '<button class="btn btn-sm" data-act="waf-events-ban" data-ip="' + esc(ip) + '" data-bt="' +
+      esc(String(r.block_type == null ? '' : r.block_type)) + '">IP封禁</button>';
+  }
+
+  // 弹窗打开时单查该 IP 的黑名单记录（复用列表接口，取 ip 完全相等行）：
+  // 得 warn_times / 软删（deleted_at）/ 过期（expires_at）状态——注意 expires_at 为 NULL 时
+  // JSON 可能缺键，判空须容忍「缺键」与「空串」两种形态
+  async function fetchBanStatus(ip) {
+    try {
+      const r = await api.get('/admin/shield/blacklist?ip=' + encodeURIComponent(ip) + '&limit=5');
+      const rows = (r && r.rows) || [];
+      const hit = rows.find(x => String(x.ip || '') === ip);
+      if (!hit) return { exists: false, warnTimes: 0, active: false, history: false };
+      const deleted = !!hit.deleted_at; // NULL → 缺键/空值均 falsy
+      const expStr = hit.expires_at == null ? '' : String(hit.expires_at);
+      const expired = expStr !== '' && new Date(expStr).getTime() < Date.now();
+      return {
+        exists: true,
+        warnTimes: Number(hit.warn_times) || 0,
+        active: !deleted && !expired,
+        history: deleted || expired, // 软删/过期：提交后恢复原条目（决策 10）
+      };
+    } catch (e) {
+      return null; // 查询失败不阻断封禁（弹窗内提示状态未知）
+    }
+  }
+
+  // 封禁弹窗（复用 openModal）：字段齐全，来源 IP 只读、理由预填、类别下拉（BLOCK_TYPES 同源）
+  // 默认 11、时长单选、效果说明；提交走专用 ban 端点
+  async function openBanModal(row) {
+    const ip = String((row && row.client_ip) || '');
+    if (!ip) return;
+    if (row && row.in_blacklist) {
+      toast('该 IP 已在黑名单，无需重复封禁。可到「黑白名单」页签查看/管理该条目', 'warn');
+      return;
+    }
+    const btName = typeName(row && row.block_type);
+    const body =
+      '<div class="detail-grid">' +
+      '<div class="detail-item"><span class="k">来源 IP：</span><span class="v mono">' + esc(ip) + '</span>' +
+      '<span class="muted" id="waf-ban-status" style="margin-left:8px">状态查询中…</span></div>' +
+      '<div class="detail-item"><span class="k">封禁理由：</span>' +
+      '<input class="input" id="waf-ban-title" style="width:320px" maxlength="200" value="人工封禁：' + esc(btName) + '拦截"></div>' +
+      '<div class="detail-item"><span class="k">拉黑原因类别：</span>' +
+      '<select class="select" id="waf-ban-bt" style="width:180px">' +
+      Rock.comp.select.options(BLOCK_TYPES.filter(t => t[0] > 0).map(t => [String(t[0]), t[0] + ' ' + t[1]]), '11') +
+      '</select><span class="muted" style="margin-left:8px">缺省人工收录，可改选具体拦截类别</span></div>' +
+      '<div class="detail-item"><span class="k">封禁时长：</span>' +
+      '<label style="margin-right:16px"><input type="radio" name="waf-ban-duration" value="24h" checked> 封禁 24 小时</label>' +
+      '<label><input type="radio" name="waf-ban-duration" value="permanent"> 永久封禁</label></div>' +
+      '</div>' +
+      '<div class="muted" style="margin-top:8px;line-height:1.8">提交后该 IP 封禁次数 +1；限时封禁累计达 5 次将自动转为永久封禁。</div>' +
+      '<div id="waf-ban-err" class="status-red" style="margin-top:8px;display:none;white-space:pre-wrap"></div>';
+    const overlay = Rock.ui.openModal({
+      title: 'IP封禁',
+      body: body,
+      width: 560,
+      footer: '<button class="btn btn-primary" data-act="waf-ban-submit">确认封禁</button>',
+    });
+
+    // 打开时单查状态并回填提示（warn_times / 是否在黑名单 / 历史记录预提示）
+    const st = await fetchBanStatus(ip);
+    const statusEl = overlay.querySelector('#waf-ban-status');
+    if (!statusEl) return; // 弹层已被关闭
+    if (!st) {
+      statusEl.textContent = '状态查询失败，不影响封禁提交';
+    } else if (st.active) {
+      statusEl.textContent = '该 IP 当前已在黑名单（封禁次数 ' + st.warnTimes + '），无需重复封禁';
+    } else if (st.history) {
+      statusEl.textContent = '当前封禁次数：' + st.warnTimes + '。该 IP 有历史封禁记录（已软删/已过期），提交将恢复原条目并累计次数';
+    } else {
+      statusEl.textContent = '当前封禁次数：' + st.warnTimes + '（暂无生效中的黑名单记录）';
+    }
+
+    // 提交：走专用 ban 端点；成功 toast 自动消失 + 关弹层 + 刷新明细；失败常驻三要素
+    overlay.addEventListener('click', async e => {
+      if (!e.target.closest('[data-act="waf-ban-submit"]')) return;
+      const title = overlay.querySelector('#waf-ban-title').value.trim();
+      const bt = Number(overlay.querySelector('#waf-ban-bt').value) || 11;
+      const durEl = overlay.querySelector('input[name="waf-ban-duration"]:checked');
+      const duration = durEl ? durEl.value : '24h';
+      const errEl = overlay.querySelector('#waf-ban-err');
+      try {
+        const r = await api.post('/admin/shield/blacklist/ban')({ ip: ip, title: title, block_type: bt, duration: duration });
+        overlay.remove();
+        if (r && r.to_permanent) {
+          toast('已封禁 ' + ip + '（累计封禁满 5 次，已自动转为永久封禁）', 'success');
+        } else {
+          toast(duration === 'permanent' ? '已永久封禁 ' + ip : '已封禁 ' + ip + '（24 小时后自动解封）', 'success');
+        }
+        queryEvents(); // 刷新明细（重新拉取后 in_blacklist 标记与按钮置灰同步更新）
+      } catch (err) {
+        // 失败常驻（不自动消失）：说清发生了什么 + 为什么 + 下一步（后端文案已含三要素）
+        errEl.textContent = '封禁失败：' + (err.message || '未知错误');
+        errEl.style.display = 'block';
+      }
+    });
   }
 
   // ── 渲染 ────────────────────────────────────────────────────────────
@@ -481,6 +597,12 @@
       'waf-prune-events': function () { pruneEvents(); },
       'waf-prune-logs': function () { pruneLogs(); },
       'waf-events-detail': function (el) { openEventDetail(el); },
+      'waf-events-ban': function (el) {
+        // 操作列「IP封禁」：回查明细行（data-ip 精确匹配）后打开封禁弹窗
+        const ip = el.getAttribute('data-ip') || '';
+        const row = (store.wafEvents || []).find(r => String(r.client_ip || '') === ip);
+        openBanModal(row || { client_ip: ip, block_type: Number(el.getAttribute('data-bt')) || 0 });
+      },
       'waf-tab': function (el) { ipListSwitchTab(el.getAttribute('data-tab') || 'stats'); },
       'waf-iplist-kind': function (el) { Rock.views.blacklist.switchKind(el.getAttribute('data-kind') || 'black'); },
       'waf-iplist-query': function () { Rock.views.blacklist.query(); },
@@ -490,6 +612,7 @@
       'waf-iplist-del': function (el) { Rock.views.blacklist.del(el.getAttribute('data-id')); },
       'waf-iplist-restore': function (el) { Rock.views.blacklist.restore(el.getAttribute('data-id')); },
       'waf-iplist-import': function () { Rock.views.blacklist.importRows(); },
+      'waf-iplist-sync-file': function () { Rock.views.blacklist.syncFile(); },
     },
   };
 

@@ -23,17 +23,21 @@ import (
 // ErrIPExists 新增时 ip 已存在（唯一约束冲突），由管理面按幂等语义处理。
 var ErrIPExists = errors.New("ip 已存在")
 
+// ErrIPNotExists 按 ip 查询无记录（封禁三态判定走"新增入库"分支）。
+var ErrIPNotExists = errors.New("ip 记录不存在")
+
 // ActiveIP 有效黑白名单条目（内存快照加载用：id 供 hit_count 累加，ip 供匹配）。
 type ActiveIP struct {
 	ID int64
 	IP string
 }
 
-// ListFilter 管理面列表过滤条件（白名单忽略 BlockType）。
+// ListFilter 管理面列表过滤条件（白名单忽略 BlockType/Sort）。
 type ListFilter struct {
 	IP        string    // ip 模糊匹配（空 = 不限）
 	BlockType BlockType // 黑名单：0 = 不限（白名单忽略）
 	ValidOnly bool      // true = 仅有效（未软删、未过期）；false = 全部（含软删/过期）
+	Sort      string    // 黑名单排序键（白名单映射，见 blacklistSortWhitelist；非法/缺省回 id DESC）
 	Limit     int       // 分页大小（<=0 回落默认 500，上限 10000）
 	Offset    int       // 分页偏移
 }
@@ -59,13 +63,47 @@ func NewIPListStore(edb *easydb.EasyDb, sqls db.SQLSource, isBlack bool) *IPList
 // Table 返回表名（管理面/装配诊断用）。
 func (s *IPListStore) Table() string { return s.table }
 
-// sqlText 读取脚本并替换 {table} 表名占位符（表名为代码固定值，非用户输入，安全）。
+// sqlText 读取脚本并替换占位符：{table} 表名（代码固定值，非用户输入，安全）、
+// {order} 排序表达式（黑名单 query_list 用，经排序白名单映射注入；其余脚本无此占位符，替换为空操作）。
 func (s *IPListStore) sqlText(name string) (string, error) {
 	txt, err := s.sqls.SQL(name)
 	if err != nil {
 		return "", fmt.Errorf("shield: 读取 SQL 脚本 %s 失败（切换数据库时缺少 sql/<dbtype>/ 下对应脚本）: %w", name, err)
 	}
-	return strings.ReplaceAll(txt, "{table}", s.table), nil
+	txt = strings.ReplaceAll(txt, "{table}", s.table)
+	return strings.ReplaceAll(txt, "{order}", blacklistSortOrder(defaultListSort)), nil
+}
+
+// sqlTextOrder 同 sqlText，但 {order} 由调用方传入排序键（经白名单映射，非用户输入直拼）。
+func (s *IPListStore) sqlTextOrder(name, sort string) (string, error) {
+	txt, err := s.sqls.SQL(name)
+	if err != nil {
+		return "", fmt.Errorf("shield: 读取 SQL 脚本 %s 失败（切换数据库时缺少 sql/<dbtype>/ 下对应脚本）: %w", name, err)
+	}
+	txt = strings.ReplaceAll(txt, "{table}", s.table)
+	return strings.ReplaceAll(txt, "{order}", blacklistSortOrder(sort)), nil
+}
+
+// 排序白名单（IP_BLACKLIST_PLAN §3.8）：sort 参数 → ORDER BY 表达式。
+// 仅数值/时间列开放且固定 DESC；字符串列（ip/title）不提供，杜绝拼接注入面。
+const defaultListSort = "id"
+
+var blacklistSortWhitelist = map[string]string{
+	"id":         "id DESC",
+	"hit_count":  "hit_count DESC",
+	"warn_times": "warn_times DESC",
+	"created_at": "created_at DESC",
+	"expires_at": "expires_at DESC",
+	"updated_at": "updated_at DESC",
+	"block_type": "block_type DESC",
+}
+
+// blacklistSortOrder 排序键白名单映射：非法/缺省回默认 id DESC。
+func blacklistSortOrder(sort string) string {
+	if expr, ok := blacklistSortWhitelist[sort]; ok {
+		return expr
+	}
+	return blacklistSortWhitelist[defaultListSort]
 }
 
 // EnsureAttackArchiveTable 幂等建攻击证据归档表（WAF 方案 §4.3：本期仅建表，
@@ -152,12 +190,26 @@ func (s *IPListStore) QueryActive(now time.Time) ([]ActiveIP, error) {
 	return out, nil
 }
 
-// Insert 新增一条。黑名单接受 blockType/expiresAt；白名单忽略二者。
-// ip 已存在（唯一约束冲突）返回 ErrIPExists。
+// Insert 新增一条（普通录入/导入语义：warn_times 初始 0）。黑名单接受 blockType/expiresAt；
+// 白名单忽略二者。ip 已存在（唯一约束冲突）返回 ErrIPExists。
 // ★ PostgreSQL 驱动（lib/pq）不支持 Result.LastInsertId，本方言走
 // insert_returning_id.sql（RETURNING id + QueryRow.Scan），其余方言 Exec + LastInsertId
 // （与 mq.OutboxStore.Insert 同模式）。
 func (s *IPListStore) Insert(ip, title string, blockType BlockType, expiresAt *time.Time, now time.Time) (int64, error) {
+	return s.insertWarnTimes(ip, title, blockType, expiresAt, 0, now)
+}
+
+// BanInsert 封禁入库（IP_BLACKLIST_PLAN §3.4 决策 8：自动/人工封禁入库 warn_times=1 起算）。
+// 仅黑名单语义（白名单调用报错）；ip 已存在返回 ErrIPExists。
+func (s *IPListStore) BanInsert(ip, title string, blockType BlockType, expiresAt *time.Time, now time.Time) (int64, error) {
+	if !s.isBlack {
+		return 0, fmt.Errorf("shield: 白名单无封禁语义（warn_times）")
+	}
+	return s.insertWarnTimes(ip, title, blockType, expiresAt, 1, now)
+}
+
+// insertWarnTimes 插入内部实现（warnTimes：封禁入库=1，普通录入/导入=0）。
+func (s *IPListStore) insertWarnTimes(ip, title string, blockType BlockType, expiresAt *time.Time, warnTimes int, now time.Time) (int64, error) {
 	nowUTC := now.UTC()
 	bt := int(blockType)
 	if !s.isBlack {
@@ -171,7 +223,7 @@ func (s *IPListStore) Insert(ip, title string, blockType BlockType, expiresAt *t
 		var id int64
 		var qerr error
 		if s.isBlack {
-			qerr = s.edb.QueryRow(ret, ip, title, bt, utcOrNil(expiresAt), nowUTC, nowUTC).Scan(&id)
+			qerr = s.edb.QueryRow(ret, ip, title, bt, warnTimes, utcOrNil(expiresAt), nowUTC, nowUTC).Scan(&id)
 		} else {
 			qerr = s.edb.QueryRow(ret, ip, title, nowUTC, nowUTC).Scan(&id)
 		}
@@ -189,7 +241,7 @@ func (s *IPListStore) Insert(ip, title string, blockType BlockType, expiresAt *t
 	}
 	var res sqlResult
 	if s.isBlack {
-		res, err = s.edb.Exec(ins, ip, title, bt, utcOrNil(expiresAt), nowUTC, nowUTC)
+		res, err = s.edb.Exec(ins, ip, title, bt, warnTimes, utcOrNil(expiresAt), nowUTC, nowUTC)
 	} else {
 		res, err = s.edb.Exec(ins, ip, title, nowUTC, nowUTC)
 	}
@@ -261,7 +313,7 @@ func (s *IPListStore) Import(ips []string, title string, blockType BlockType, no
 		}
 		var res sqlResult
 		if s.isBlack {
-			res, err = s.edb.Exec(imp, ip, title, int(blockType), nowUTC, nowUTC)
+			res, err = s.edb.Exec(imp, ip, title, int(blockType), 0, nowUTC, nowUTC) // 导入初始 warn_times=0
 		} else {
 			res, err = s.edb.Exec(imp, ip, title, nowUTC, nowUTC)
 		}
@@ -290,7 +342,7 @@ func (s *IPListStore) List(f ListFilter, now time.Time) (rows []map[string]any, 
 	if f.ValidOnly {
 		validOnly = 1
 	}
-	sel, err := s.sqlText(s.scriptName("query_list"))
+	sel, err := s.sqlTextOrder(s.scriptName("query_list"), f.Sort) // {order} 经白名单映射注入
 	if err != nil {
 		return nil, 0, err
 	}
@@ -341,6 +393,141 @@ func (s *IPListStore) AddHitCount(id int64, delta int) error {
 	return nil
 }
 
+// BanEntry 黑名单条目全状态行（封禁三态判定/续封转永久判定用；含软删/过期）。
+type BanEntry struct {
+	ID        int64
+	IP        string
+	Title     string
+	BlockType BlockType
+	HitCount  int64
+	WarnTimes int64
+	ExpiresAt string // RFC3339；"" = 永久（NULL）
+	Deleted   bool   // deleted_at 非空
+}
+
+// GetByIP 按精确 ip 取单条全状态行（软删/过期也返回，供封禁三态判定）。
+// 无记录返回 ErrIPNotExists。
+func (s *IPListStore) GetByIP(ip string) (*BanEntry, error) {
+	if !s.isBlack {
+		return nil, fmt.Errorf("shield: 白名单无封禁语义")
+	}
+	sel, err := s.sqlText(s.scriptName("get"))
+	if err != nil {
+		return nil, err
+	}
+	var rows []map[string]any
+	if err := s.edb.GetMany(sel, &rows, ip); err != nil {
+		return nil, fmt.Errorf("shield: 查询 %s 条目失败（ip=%s）: %w", s.table, ip, err)
+	}
+	if len(rows) == 0 {
+		return nil, ErrIPNotExists
+	}
+	row := rows[0]
+	e := &BanEntry{
+		ID:        eventToInt64(row["id"]),
+		IP:        eventToString(row["ip"]),
+		Title:     eventToString(row["title"]),
+		BlockType: BlockType(eventToInt64(row["block_type"])),
+		HitCount:  eventToInt64(row["hit_count"]),
+		WarnTimes: eventToInt64(row["warn_times"]),
+		ExpiresAt: "",
+		Deleted:   row["deleted_at"] != nil, // NULL = 未软删（勿经 eventToString：nil 归一为 "<nil>" 非空串）
+	}
+	if row["expires_at"] != nil {
+		e.ExpiresAt = eventToString(row["expires_at"])
+	}
+	return e, nil
+}
+
+// 封禁续封语义常量（IP_BLACKLIST_PLAN §3.4 决策 8/10）。
+const (
+	// banWarnTimesLimit 封禁次数上限：限时封禁续封累计达 5 次转永久。
+	banWarnTimesLimit = 5
+	// banPermanentTitleSuffix 转永久时追加到 title 的标记。
+	banPermanentTitleSuffix = "（累计封禁达 5 次转永久）"
+)
+
+// RestoreBan 封禁恢复续封（软删/过期条目拉回小黑屋）：清 deleted_at、expires_at 按
+// 调用方时长重设（人工=所选时长 / 自动=TTL×10）、warn_times+1。
+// +1 后 warn_times ≥ 5 且本次为限时封禁（expiresAt 非 nil）→ 转永久：expires_at 置 NULL
+// 且 title 追加转永久标记，返回 toPermanent=true 供端点提示。
+// ip 无记录返回 ErrIPNotExists；白名单调用报错。
+func (s *IPListStore) RestoreBan(ip string, expiresAt *time.Time, now time.Time) (toPermanent bool, err error) {
+	if !s.isBlack {
+		return false, fmt.Errorf("shield: 白名单无封禁语义")
+	}
+	cur, err := s.GetByIP(ip)
+	if err != nil {
+		return false, err
+	}
+	warn := cur.WarnTimes + 1
+	exp := expiresAt
+	title := cur.Title
+	if cur.ExpiresAt == "" {
+		// 本就永久的条目：恢复后仍永久（调用方时长仅适用于限时条目，避免把永久封禁降级）
+		exp = nil
+	}
+	// perm=true 仅表示「本次恢复把限时条目转成了永久」（端点据此提示）；本就永久的条目不报。
+	if warn >= banWarnTimesLimit && expiresAt != nil && cur.ExpiresAt != "" {
+		toPermanent = true
+		exp = nil
+		if !strings.Contains(title, banPermanentTitleSuffix) {
+			title += banPermanentTitleSuffix
+		}
+	}
+	upd, err := s.sqlText(s.scriptName("restore_ban"))
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.edb.Exec(upd, utcOrNil(exp), warn, title, now.UTC(), cur.ID); err != nil {
+		return false, fmt.Errorf("shield: 封禁续封 %s 失败（ip=%s）: %w", s.table, ip, err)
+	}
+	return toPermanent, nil
+}
+
+// Jail 小黑屋查询（IP_BLACKLIST_PLAN §3.7）：当前在押的限时封禁条目——
+// expires_at 非 NULL 且 > now、deleted_at 为 NULL；临近解封的在前（expires_at ASC）。
+// 返回归一化行与在押总数（总数与 limit 无关，供前端提示"共 N 条在押"）。
+func (s *IPListStore) Jail(now time.Time, limit int) (rows []map[string]any, total int64, err error) {
+	if !s.isBlack {
+		return nil, 0, fmt.Errorf("shield: 白名单无小黑屋语义")
+	}
+	if limit <= 0 {
+		limit = defaultJailLimit
+	}
+	if limit > maxJailLimit {
+		limit = maxJailLimit
+	}
+	sel, err := s.sqlText(s.scriptName("query_jail"))
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := s.edb.GetMany(sel, &rows, now.UTC(), limit); err != nil {
+		return nil, 0, fmt.Errorf("shield: 查询 %s 小黑屋失败: %w", s.table, err)
+	}
+	for _, row := range rows {
+		normalizeListRow(row, true)
+	}
+	cnt, err := s.sqlText(s.scriptName("jail_count"))
+	if err != nil {
+		return nil, 0, err
+	}
+	var cntRows []map[string]any
+	if err := s.edb.GetMany(cnt, &cntRows, now.UTC()); err != nil {
+		return nil, 0, fmt.Errorf("shield: 统计 %s 小黑屋失败: %w", s.table, err)
+	}
+	if len(cntRows) > 0 {
+		total = eventToInt64(cntRows[0]["total"])
+	}
+	return rows, total, nil
+}
+
+// 小黑屋分页默认与上限（首页轻量预览，见 IP_BLACKLIST_PLAN §3.7）。
+const (
+	defaultJailLimit = 20
+	maxJailLimit     = 100
+)
+
 // 列表分页默认与上限（与 shield_event 查询约定一致）。
 const (
 	defaultListLimit = 500
@@ -351,7 +538,7 @@ const (
 func normalizeListRow(row map[string]any, isBlack bool) {
 	for k, v := range row {
 		switch k {
-		case "id", "block_type", "hit_count":
+		case "id", "block_type", "hit_count", "warn_times":
 			row[k] = eventToInt64(v)
 		case "expires_at", "deleted_at", "created_at", "updated_at":
 			if v == nil {

@@ -1,8 +1,9 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/overview.js 概览页
- * 网关信息卡 + 运行指标卡（含趋势图） + HTTP 数据流图（组件节点带开关）
- * + 服务状态总览。
- * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api / Rock.comp.{metrics,componentState,dataflow,chart}。
+ * 页签「总览」：网关信息卡 + 运行指标卡（含趋势图） + HTTP 数据流图（组件节点带开关）
+ * + 服务状态总览；页签「小黑屋」：当前在押的限时封禁预览（IP_BLACKLIST_PLAN §3.7）。
+ * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api
+ * / Rock.comp.{tabs,metrics,componentState,dataflow,chart,dataTable,empty}。
  * 挂载到全局命名空间 window.Rock.views.overview。
  * ========================================================================== */
 (function () {
@@ -21,6 +22,30 @@
   const toast = Rock.ui.toast;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
+
+  // ── 页签状态：总览 / 小黑屋 ─────────────────────────────────────────
+  let ovActiveTab = 'overview'; // 'overview' | 'jail'
+
+  // 小黑屋数据缓存（切页签/自动刷新时刷新；拉取失败保留旧数据 + 行内提示）
+  let jailRows = [];
+  let jailTotal = 0;
+  let jailErr = null;
+
+  // 小黑屋表格（client 模式：拉 limit=20 条全量喂入，组件内切片，不分页请求）
+  const jailTable = Rock.comp.dataTable.create({
+    ns: 'jail',
+    columns: [
+      { key: 'ip', label: '封禁 IP' },
+      { key: 'block_type', label: '封禁原因', render: r => esc(Rock.state.blockTypeName(r.block_type)) },
+      { key: 'hit_count', label: '命中次数', render: r => esc(Rock.util.fmtInt(r.hit_count)) },
+      { key: 'warn_times', label: '封禁次数', render: r => esc(Rock.util.fmtInt(r.warn_times)) },
+      { key: 'created_at', label: '封禁时间（首次）', render: r => esc(Rock.util.fmtDateTime(r.created_at)) },
+      // expires_at 理论上不会为 NULL（jail 只收限时封禁），判空兜底显示 —
+      { key: 'expires_at', label: '解封时间', render: r => esc(r.expires_at ? Rock.util.fmtDateTime(r.expires_at) : '—') },
+    ],
+    paging: { mode: 'client', pageSize: 20 },
+    emptyText: '小黑屋空空如也',
+  });
 
   // 加载概览：底座信息 + 组件状态 + 指标（指标失败单独容错）
   async function load(opts) {
@@ -70,6 +95,8 @@
       }
     }
     render();
+    // 小黑屋页签随首页刷新周期联动刷新（自动刷新由 main.js 驱动 load，总览页签不受影响）
+    if (ovActiveTab === 'jail') loadJail(opts);
   }
 
   function skeleton() {
@@ -112,6 +139,15 @@
     return '<div class="ov-grid">' + list.map(s => ovCardHTML(s, routeBase)).join('') + '</div>';
   }
 
+  // 页签条：总览 / 小黑屋（点击经全局委托走 'overview-tab' 动作）
+  function tabsHTML() {
+    return Rock.comp.tabs.tabsHTML(
+      [{ name: 'overview', label: '总览' }, { name: 'jail', label: '小黑屋' }],
+      ovActiveTab,
+      { act: 'overview-tab', nameAttr: 'data-tab' }
+    );
+  }
+
   function render() {
     const host = $('#page-overview');
     if (!host) return;
@@ -125,6 +161,20 @@
     }
     if (!store.baseLoaded && !store.switchesLoaded) { skeleton(); return; }
 
+    host.innerHTML =
+      Rock.comp.head.headHTML({
+        title: '概览',
+        desc: '30 秒完成巡检：网关状态 · 数据流 · 指标 · 组件 · 服务',
+        actions: '<button class="btn btn-sm" data-act="overview-reload">⟳ 刷新</button>',
+      }) +
+      tabsHTML() +
+      (ovActiveTab === 'jail' ? jailBodyHTML() : overviewBodyHTML());
+
+    if (ovActiveTab !== 'jail' && !store.metricsError && store.metrics) drawChart();
+  }
+
+  // ── 页签「总览」：原有内容（行为不变）──────────────────────────────
+  function overviewBodyHTML() {
     // ---- 网关信息卡 ----
     const b = store.base || {};
     const gwItems = [
@@ -164,14 +214,7 @@
     // ---- 独立服务 ----
     const services = store.switches.filter(s => s.kind === 'component');
 
-    host.innerHTML =
-      Rock.comp.head.headHTML({
-        title: '概览',
-        desc: '30 秒完成巡检：网关状态 · 数据流 · 指标 · 组件 · 服务',
-        actions: '<button class="btn btn-sm" data-act="overview-reload">⟳ 刷新</button>',
-      }) +
-
-      '<div class="grid grid-2">' +
+    return '<div class="grid grid-2">' +
       '<div class="card hoverable" data-act="goto-config" style="cursor:pointer">' +
       '<div class="card-title">网关信息 <span class="card-sub">点击进入全局配置</span></div>' + gwItems +
       '</div>' +
@@ -186,8 +229,72 @@
       overviewGridHTML(services, SERVICE_ORDER, 'services') +
       (services.length ? '' : '<div class="form-hint">服务按配置装配，当前未装配独立服务。</div>') +
       '</div>';
+  }
 
-    if (!metricsOff && store.metrics) drawChart();
+  // ── 页签「小黑屋」：当前在押的限时封禁预览（IP_BLACKLIST_PLAN §3.7）──
+
+  // 拉取小黑屋数据：静默失败保留旧数据并给行内提示，手动刷新才弹 toast
+  let jailFetched = false; // 是否成功拉取过一次（失败时决定是否显示行内错误）
+  async function loadJail(opts) {
+    opts = opts || {};
+    try {
+      const res = await api.get('/admin/shield/jail?limit=20');
+      jailRows = (res && res.rows) || [];
+      jailTotal = Number(res && res.total) || jailRows.length;
+      jailErr = null;
+      jailFetched = true;
+    } catch (e) {
+      if (opts.manual && e.status !== 0) toast('小黑屋加载失败：' + e.message + '，可稍后重试或检查 DB 配置', 'error');
+      else if (!jailFetched) jailErr = e.message || '加载失败';
+    }
+    renderJailBody();
+  }
+
+  // 小黑屋页签主体：说明 + 表格/空态 + 计数与出口
+  function jailBodyHTML() {
+    bindJailTable(); // 表格分页控件委托（#page-overview 持久，仅绑一次）
+    return '<div class="card"><div class="card-title">在押名单 ' +
+      '<span class="card-sub">当前在押的限时封禁（未过期、未软删）；封禁时间为首次封禁时间，临近解封的在前</span></div>' +
+      '<div id="jail-body">' + jailInnerHTML() + '</div></div>';
+  }
+
+  // 表格分页控件事件绑定（宿主元素持久，只绑一次防重复触发）
+  let jailTableBound = false;
+  function bindJailTable() {
+    if (jailTableBound) return;
+    const host = $('#page-overview');
+    if (!host) return;
+    jailTable.bind(host);
+    jailTableBound = true;
+  }
+
+  // 表格区（loadJail 完成后只重渲染此块，不动页签结构）
+  function jailInnerHTML() {
+    if (jailErr) {
+      return Rock.comp.empty.message({
+        text: '小黑屋数据加载失败：' + jailErr + '。可稍后重试，或检查数据库配置后重进本页。',
+        br: true,
+      });
+    }
+    if (!jailRows.length) {
+      return Rock.comp.empty.message({ text: '小黑屋空空如也', padding: '24px 8px' });
+    }
+    return jailTable.html(jailRows) + jailFooterHTML();
+  }
+
+  // 计数行：jail total + 超出预览条数提示 + 管理全部黑名单出口
+  function jailFooterHTML() {
+    const more = jailTotal > jailRows.length
+      ? '，仅展示前 ' + jailRows.length + ' 条，其余请到黑白名单页查看'
+      : '';
+    return '<div class="form-hint">共 ' + Rock.util.fmtInt(jailTotal) + ' 条在押' + more +
+      ' · <a data-act="goto-iplist" style="cursor:pointer">管理全部黑名单 →</a></div>';
+  }
+
+  // loadJail 完成后局部刷新表格区（当前停在宿主页才执行）
+  function renderJailBody() {
+    const wrap = $('#jail-body');
+    if (wrap) wrap.innerHTML = jailInnerHTML();
   }
 
   // 趋势折线图（main.js resize 钩子调用）
@@ -201,8 +308,28 @@
     skeleton,
     drawChart,
     ovCardHTML,
+    tabsHTML,
     actions: {
       'overview-reload': function () { load({ manual: true }); },
+      // 页签切换：总览 / 小黑屋（切到小黑屋时拉取最新在押数据）
+      'overview-tab': function (el) {
+        const tab = el.getAttribute('data-tab') || 'overview';
+        if (tab === ovActiveTab) return;
+        ovActiveTab = tab === 'jail' ? 'jail' : 'overview';
+        render();
+        if (ovActiveTab === 'jail') loadJail({});
+      },
+      // 跳黑白名单页签：先切路由，待 WAF 页渲染出页签后模拟点击「黑白名单」
+      // （走全局点击委托，与用户手点等价；waf 页暂不识别 ?tab= 查询参数）
+      'goto-iplist': function () {
+        Rock.main.navigate('waf?tab=iplist');
+        let tries = 0;
+        const timer = setInterval(function () {
+          if (++tries > 50) { clearInterval(timer); return; } // 最多等 5 秒
+          const tab = document.querySelector('#page-waf .tab[data-tab="iplist"]');
+          if (tab) { clearInterval(timer); tab.click(); }
+        }, 100);
+      },
     },
   };
 })();

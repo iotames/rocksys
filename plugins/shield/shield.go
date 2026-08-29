@@ -94,6 +94,11 @@ type ipListStore interface {
 	Restore(id int64, now time.Time) error
 	Import(ips []string, title string, blockType BlockType, now time.Time) (imported, skipped int, err error)
 	List(f ListFilter, now time.Time) (rows []map[string]any, total int64, err error)
+	// 封禁语义（黑名单专属；IP_BLACKLIST_PLAN §3.4/§3.7，白名单实现返回错误）。
+	BanInsert(ip, title string, blockType BlockType, expiresAt *time.Time, now time.Time) (int64, error)
+	GetByIP(ip string) (*BanEntry, error)
+	RestoreBan(ip string, expiresAt *time.Time, now time.Time) (toPermanent bool, err error)
+	Jail(now time.Time, limit int) (rows []map[string]any, total int64, err error)
 }
 
 // dbTTLInterval DB 黑白名单快照兜底刷新间隔（WAF 方案 §5.3；§8 记后续参数化）。
@@ -572,6 +577,14 @@ func (s *Shield) current() *shieldSnapshot {
 func (s *Shield) InBlacklist(ip string) bool {
 	snap := s.current()
 	return snap != nil && snap.ipBlacklist.contains(ip)
+}
+
+// InWhitelist IP 是否命中当前生效白名单（.env SHIELD_IP_WHITELIST ∪ DB 活跃条目，
+// 支持精确 IP 与 CIDR 网段匹配，与 Handle 放行判定同源）。
+// 供自动拉黑引擎入库前过滤白名单 IP 用（IP_BLACKLIST_PLAN §3.4）。
+func (s *Shield) InWhitelist(ip string) bool {
+	snap := s.current()
+	return snap != nil && snap.ipWhitelist.contains(ip)
 }
 
 // splitList 逗号分隔解析：去空白、去空项。

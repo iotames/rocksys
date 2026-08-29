@@ -5,6 +5,8 @@
  *   - { key, label, render?, pre?, copy? }，render 返回 HTML 属视图显式信任边界
  *     （不走内部 esc），其余取值默认经 Rock.util.esc；
  *   - pre 为等宽块（长文本如 payload/UA），copy 为"一键复制"（clipboard + toast）。
+ * 可选 actions 配置：[{ label, className?, onClick(values) }] 渲染为 footer 按钮
+ * （业务无关插槽：回调收当前行数据 values，组件不感知字段语义；缺省不传行为不变）。
  * 基于 Rock.ui.openModal（modal 层已含 ESC 关闭）。挂载 window.Rock.comp.detailModal。
  * ========================================================================== */
 (function () {
@@ -49,7 +51,7 @@
     return '<button class="btn btn-sm btn-text detail-copy" data-copy-value="' + esc(String(raw)) + '" title="复制">copy</button>';
   }
 
-  // 打开行详情弹层：show({ title, fields, row, width? })
+  // 打开行详情弹层：show({ title, fields, row, width?, actions? })
   function show(opts) {
     if (!opts || !opts.fields || !opts.fields.length) return null;
     const row = opts.row || {};
@@ -57,14 +59,28 @@
       '<div class="detail-grid detail-grid-modal">' +
       opts.fields.map(function (f) { return fieldHTML(f, row); }).join('') +
       '</div>';
+    // 可选 footer 按钮（actions 插槽）：onClick 收当前行数据，回调内自行决定是否关弹层
+    let footer = '';
+    if (opts.actions && opts.actions.length) {
+      footer = opts.actions.map(function (a, i) {
+        return '<button class="btn ' + (a.className || 'btn-primary') + '" data-detail-act="' + i + '">' +
+          esc(a.label || '') + '</button>';
+      }).join('');
+    }
     const overlay = Rock.ui.openModal({
       title: (typeof opts.title === 'function' ? opts.title(row) : opts.title) || '详情',
       body: body,
+      footer: footer,
       width: opts.width || 640,
     });
     overlay.addEventListener('click', function (e) {
       const btn = e.target.closest('[data-copy-value]');
-      if (btn) copyText(btn.getAttribute('data-copy-value'));
+      if (btn) { copyText(btn.getAttribute('data-copy-value')); return; }
+      const actBtn = e.target.closest('[data-detail-act]');
+      if (actBtn) {
+        const a = opts.actions[Number(actBtn.getAttribute('data-detail-act'))];
+        if (a && typeof a.onClick === 'function') a.onClick(row);
+      }
     });
     return overlay;
   }

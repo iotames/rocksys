@@ -4,6 +4,7 @@
 -- ★ block_type 拦截类别（SMALLINT 数值稳定，勿改动，WebUI 与统计脚本依赖）：
 --   1=IP黑名单  2=限流(429)  3=方法不允许  4=请求体超限(413)
 --   5=风险路径  6=路径遍历  7=SQL注入  8=XSS  9=爬虫/扫描器UA  10=路径/UA规则deny
+--   0 与 11 仅 ip_blacklist 表语境使用（本表永远只写 1-10）。
 --   枚举定义见 plugins/shield/block_type.go（与 Go 源码保持一一对应）。
 -- ★ rule_hit 命中规则/特征名：sql_pattern / xss_pattern / path_traversal / risk_path /
 --   crawler_ua / ip_blacklist / rate_limit / method_whitelist / max_body_size 等。
@@ -29,7 +30,7 @@ COMMENT ON TABLE {table} IS 'WAF 拦截事件明细表：仅存被拦截的请�
 COMMENT ON COLUMN {table}.id IS '自增主键';
 COMMENT ON COLUMN {table}.time IS '拦截时刻（UTC，Go 侧传 time.Time）';
 COMMENT ON COLUMN {table}.trace_id IS '链路 ID（仅 shield_event 内部追溯，不与 access_log 关联）';
-COMMENT ON COLUMN {table}.block_type IS '拦截类别 1-10：1=IP黑名单 2=限流(429) 3=方法不允许 4=请求体超限(413) 5=风险路径 6=路径遍历 7=SQL注入 8=XSS 9=爬虫/扫描器UA 10=路径/UA规则deny；枚举定义见 plugins/shield/block_type.go';
+COMMENT ON COLUMN {table}.block_type IS '拦截类别 1-10：1=IP黑名单 2=限流(429) 3=方法不允许 4=请求体超限(413) 5=风险路径 6=路径遍历 7=SQL注入 8=XSS 9=爬虫/扫描器UA 10=路径/UA规则deny；0 与 11 仅 ip_blacklist 表语境使用；枚举定义见 plugins/shield/block_type.go';
 COMMENT ON COLUMN {table}.client_ip IS '攻击来源 IP（已按 X-Forwarded-For 取真实客户端地址）';
 COMMENT ON COLUMN {table}.method IS '请求方法（GET/POST/...）';
 COMMENT ON COLUMN {table}.path IS 'URL 路径';
