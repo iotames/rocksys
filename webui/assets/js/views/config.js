@@ -168,7 +168,7 @@
         actions: '<button class="btn btn-sm" data-act="config-reload">⟳ 手动刷新</button>',
       }) +
       (store.configUnavailable ? '<div class="alert alert-warning">配置接口（/admin/config/list）暂不可用或网关版本不支持，当前展示底座配置。修改项保存仍可用。</div>' : '') +
-      '<div class="tabs">' + tabs + '</div>' +
+      tabs +
       '<div class="card"><div id="config-group-panel"></div></div>' +
       '<div class="card">' +
       '<div class="card-title">组件配置 <span class="card-sub">数据流组件 · 点击进入对应页面查看与修改</span></div>' +

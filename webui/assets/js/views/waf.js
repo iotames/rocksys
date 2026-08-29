@@ -251,12 +251,12 @@
 
   // ── 渲染 ────────────────────────────────────────────────────────────
 
-  // 页内 Tab：拦截统计 / 黑白名单（黑白名单见 WAF 方案 §6.2）
-  let wafActiveTab = 'stats'; // 'stats' | 'iplist'
+  // 页内 Tab：拦截统计 / 黑白名单 / 文件编辑（子视图分别见 blacklist.js / ruleFiles.js）
+  let wafActiveTab = 'stats'; // 'stats' | 'iplist' | 'files'
 
   function tabsHTML() {
     return Rock.comp.tabs.tabsHTML(
-      [{ name: 'stats', label: '拦截统计' }, { name: 'iplist', label: '黑白名单' }],
+      [{ name: 'stats', label: '拦截统计' }, { name: 'iplist', label: '黑白名单' }, { name: 'files', label: '文件编辑' }],
       wafActiveTab,
       { act: 'waf-tab', nameAttr: 'data-tab' }
     );
@@ -267,6 +267,10 @@
     if (!host) return;
     if (wafActiveTab === 'iplist') {
       Rock.views.blacklist.render(host);
+      return;
+    }
+    if (wafActiveTab === 'files') {
+      Rock.views.ruleFiles.render(host);
       return;
     }
     renderStatsPage();
@@ -486,10 +490,11 @@
     }
   }
 
-  // 主 Tab 切换：拦截统计 / 黑白名单（黑白名单渲染与 CRUD 已下沉 views/blacklist.js）
+  // 主 Tab 切换：拦截统计 / 黑白名单 / 文件编辑（子视图渲染与 CRUD 下沉各自模块）
   async function ipListSwitchTab(tab) {
-    wafActiveTab = tab === 'iplist' ? 'iplist' : 'stats';
-    if (tab === 'iplist') await Rock.views.blacklist.ensureLoaded();
+    wafActiveTab = ['iplist', 'files'].indexOf(tab) >= 0 ? tab : 'stats';
+    if (wafActiveTab === 'iplist') await Rock.views.blacklist.ensureLoaded();
+    if (wafActiveTab === 'files') await Rock.views.ruleFiles.ensureLoaded();
     render();
   }
 
@@ -525,6 +530,11 @@
 
   // 注入页面上下文：主 Tab HTML 与当前 Tab（黑白名单子视图渲染主 Tab 用）
   Rock.views.blacklist.bindPage({
+    tabsHTML: tabsHTML,
+    activeTab: function () { return wafActiveTab; },
+  });
+  // 注入页面上下文：主 Tab HTML 与当前 Tab（文件编辑子视图渲染主 Tab 用）
+  Rock.views.ruleFiles.bindPage({
     tabsHTML: tabsHTML,
     activeTab: function () { return wafActiveTab; },
   });

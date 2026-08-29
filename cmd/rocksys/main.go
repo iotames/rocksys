@@ -450,6 +450,20 @@ func buildServer(args []string) (*Server, error) {
 			return nil, fmt.Errorf("register shield %s: %w", ep.path, err)
 		}
 	}
+	// WAF 规则文件管理（WebUI「文件编辑」页签）：清单 / 读文件 / 保存外挂覆写。
+	// 保存落点 HOT_SCRIPTS_DIR/rules/，ScriptHub 监控自动热更，无需重启。
+	for _, ep := range []struct {
+		path string
+		h    http.HandlerFunc
+	}{
+		{shield.PathShieldRules, shieldAdmin.Rules},
+		{shield.PathShieldRulesFile, shieldAdmin.RuleFile},
+		{shield.PathShieldRulesSave, shieldAdmin.RuleSave()},
+	} {
+		if err := adminSrv.RegisterPlugin(ep.path, ep.h); err != nil {
+			return nil, fmt.Errorf("register shield %s: %w", ep.path, err)
+		}
+	}
 
 	// 5b. WebUI 管理控制台静态资源（内嵌单页，根路径 / 打开）。
 	if err := adminSrv.RegisterWebUI(webui.FS); err != nil {

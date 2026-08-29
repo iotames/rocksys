@@ -689,6 +689,8 @@ b, strong { font-weight: 600; }
   border-bottom: 1px solid var(--border);
   margin-bottom: 16px;
   overflow-x: auto;
+  /* 页签过多才出横向滚动：细滚动条弱化存在感，常态（数量少）无滚动条 */
+  scrollbar-width: thin;
 }
 
 .tab {
@@ -1023,6 +1025,9 @@ b, strong { font-weight: 600; }
 
 .script-name { font-size: 13px; font-weight: 500; }
 .script-ver { font-size: 12px; color: var(--text-2); margin-left: auto; white-space: nowrap; }
+
+/* 规则文件列表元信息行（文件名 · 行数）：窄列允许折行，避免截断 */
+.rf-meta { font-size: 12px; color: var(--text-2); word-break: break-all; margin-top: 2px; }
 
 /* 代码编辑器（textarea 透明文字 + 底层高亮层） */
 .editor-wrap {

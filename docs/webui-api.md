@@ -58,6 +58,9 @@
 | 32 | POST | `/admin/shield/whitelist/restore` | 恢复软删白名单条目 |
 | 33 | POST | `/admin/shield/whitelist/import` | 批量导入白名单 |
 | 34 | GET | `/admin/meta` | 组件/服务元数据（WebUI 全局展示，无状态不缓存） |
+| 35 | GET | `/admin/shield/rules` | WAF 规则文件清单（外挂覆写状态/生效行数/修改时间，WebUI·文件编辑 Tab） |
+| 36 | GET | `/admin/shield/rules/file` | 读单个规则文件当前生效内容 + 内嵌默认内容（`?name=`，文件名白名单校验） |
+| 37 | POST | `/admin/shield/rules/save` | 保存规则文件到 `HOT_SCRIPTS_DIR/rules/`（原子写，ScriptHub ≤3s 自动热更生效；body `{name, content}`，上限 512KB） |
 
 ---
 
