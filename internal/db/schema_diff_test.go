@@ -156,7 +156,7 @@ func TestDiffNormalization(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
-// TestGenerateSQL 自动项生成：A 建表原文 / B ADD COLUMN / D 索引原文；仅提示项不生成。
+// TestGenerateSQL 自动项生成：A 建表原文 / B ADD COLUMN / D 仅缺失索引的单条语句；仅提示项不生成。
 func TestGenerateSQL(t *testing.T) {
 	src, err := EmbeddedSQLSource("sqlite")
 	if err != nil {
@@ -166,7 +166,7 @@ func TestGenerateSQL(t *testing.T) {
 	items := []DiffItem{
 		{Level: "A", Auto: true, Table: "t", Object: "t", Note: "缺表：可用生成的建表脚本原文创建"},
 		{Level: "B", Auto: true, Table: "t", Object: "warn_times", Expected: "INTEGER NOT NULL DEFAULT 0", Note: "缺普通列：可自动 ADD COLUMN"},
-		{Level: "D", Auto: true, Table: "t", Object: "idx_t_x", Note: "缺索引：可自动创建"},
+		{Level: "D", Auto: true, Table: "t", Object: "idx_t_block_type", Note: "缺索引：可自动创建"},
 		{Level: "E", Auto: false, Table: "t", Object: "hit_count", Note: "类型不一致：仅提示"},
 	}
 	sqlText, err := GenerateSQL(items, specs, src)
@@ -179,15 +179,51 @@ func TestGenerateSQL(t *testing.T) {
 	if !strings.Contains(sqlText, "CREATE TABLE IF NOT EXISTS t (") {
 		t.Errorf("A 级应生成 {table} 替换后的建表原文，got:\n%s", sqlText)
 	}
-	if !strings.Contains(sqlText, "CREATE INDEX IF NOT EXISTS idx_t_block_type") {
-		t.Errorf("D 级应生成索引原文，got:\n%s", sqlText)
+	if !strings.Contains(sqlText, "CREATE INDEX IF NOT EXISTS idx_t_block_type ON t(block_type)") {
+		t.Errorf("D 级应生成缺失索引的单条语句，got:\n%s", sqlText)
+	}
+	// D 级只生成缺失索引，不得整份脚本重放（否则已有索引处 Duplicate key 遇错即停，剩余索引永远补不齐）；
+	// idx_t_expires_at 仅允许出现在 A 级建表附带的索引脚本中（恰好 1 次），D 段不得再生成。
+	if n := strings.Count(sqlText, "idx_t_expires_at"); n != 1 {
+		t.Errorf("idx_t_expires_at 应仅由 A 级附带出现 1 次（D 级不重放），got %d 次:\n%s", n, sqlText)
+	}
+	if n := strings.Count(sqlText, "idx_t_block_type"); n != 2 {
+		t.Errorf("idx_t_block_type 应出现 2 次（A 级附带 + D 级缺失项），got %d 次:\n%s", n, sqlText)
 	}
 	if !strings.Contains(sqlText, "-- t · 缺表") {
 		t.Errorf("各段应带「表名 · 差异说明」注释分隔，got:\n%s", sqlText)
 	}
 	// 生成文本可被拆句器逐条拆分（执行器依赖）
-	if n := len(SplitStatements(sqlText)); n < 4 {
-		t.Errorf("生成 SQL 应可拆出 ≥4 条语句（建表2+索引2+ALTER），got %d", n)
+	if n := len(SplitStatements(sqlText)); n < 3 {
+		t.Errorf("生成 SQL 应可拆出 ≥3 条语句（建表+索引+ALTER），got %d", n)
+	}
+}
+
+// TestDiffTableTableLevelKeyColumns 表级 PRIMARY KEY/UNIQUE 约束列缺失应判 C 级（非 B 自动补列）：
+// mysql 表级 `UNIQUE KEY uk_x (ip)` 不产出 ColumnDef，误判 B 会静默丢失唯一约束。
+func TestDiffTableTableLevelKeyColumns(t *testing.T) {
+	ddl := `CREATE TABLE {table} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  ip TEXT,
+  UNIQUE KEY uk_ip (ip)
+)`
+	items := DiffTable(DiffInput{
+		Table:       "t",
+		ExpectedDDL: ddl,
+		ActualCols:  []CatalogColumn{{Name: "id", TypeFull: "INTEGER", Nullable: "NO"}},
+	})
+	var ipItem *DiffItem
+	for i := range items {
+		if items[i].Object == "ip" {
+			ipItem = &items[i]
+		}
+	}
+	if ipItem == nil {
+		t.Fatalf("缺 ip 列应产出差异项，got: %+v", items)
+	}
+	if ipItem.Level != "C" || ipItem.Auto {
+		t.Errorf("表级 UNIQUE 约束列缺失应判 C 级需人工，got: %+v", ipItem)
 	}
 }
 

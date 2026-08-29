@@ -165,3 +165,4 @@
 
 - 2026-08-29 定稿：初稿至定稿共八轮评审（枚举系统审计、专用 ban 端点、决策 6-14 拍板、state.js 断言修正等）的结论已全部合并进正文，过程记录不再保留；开放问题清零。
 - 2026-08-29 实施收尾（A8）：A1-A8 全部完成并验证——数据层 warn_times 列与 block_type 0/11 枚举（三方言 + 数据字典同步）、自动拉黑引擎（`SHIELD_AUTO_BAN_*` 四配置）、新端点 sync_file / ban / jail、列表 sort 排序、拦截明细 in_blacklist、前端黑白名单/封禁弹窗/小黑屋/排序全套交互；文档同步完成（CONFIGURATION / webui-api / webui / DATA_DICT 终核一致）。
+- 2026-08-30 验收修订：新增/导入显式 block_type 越界提前回 400（原落 mgmt 层通用错误被兜成 500）；列表/小黑屋行归一化补齐 NULL 列默认键（部分驱动 NULL 列整键缺失，响应字段集合不稳定）；小黑屋空态 rows 回 [] 非 null；自动拉黑引擎改无条件启动（原仅装配时 Enabled() 才 Start，false 启动后运行期热更 true 永不生效，与热更承诺矛盾）；引擎配置读取改经 conf.List() 持锁快照（消除与热更写入的数据竞争）；RestoreBan 的 warn_times 改 SQL 侧原子自增（多写方并发安全）；title 入库前截断至 64 字符（VARCHAR(64) 列宽，MySQL 严格模式超长报错）。功能验收（真服务 + 真库 mysql/pg 各 27 项断言：block_type 0/11 校验、导入幂等、sort 白名单、ban 三态、warn_times 转永久、小黑屋口径、sync_file、in_blacklist）全部通过。

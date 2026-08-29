@@ -106,14 +106,17 @@ func DiffTable(in DiffInput) []DiffItem {
 	for _, c := range in.ActualCols {
 		actual[c.Name] = c
 	}
+	// 表级 PRIMARY KEY/UNIQUE 约束涉及的列（mysql 表级 UNIQUE KEY 等不产出 ColumnDef，
+	// 缺列若按 B 级自动补列会静默丢失约束，须降 C 级需人工）。
+	keyCols := ParseTableKeyColumns(in.ExpectedDDL)
 	for _, e := range expected {
 		a, ok := actual[e.Name]
 		if !ok {
 			// C：缺 PK/UNIQUE/自增列（SQLite 不可 ADD，不生成）；否则 B 自动补列
-			if e.IsPK || e.IsAutoInc || strings.Contains(strings.ToUpper(e.Raw), "UNIQUE") {
+			if e.IsPK || e.IsUnique || e.IsAutoInc || keyCols[strings.ToLower(e.Name)] {
 				items = append(items, DiffItem{Level: "C", Auto: false, Table: in.Table, Object: e.Name,
 					Expected: e.Raw, Actual: "列不存在",
-					Note: "缺主键/唯一/自增列：SQLite 不支持 ADD 相关约束、跨方言不可靠，需人工处理（建议重建表迁移数据）"})
+					Note: "缺主键/唯一/自增列（含表级约束列）：SQLite 不支持 ADD 相关约束、跨方言不可靠，需人工处理（建议重建表迁移数据）"})
 			} else {
 				items = append(items, DiffItem{Level: "B", Auto: true, Table: in.Table, Object: e.Name,
 					Expected: e.Raw, Actual: "列不存在",
@@ -167,7 +170,7 @@ func DiffTable(in DiffInput) []DiffItem {
 			if !actualIdx[name] {
 				items = append(items, DiffItem{Level: "D", Auto: true, Table: in.Table, Object: name,
 					Expected: name, Actual: "索引不存在",
-					Note: "缺索引：可自动创建（建索引脚本原文，幂等 IF NOT EXISTS；MySQL 重复执行报 Duplicate key 属正常容错）"})
+					Note: "缺索引：可自动创建（仅生成缺失索引的单条语句，不影响已有索引）"})
 			}
 		}
 	}
@@ -344,23 +347,18 @@ func joinStatements(txt string) string {
 }
 
 // GenerateSQL 把自动项（A/B/D）拼成可执行 SQL 文本（各段带 `-- 表名 · 差异说明` 注释分隔）。
-// A = 建表脚本原文（{table} 已替换）；B = ALTER TABLE ADD COLUMN <Raw>；D = 建索引脚本原文。
+// A = 建表脚本原文（{table} 已替换）；B = ALTER TABLE ADD COLUMN <Raw>；
+// D = 仅缺失索引的单条 CREATE INDEX（整份脚本重放会在已有索引处报 Duplicate key，
+// 配合执行器「遇错即停」会导致剩余索引永远补不齐，故必须逐索引生成）。
 func GenerateSQL(items []DiffItem, specs []TableSpec, source SQLSource) (string, error) {
 	specByTable := map[string]TableSpec{}
 	for _, s := range specs {
 		specByTable[s.Table] = s
 	}
-	dEmitted := map[string]bool{} // D 级按表去重：索引脚本一份含全部索引，逐条生成会重复建索引语句
 	var b strings.Builder
 	for _, it := range items {
 		if !it.Auto {
 			continue
-		}
-		if it.Level == "D" {
-			if dEmitted[it.Table] {
-				continue
-			}
-			dEmitted[it.Table] = true
 		}
 		spec, ok := specByTable[it.Table]
 		if !ok {
@@ -374,6 +372,15 @@ func GenerateSQL(items []DiffItem, specs []TableSpec, source SQLSource) (string,
 				return "", fmt.Errorf("db: 读取建表脚本 %s 失败: %w", spec.CreateScript, err)
 			}
 			stmt = joinStatements(strings.ReplaceAll(txt, "{table}", it.Table))
+			// 建表附带配套索引（与组件 EnsureTable「建表+索引」同语义）：
+			// 只生成建表原文会导致新库一轮同步后仍缺全部索引，需二次检查才能补齐。
+			if spec.IndexScript != "" {
+				idx, err := source.SQL(spec.IndexScript)
+				if err != nil {
+					return "", fmt.Errorf("db: 读取索引脚本 %s 失败: %w", spec.IndexScript, err)
+				}
+				stmt += "\n" + joinStatements(strings.ReplaceAll(idx, "{table}", it.Table))
+			}
 		case "B":
 			stmt = fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s;", it.Table, it.Expected)
 		case "D":
@@ -384,11 +391,38 @@ func GenerateSQL(items []DiffItem, specs []TableSpec, source SQLSource) (string,
 			if err != nil {
 				return "", fmt.Errorf("db: 读取索引脚本 %s 失败: %w", spec.IndexScript, err)
 			}
-			stmt = joinStatements(strings.ReplaceAll(txt, "{table}", it.Table))
+			stmts, err := indexStatementMap(txt, it.Table)
+			if err != nil {
+				return "", err
+			}
+			s, ok := stmts[it.Object]
+			if !ok {
+				return "", fmt.Errorf("db: 索引脚本中未找到索引 %s 的建索引语句，请人工检查脚本", it.Object)
+			}
+			stmt = s
 		default:
 			return "", fmt.Errorf("db: 差异级别 %s 不支持自动生成 SQL", it.Level)
 		}
 		fmt.Fprintf(&b, "-- %s · %s\n%s\n\n", it.Table, it.Note, stmt)
 	}
 	return b.String(), nil
+}
+
+// indexStatementMap 把建索引脚本按语句拆开，归一为「索引名 → 单条带分号语句」映射
+// （{table} 已替换；一条语句声明多个索引时映射到每个名字，生成端按已发出去重）。
+func indexStatementMap(indexScript, table string) (map[string]string, error) {
+	joined := joinStatements(strings.ReplaceAll(indexScript, "{table}", table))
+	out := map[string]string{}
+	emitted := map[string]bool{}
+	for _, stmt := range SplitStatements(joined) {
+		if emitted[stmt] {
+			continue
+		}
+		emitted[stmt] = true
+		s := strings.TrimRight(strings.TrimSpace(stmt), ";") + ";"
+		for _, name := range ParseIndexNames(stmt) {
+			out[name] = s
+		}
+	}
+	return out, nil
 }

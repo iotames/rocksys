@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -46,9 +47,11 @@ const autoBanMinInterval = time.Minute
 type AutoBanEngine struct {
 	shield *Shield        // 拦截快照（白名单过滤）+ 黑名单 store（封禁三态）
 	rec    *EventRecorder // 数据访问层（edb/sqlText/tableName 均复用，nil 引擎不可用）
+	cfgMgr conf.Manager   // 配置管理器（readConfig 经 List() 持锁快照读，nil 回落注册指针字段）
 
-	// 配置项字段（构造时经 conf.Manager.Register 注册，热更直接写入；
-	// 每轮循环开始读取最新值）。
+	// 配置项注册存储（构造时经 conf.Manager.Register 注册，热更由配置中心直写；
+	// ★ 运行期读取一律走 readConfig() 的 List() 持锁快照——配置中心写指针与引擎
+	// goroutine 读指针之间无同步，直读构成 data race，故本组字段仅作注册目标与测试注入口）。
 	enabled   bool   // SHIELD_AUTO_BAN_ENABLED：引擎开关（false 空转）
 	threshold int    // SHIELD_AUTO_BAN_THRESHOLD：窗口内拦截次数阈值
 	window    string // SHIELD_AUTO_BAN_WINDOW：统计窗口（Go duration，如 10m）
@@ -65,6 +68,7 @@ func NewAutoBanEngine(cfgMgr conf.Manager, s *Shield, rec *EventRecorder) *AutoB
 	e := &AutoBanEngine{
 		shield: s,
 		rec:    rec,
+		cfgMgr: cfgMgr,
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
 	}
@@ -91,8 +95,41 @@ func NewAutoBanEngine(cfgMgr conf.Manager, s *Shield, rec *EventRecorder) *AutoB
 	return e
 }
 
-// Enabled 返回引擎开关当前值（main.go 装配判断是否启动用；随配置热更实时反映）。
-func (e *AutoBanEngine) Enabled() bool { return e.enabled }
+// Enabled 返回引擎开关当前值（诊断用；引擎自身每轮经 readConfig 读取，不依赖本方法）。
+func (e *AutoBanEngine) Enabled() bool { return e.readConfig().enabled }
+
+// autoBanCfg 一轮扫描的配置快照（readConfig 产出，runOnce 单轮内使用同一份）。
+type autoBanCfg struct {
+	enabled   bool
+	threshold int
+	window    string
+	ttl       string
+}
+
+// readConfig 读取配置快照：优先经 conf.Manager.List()（内部持锁，与热更写入同步，
+// 消除直读注册指针的 data race）；List 未覆盖的项（如测试 fake 不实现 List）回落
+// 注册指针字段。
+func (e *AutoBanEngine) readConfig() autoBanCfg {
+	c := autoBanCfg{enabled: e.enabled, threshold: e.threshold, window: e.window, ttl: e.ttl}
+	if e.cfgMgr == nil {
+		return c
+	}
+	for _, it := range e.cfgMgr.List() {
+		switch it.Key {
+		case "SHIELD_AUTO_BAN_ENABLED":
+			c.enabled = strings.EqualFold(strings.TrimSpace(it.Current), "true")
+		case "SHIELD_AUTO_BAN_THRESHOLD":
+			if n, err := strconv.Atoi(strings.TrimSpace(it.Current)); err == nil && n > 0 {
+				c.threshold = n
+			}
+		case "SHIELD_AUTO_BAN_WINDOW":
+			c.window = it.Current
+		case "SHIELD_AUTO_BAN_TTL":
+			c.ttl = it.Current
+		}
+	}
+	return c
+}
 
 // Start 启动引擎循环（幂等）。循环先立即执行一轮（便于装配后尽快生效），
 // 此后按"窗口/3（下限 1 分钟）"周期执行，每轮开始读取配置最新值。
@@ -137,7 +174,8 @@ func (e *AutoBanEngine) runLoop() {
 	defer close(e.doneCh)
 	e.runOnce() // 启动即执行一轮（装配后尽快生效）
 	for {
-		window, _ := parseAutoBanDuration(e.window) // 非法回落 0 → autoBanInterval 回落 1 分钟
+		cfg := e.readConfig()
+		window, _ := parseAutoBanDuration(cfg.window) // 非法回落 0 → autoBanInterval 回落 1 分钟
 		timer := time.NewTimer(autoBanInterval(window))
 		select {
 		case <-e.stopCh:
@@ -159,21 +197,22 @@ type banCandidate struct {
 // runOnce 执行一轮扫描：读配置 → 查候选 → 聚合 → 白名单过滤 → 四态处理 → 有变更重建快照。
 // 开关关闭直接返回（空转，零 DB 开销）；各环节失败仅告警，下轮重试。
 func (e *AutoBanEngine) runOnce() {
-	if !e.enabled {
+	cfg := e.readConfig()
+	if !cfg.enabled {
 		return // 开关关闭：空转（热更开启后下一轮自动生效）
 	}
-	threshold := int64(e.threshold)
+	threshold := int64(cfg.threshold)
 	if threshold <= 0 {
 		threshold = 50 // 配置异常兜底（与注册默认值一致）
 	}
-	window, err := parseAutoBanDuration(e.window)
+	window, err := parseAutoBanDuration(cfg.window)
 	if err != nil || window <= 0 {
-		log.Warn("shield: 自动拉黑窗口配置非法，本轮跳过", "window", e.window)
+		log.Warn("shield: 自动拉黑窗口配置非法，本轮跳过", "window", cfg.window)
 		return
 	}
-	ttl, err := parseAutoBanDuration(e.ttl)
+	ttl, err := parseAutoBanDuration(cfg.ttl)
 	if err != nil || ttl < 0 {
-		log.Warn("shield: 自动拉黑封禁时长配置非法，本轮跳过", "ttl", e.ttl)
+		log.Warn("shield: 自动拉黑封禁时长配置非法，本轮跳过", "ttl", cfg.ttl)
 		return
 	}
 	if e.rec == nil || e.shield == nil {
@@ -198,8 +237,8 @@ func (e *AutoBanEngine) runOnce() {
 	if len(cands) == 0 {
 		return
 	}
-	// title 按设计定式：自动拉黑：{window}内拦截≥{threshold}次
-	title := fmt.Sprintf("自动拉黑：%s内拦截≥%d次", strings.TrimSpace(e.window), threshold)
+	// title 按设计定式：自动拉黑：{window}内拦截≥{threshold}次（截断至列宽内，见 truncateTitle）。
+	title := truncateTitle(fmt.Sprintf("自动拉黑：%s内拦截≥%d次", strings.TrimSpace(cfg.window), threshold), 0)
 	changed := false
 	now := time.Now()
 	for _, c := range cands {
@@ -223,7 +262,7 @@ func (e *AutoBanEngine) runOnce() {
 			}
 			changed = true
 			log.Info("shield: 自动拉黑新增封禁", "ip", c.IP,
-				"block_type", int(c.TopType), "hits", c.Total, "ttl", e.ttl)
+				"block_type", int(c.TopType), "hits", c.Total, "ttl", cfg.ttl)
 		case err != nil:
 			log.Warn("shield: 自动拉黑查询条目失败", "ip", c.IP, "err", err.Error())
 		case banEntryActive(cur, now):

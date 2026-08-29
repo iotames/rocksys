@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/iotames/easydb"
 	"github.com/iotames/easyserver"
@@ -68,6 +69,7 @@ type AdminServer struct {
 	sqls         db.SQLSource       // 用户存储 SQL 脚本源（dataDB，可 nil）
 	dataDB       *db.DB             // 表结构同步数据连接（SetTableSpecs 注入，可 nil = 功能不可用）
 	tableSpecs   []db.TableSpec     // 表结构同步表清单（装配处单一事实来源，SetTableSpecs 注入）
+	execMu       sync.Mutex         // /admin/db/exec 执行互斥：防并发 DDL 交叉执行产生不可预期状态
 	users        *userStore         // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
 	auth         *adminAuth         // 管理接口鉴权器
 	loginLimiter *loginLimiter      // 登录失败限流器（按 IP）

@@ -6,6 +6,7 @@ package shield
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -329,5 +330,52 @@ func TestIPList_BlockTypeBoundaries(t *testing.T) {
 	w = doReq(t, h.Blacklist(), http.MethodGet, "/admin/shield/blacklist?block_type=12", "")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("block_type=12 code=%d, want 400", w.Code)
+	}
+}
+
+// TestTruncateTitle title 超长截断（VARCHAR(64) 列宽；MySQL 严格模式下超长写入直接报错）。
+func TestTruncateTitle(t *testing.T) {
+	long := strings.Repeat("测", 100)
+	if got := truncateTitle(long, 0); len([]rune(got)) != 64 {
+		t.Errorf("超长 title 应截断到 64 字符, got %d", len([]rune(got)))
+	}
+	// 预留转永久后缀空间：截断 + 后缀合计仍 ≤ 64
+	base := truncateTitle(long, len([]rune(banPermanentTitleSuffix))) + banPermanentTitleSuffix
+	if len([]rune(base)) > 64 {
+		t.Errorf("截断 + 转永久后缀应 ≤ 64 字符, got %d", len([]rune(base)))
+	}
+	if got := truncateTitle("短标题", 0); got != "短标题" {
+		t.Errorf("未超长不应改动: %q", got)
+	}
+}
+
+// TestRestoreBanTitleOverlong 超长 title 的条目续封转永久不报错且 title 收敛到列宽内。
+func TestRestoreBanTitleOverlong(t *testing.T) {
+	black, _ := newTestListStore(t, true)
+	now := time.Now()
+	id, err := black.BanInsert("10.9.9.9", strings.Repeat("超长标题", 40), BlockRateLimit, timePtr(now.Add(time.Hour)), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// warn_times 直改到 4，续封一次即达 5 → 转永久（走 title 追加后缀路径）。
+	if _, err := black.edb.Exec("UPDATE ip_blacklist SET warn_times = 4, deleted_at = ? WHERE id = ?", now.UTC(), id); err != nil {
+		t.Fatal(err)
+	}
+	perm, err := black.RestoreBan("10.9.9.9", timePtr(now.Add(10*time.Hour)), now)
+	if err != nil {
+		t.Fatalf("超长 title 续封不应报错: %v", err)
+	}
+	if !perm {
+		t.Error("warn=5 应转永久")
+	}
+	e, err := black.GetByIP("10.9.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len([]rune(e.Title)) > 64 {
+		t.Errorf("title 应收敛到 64 字符内, got %d", len([]rune(e.Title)))
+	}
+	if !strings.Contains(e.Title, banPermanentTitleSuffix) {
+		t.Errorf("转永久标记应保留: %q", e.Title)
 	}
 }

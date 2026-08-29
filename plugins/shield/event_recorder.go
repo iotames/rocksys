@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -33,6 +34,9 @@ import (
 )
 
 // ── 内存滑动窗口计数器 ────────────────────────────────────────────────
+
+// sqlIdentRe 合法 SQL 标识符（SHIELD_EVENT_TABLE 配置值兜底校验用）。
+var sqlIdentRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // 计数器窗口：1 分钟 × 60 桶（每桶 1s），与 obs.metrics 滑动窗口同构（本实现无锁）。
 const (
@@ -235,7 +239,13 @@ func NewEventRecorder(cfgMgr conf.Manager, dataDB *db.DB) *EventRecorder {
 	if err := cfgMgr.Register(&table, "SHIELD_EVENT_TABLE", "shield_event", "拦截事件表名", "修改后需重启服务生效"); err != nil {
 		log.Warn("shield: 注册拦截事件配置项失败", "name", "SHIELD_EVENT_TABLE", "err", err.Error())
 	} else if table != "" {
-		r.tableName = table
+		// 标识符合法性兜底：表名会直拼进 catalog 查询与建表/查询脚本（{table} 占位符），
+		// 非法值（空格/引号/连字符等）会导致 SQL 语法错误且报错难懂，此处拦截回落默认表名。
+		if sqlIdentRe.MatchString(table) {
+			r.tableName = table
+		} else {
+			log.Warn("shield: SHIELD_EVENT_TABLE 配置值不是合法 SQL 标识符，回落默认表名 shield_event", "table", table)
+		}
 	}
 	if err := cfgMgr.Register(&bufRows, "SHIELD_EVENT_BUFFER", "1024", "拦截事件落库缓冲队列长度（超出丢弃并计数，不阻塞请求）", "修改后需重启服务生效"); err != nil {
 		log.Warn("shield: 注册拦截事件配置项失败", "name", "SHIELD_EVENT_BUFFER", "err", err.Error())

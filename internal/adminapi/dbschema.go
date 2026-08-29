@@ -60,16 +60,25 @@ func (s *AdminServer) handleDBSchema(w http.ResponseWriter, r *http.Request) {
 	}, http.StatusOK)
 }
 
+// dbExecMaxBody /admin/db/exec 请求体上限（DDL 文本远小于此，防误传大负载）。
+const dbExecMaxBody = 1 << 20
+
 // handleDBExec 执行 SQL：拆句逐条执行、遇错即停；返回逐条结果与已执行/失败计数。
+// 进程内互斥：DDL 无法回滚，两个会话并发执行会交叉产生不可预期状态，后者直接拒绝。
 func (s *AdminServer) handleDBExec(w http.ResponseWriter, r *http.Request) {
 	if s.dataDB == nil {
 		http.Error(w, "SQL 执行不可用：数据连接未装配", http.StatusServiceUnavailable)
 		return
 	}
+	if !s.execMu.TryLock() {
+		http.Error(w, "已有另一批 SQL 正在执行（DDL 不可并发交叉），请等待其完成后再试；可刷新表结构检查确认当前状态", http.StatusConflict)
+		return
+	}
+	defer s.execMu.Unlock()
 	var body struct {
 		SQL string `json:"sql"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.SQL) == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, dbExecMaxBody)).Decode(&body); err != nil || strings.TrimSpace(body.SQL) == "" {
 		http.Error(w, "请求体须为 {\"sql\": \"...\"} 且内容非空（输入框为空时「执行SQL」按钮应置灰）", http.StatusBadRequest)
 		return
 	}
@@ -82,7 +91,7 @@ func (s *AdminServer) handleDBExec(w http.ResponseWriter, r *http.Request) {
 	executed, failed := 0, 0
 	for i, stmt := range stmts {
 		item := map[string]any{"sql": stmt, "ok": false}
-		res, err := s.dataDB.EasyDB().GetSqlDB().Exec(stmt)
+		res, err := s.dataDB.EasyDB().GetSqlDB().ExecContext(r.Context(), stmt)
 		if err != nil {
 			item["error"] = err.Error()
 			results = append(results, item)

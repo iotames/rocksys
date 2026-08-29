@@ -197,6 +197,7 @@ func TestPostgresIPListWhitelist(t *testing.T) {
 
 // TestPostgresAttackArchive 攻击证据归档表：本期仅建表 + 索引幂等（走生产装配函数）。
 func TestPostgresAttackArchive(t *testing.T) {
+	lockSharedDevDB(t) // devdb 共享库互斥：固定表名 attack_archive 与 internal/db 全清单验收测试互踩
 	d := pgTestDB(t)
 	t.Cleanup(func() { _, _ = d.EasyDB().Exec("DROP TABLE IF EXISTS attack_archive_pgtest") })
 

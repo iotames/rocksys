@@ -212,6 +212,7 @@ func (s *IPListStore) BanInsert(ip, title string, blockType BlockType, expiresAt
 func (s *IPListStore) insertWarnTimes(ip, title string, blockType BlockType, expiresAt *time.Time, warnTimes int, now time.Time) (int64, error) {
 	nowUTC := now.UTC()
 	bt := int(blockType)
+	title = truncateTitle(title, 0)
 	if !s.isBlack {
 		bt, expiresAt = 1, nil // 白名单无 block_type/expires_at 列
 	}
@@ -263,6 +264,7 @@ func (s *IPListStore) Update(id int64, title string, blockType BlockType, expire
 		return err
 	}
 	nowUTC := now.UTC()
+	title = truncateTitle(title, 0)
 	if s.isBlack {
 		_, err = s.edb.Exec(upd, title, int(blockType), utcOrNil(expiresAt), nowUTC, id)
 	} else {
@@ -306,6 +308,7 @@ func (s *IPListStore) Import(ips []string, title string, blockType BlockType, no
 		return 0, 0, err
 	}
 	nowUTC := now.UTC()
+	title = truncateTitle(title, 0)
 	for _, line := range ips {
 		ip := strings.TrimSpace(line)
 		if ip == "" || strings.HasPrefix(ip, "#") {
@@ -447,10 +450,29 @@ const (
 	banPermanentTitleSuffix = "（累计封禁达 5 次转永久）"
 )
 
+// ipTitleMaxRunes title 列宽上限（三方言建表脚本均为 VARCHAR(64)，按字符计）。
+const ipTitleMaxRunes = 64
+
+// truncateTitle 截断 title 至列宽内（utf-8 按字符计；reserve>0 为后续要追加的标记
+// 如转永久后缀预留空间）。超长不截断会在 MySQL 严格模式下 INSERT/UPDATE 直接报错。
+func truncateTitle(title string, reserve int) string {
+	max := ipTitleMaxRunes - reserve
+	if max < 1 {
+		max = 1
+	}
+	rs := []rune(strings.TrimSpace(title))
+	if len(rs) <= max {
+		return string(rs)
+	}
+	return string(rs[:max])
+}
+
 // RestoreBan 封禁恢复续封（软删/过期条目拉回小黑屋）：清 deleted_at、expires_at 按
-// 调用方时长重设（人工=所选时长 / 自动=TTL×10）、warn_times+1。
+// 调用方时长重设（人工=所选时长 / 自动=TTL×10）、warn_times 原子自增（SQL 侧
+// warn_times = warn_times + 1，消除与并发写方的读-改-写竞态）。
 // +1 后 warn_times ≥ 5 且本次为限时封禁（expiresAt 非 nil）→ 转永久：expires_at 置 NULL
-// 且 title 追加转永久标记，返回 toPermanent=true 供端点提示。
+// 且 title 追加转永久标记，返回 toPermanent=true 供端点提示（判定基于读取时刻的
+// warn_times 快照，极端并发下可能延后一轮追加标记，不影响封禁正确性）。
 // ip 无记录返回 ErrIPNotExists；白名单调用报错。
 func (s *IPListStore) RestoreBan(ip string, expiresAt *time.Time, now time.Time) (toPermanent bool, err error) {
 	if !s.isBlack {
@@ -472,14 +494,14 @@ func (s *IPListStore) RestoreBan(ip string, expiresAt *time.Time, now time.Time)
 		toPermanent = true
 		exp = nil
 		if !strings.Contains(title, banPermanentTitleSuffix) {
-			title += banPermanentTitleSuffix
+			title = truncateTitle(title, len([]rune(banPermanentTitleSuffix))) + banPermanentTitleSuffix
 		}
 	}
 	upd, err := s.sqlText(s.scriptName("restore_ban"))
 	if err != nil {
 		return false, err
 	}
-	if _, err := s.edb.Exec(upd, utcOrNil(exp), warn, title, now.UTC(), cur.ID); err != nil {
+	if _, err := s.edb.Exec(upd, utcOrNil(exp), truncateTitle(title, 0), now.UTC(), cur.ID); err != nil {
 		return false, fmt.Errorf("shield: 封禁续封 %s 失败（ip=%s）: %w", s.table, ip, err)
 	}
 	return toPermanent, nil
@@ -502,6 +524,7 @@ func (s *IPListStore) Jail(now time.Time, limit int) (rows []map[string]any, tot
 	if err != nil {
 		return nil, 0, err
 	}
+	rows = []map[string]any{} // 空态也回 []（非 null），前端表格无需判空
 	if err := s.edb.GetMany(sel, &rows, now.UTC(), limit); err != nil {
 		return nil, 0, fmt.Errorf("shield: 查询 %s 小黑屋失败: %w", s.table, err)
 	}
@@ -535,7 +558,14 @@ const (
 )
 
 // normalizeListRow 列表行归一化：数值列 → int64；时间列 nil → ""、否则 RFC3339；其余 → string。
+// ★ NULL 列在驱动层可能整键缺失（部分扫描器跳过 NULL 列），先补空串默认键，
+// 保证响应字段集合稳定（前端/调用方不必判键存在性）。
 func normalizeListRow(row map[string]any, isBlack bool) {
+	for _, k := range []string{"expires_at", "deleted_at", "created_at", "updated_at"} {
+		if _, ok := row[k]; !ok {
+			row[k] = ""
+		}
+	}
 	for k, v := range row {
 		switch k {
 		case "id", "block_type", "hit_count", "warn_times":

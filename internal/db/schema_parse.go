@@ -29,17 +29,18 @@ type TableSpec struct {
 
 // ColumnDef 期望结构的单列定义（由建表 DDL 解析得出）。
 type ColumnDef struct {
-	Name    string  // 列名（剥离引号包裹）
-	Type    string  // 类型串（含括号部分，如 VARCHAR(45)）
-	NotNull bool    // 是否 NOT NULL
-	Default *string // DEFAULT 字面值（nil = 未声明默认值）
-	Raw     string  // 该列在脚本中的原始定义文本（注释已剥离），供 ADD COLUMN 原样复用（方言天然正确）
-	IsPK    bool    // 列内 PRIMARY KEY（表级约束不进入 ColumnDef）
-	IsAutoInc bool  // 自增：AUTOINCREMENT(sqlite) / AUTO_INCREMENT(mysql) / SERIAL|BIGSERIAL(pg) / GENERATED ... AS IDENTITY(pg)
+	Name      string  // 列名（剥离引号包裹）
+	Type      string  // 类型串（含括号部分，如 VARCHAR(45)）
+	NotNull   bool    // 是否 NOT NULL
+	Default   *string // DEFAULT 字面值（nil = 未声明默认值）
+	Raw       string  // 该列在脚本中的原始定义文本（注释已剥离），供 ADD COLUMN 原样复用（方言天然正确）
+	IsPK      bool    // 列内 PRIMARY KEY（表级约束不进入 ColumnDef）
+	IsUnique  bool    // 列内 UNIQUE（精确关键字匹配；表级 UNIQUE KEY 不进入 ColumnDef）
+	IsAutoInc bool    // 自增：AUTOINCREMENT(sqlite) / AUTO_INCREMENT(mysql) / SERIAL|BIGSERIAL(pg) / GENERATED ... AS IDENTITY(pg)
 }
 
 // 约束关键字：列定义块中以上列关键字开头的行是表级约束，不作为列解析
-//（mysql 的 UNIQUE KEY uk_x (ip)、pg/sqlite 的表级 PRIMARY KEY(a,b) 等）。
+// （mysql 的 UNIQUE KEY uk_x (ip)、pg/sqlite 的表级 PRIMARY KEY(a,b) 等）。
 var tableConstraintKeywords = map[string]bool{
 	"PRIMARY": true, "UNIQUE": true, "KEY": true, "INDEX": true,
 	"CONSTRAINT": true, "CHECK": true, "EXCLUDE": true, "FOREIGN": true,
@@ -159,19 +160,45 @@ func (st *tokenState) step(s string, i int) bool {
 // 表级约束（PRIMARY KEY(a,b) / UNIQUE KEY / CHECK 等）不产出 ColumnDef；
 // mysql 表尾选项（) DEFAULT CHARSET=... COMMENT='...'）不参与解析。
 func ParseCreateTable(ddl string) ([]ColumnDef, error) {
+	block, err := createTableBlock(ddl)
+	if err != nil {
+		return nil, err
+	}
+
+	var cols []ColumnDef
+	for _, part := range splitTopLevel(block, ',') {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		first, rest := cutToken(part)
+		key := strings.ToUpper(first)
+		if tableConstraintKeywords[key] {
+			continue // 表级约束行
+		}
+		cols = append(cols, parseColumnDef(strings.Trim(first, "`\""), rest, part))
+	}
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("db: 建表 DDL 未解析出任何列定义")
+	}
+	return cols, nil
+}
+
+// createTableBlock 提取 CREATE TABLE 列定义括号内的文本（括号深度 + 字符串感知，
+// COMMENT '...(...)...' 内的括号不计数）。
+func createTableBlock(ddl string) (string, error) {
 	clean := stripComments(ddl)
 	upper := strings.ToUpper(clean)
 	start := strings.Index(upper, "CREATE TABLE")
 	if start < 0 {
-		return nil, fmt.Errorf("db: DDL 中未找到 CREATE TABLE 语句")
+		return "", fmt.Errorf("db: DDL 中未找到 CREATE TABLE 语句")
 	}
 	popen := strings.IndexByte(clean[start:], '(')
 	if popen < 0 {
-		return nil, fmt.Errorf("db: CREATE TABLE 语句缺少列定义括号")
+		return "", fmt.Errorf("db: CREATE TABLE 语句缺少列定义括号")
 	}
 	popen += start
 
-	// 括号深度 + 字符串感知扫描列定义块（COMMENT '...(...)...' 内的括号不计数）
 	st := &tokenState{}
 	depth := 0
 	pclose := -1
@@ -193,27 +220,80 @@ func ParseCreateTable(ddl string) ([]ColumnDef, error) {
 		}
 	}
 	if pclose < 0 {
-		return nil, fmt.Errorf("db: CREATE TABLE 列定义括号不闭合")
+		return "", fmt.Errorf("db: CREATE TABLE 列定义括号不闭合")
 	}
-	block := clean[popen+1 : pclose]
+	return clean[popen+1 : pclose], nil
+}
 
-	var cols []ColumnDef
+// ParseTableKeyColumns 提取表级 PRIMARY KEY / UNIQUE 约束涉及的列名集合（小写、剥离引号）。
+// 背景：mysql 表级 `UNIQUE KEY uk_x (ip)`、pg/sqlite 表级 `PRIMARY KEY(a,b)` 不产出
+// ColumnDef，若缺列被判为 B 级自动补列，唯一/主键约束会静默丢失——调用方（schema_diff）
+// 据此把命中列降为 C 级需人工。返回集合为空 = 无表级键约束。
+func ParseTableKeyColumns(ddl string) map[string]bool {
+	block, err := createTableBlock(ddl)
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
 	for _, part := range splitTopLevel(block, ',') {
 		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
 		first, rest := cutToken(part)
 		key := strings.ToUpper(first)
-		if tableConstraintKeywords[key] {
-			continue // 表级约束行
+		if key != "PRIMARY" && key != "UNIQUE" && key != "CONSTRAINT" {
+			continue // 仅表级主键/唯一约束（KEY/INDEX 为纯索引，CHECK/EXCLUDE/FOREIGN 与列缺失无关）
 		}
-		cols = append(cols, parseColumnDef(strings.Trim(first, "`\""), rest, part))
+		if key == "CONSTRAINT" {
+			// CONSTRAINT <name> PRIMARY KEY(...)/UNIQUE(...)：看约束类型关键字
+			up := strings.ToUpper(rest)
+			if !strings.Contains(up, "PRIMARY KEY") && !strings.Contains(up, "UNIQUE") {
+				continue
+			}
+		}
+		// 取该约束段的第一个顶层括号组（列清单）。
+		popen := strings.IndexByte(part, '(')
+		if popen < 0 {
+			continue
+		}
+		st := &tokenState{}
+		depth := 0
+		end := -1
+		for i := popen; i < len(part); i++ {
+			if !st.step(part, i) {
+				continue
+			}
+			switch part[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					end = i
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			continue
+		}
+		for _, c := range strings.Split(part[popen+1:end], ",") {
+			c = strings.TrimSpace(c)
+			if c == "" {
+				continue
+			}
+			// 剥离引号与长度/排序修饰（如 col(191) DESC）后取列名。
+			c = strings.Trim(c, "`\" ")
+			if i := strings.IndexByte(c, '('); i >= 0 {
+				c = c[:i]
+			}
+			c = strings.ToLower(strings.TrimSpace(strings.Trim(c, "`\" ")))
+			if c != "" {
+				out[c] = true
+			}
+		}
 	}
-	if len(cols) == 0 {
-		return nil, fmt.Errorf("db: 建表 DDL 未解析出任何列定义")
-	}
-	return cols, nil
+	return out
 }
 
 // parseColumnDef 解析单列定义（name 已剥离；rest 为列名后的剩余文本；raw 为原始文本）。
@@ -238,6 +318,8 @@ func parseColumnDef(name, rest, raw string) ColumnDef {
 				col.IsPK = true
 				i++
 			}
+		case "UNIQUE":
+			col.IsUnique = true
 		case "AUTOINCREMENT", "AUTO_INCREMENT":
 			col.IsAutoInc = true
 		case "GENERATED":
@@ -309,7 +391,14 @@ func cutToken(s string) (string, string) {
 }
 
 // tokenize 按空白切 token（字符串字面量为完整单 token）。
+// 先把 Tab/换行/回车归一为空格：避免 NOT\tNULL 粘连、DECIMAL(10,\n2) 拆断等误切。
 func tokenize(s string) []string {
+	s = strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return ' '
+		}
+		return r
+	}, s)
 	var out []string
 	for _, p := range splitTopLevel(s, ' ') {
 		if p = strings.TrimSpace(p); p != "" {

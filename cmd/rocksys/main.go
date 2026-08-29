@@ -329,12 +329,10 @@ func buildServer(args []string) (*Server, error) {
 		}
 
 		// IP 黑名单增强 STEP A4：自动拉黑引擎（配置项无条件注册，default.env 全量快照恒含）。
-		// SHIELD_AUTO_BAN_ENABLED=true 时随 shield 生命周期启动；运行期开关热更关闭则循环空转
-		// （每轮开始读配置最新值，开关/阈值/窗口/TTL 均支持热更）。
+		// 引擎无条件启动（Start 移至装配完成后）：disabled 时循环空转（零 DB 开销），
+		// 运行期开关热更 true/false 均下一轮即生效（每轮开始读配置最新值，开关/阈值/窗口/TTL 均支持热更）。
+		// 若仅 Enabled() 时才 Start，false 启动后运行期改 true 永远不会启动 goroutine。
 		autoBan = shield.NewAutoBanEngine(cfgMgr, shieldMw, recorder)
-		if autoBan.Enabled() {
-			autoBan.Start()
-		}
 	}
 
 	mgr.RegisterMiddleware(obs.New(cfgMgr, dataDB)) // 访问日志/指标 → chain.Tail(+ResponseHook)
@@ -543,6 +541,12 @@ func buildServer(args []string) (*Server, error) {
 	// 同步失败不阻断启动（default.env 仅兜底快照，不影响运行）。
 	if err := cfgMgr.SyncDefaultFile(); err != nil {
 		log.Warn("sync default.env", "err", err.Error())
+	}
+
+	// 自动拉黑引擎在装配全部完成后再启动：装配期配置注册与引擎读配置（conf List）
+	// 并发会构成数据竞争（easyconf 装配路径非并发安全），装配完成后仅剩持锁热更写。
+	if autoBan != nil {
+		autoBan.Start()
 	}
 
 	return &Server{

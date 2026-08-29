@@ -442,6 +442,11 @@ func (h *AdminHandler) addIPList(w http.ResponseWriter, r *http.Request, isBlack
 	if isBlack && body.BlockType == 0 {
 		body.BlockType = int(BlockManual)
 	}
+	// 显式值越界提前 400（否则落到 mgmt 层通用错误被兜成 500，参数错误不应按服务端故障处理）。
+	if isBlack && (body.BlockType < 0 || body.BlockType > int(BlockManual)) {
+		http.Error(w, "block_type 应为 0-11 的整数（0=其他；缺省 11=人工收录）", http.StatusBadRequest)
+		return
+	}
 	id, err := h.shield.AddIPList(isBlack, body.IP, body.Title, BlockType(body.BlockType), exp)
 	if err != nil {
 		writeListErr(w, isBlack, "新增", err)

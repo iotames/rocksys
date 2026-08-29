@@ -1,3 +1,5 @@
+//go:build integration
+
 // schema_sync_integration_test.go：表结构同步真库端到端集成测试（环境变量门控）。
 // PG_TEST_DSN / MYSQL_TEST_DSN 设置后运行（与 pg/mysql_integration_test.go 同门控）：
 // 旧版表 → diff（B/C/D）→ 生成 SQL → 逐条执行 → 复核零差异，验证三方言真实链路。
@@ -17,6 +19,7 @@ import (
 // runSchemaSyncTest 真库端到端同步链路（driver 方言目录名）。
 func runSchemaSyncTest(t *testing.T, driver, dsn string) {
 	t.Helper()
+	lockSharedDevDB(t) // devdb 共享库互斥：F 级全库扫描与其它包的真库建表测试互踩
 	d, err := db.Open(driver, dsn)
 	if err != nil {
 		t.Fatalf("Open(%s) err: %v", driver, err)
@@ -28,7 +31,9 @@ func runSchemaSyncTest(t *testing.T, driver, dsn string) {
 		_, _ = d.EasyDB().GetSqlDB().Exec("DROP TABLE IF EXISTS " + table)
 	}
 	cleanup()
-	t.Cleanup(cleanup)
+	// ★ defer 而非 t.Cleanup：t.Cleanup 晚于 defer d.Close() 执行，DROP 会落在
+	// 已关闭连接上被静默吞掉 → 残留一个缺唯一约束的旧版表污染共享库。
+	defer cleanup()
 
 	specs := []db.TableSpec{{Table: table, CreateScript: "ip_blacklist_create_table.sql", IndexScript: "ip_blacklist_create_index.sql"}}
 
