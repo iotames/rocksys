@@ -688,10 +688,12 @@ b, strong { font-weight: 600; }
   gap: 2px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 16px;
+  /* 极端窄屏页签溢出时仍可滚动（滚轮/拖拽），但彻底隐藏滚动槽：
+     Linux 经典滚动条下 overflow 容器即使不溢出也会画出细滚动槽，视觉污染 */
   overflow-x: auto;
-  /* 页签过多才出横向滚动：细滚动条弱化存在感，常态（数量少）无滚动条 */
-  scrollbar-width: thin;
+  scrollbar-width: none;
 }
+.tabs::-webkit-scrollbar { display: none; }
 
 .tab {
   padding: 8px 14px;
