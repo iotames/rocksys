@@ -249,3 +249,14 @@
    - 时间：sqlite `DATETIME`（文本）/ pg `TIMESTAMPTZ` / mysql `DATETIME(3)`（毫秒）；
    - 字符串长度：sqlite/pg 用无长度 `TEXT`，mysql 需显式 `VARCHAR(n)`（长度见各表）；
    - 默认值差异：mysql 部分字段无默认值（见 §2 各表方言差异备注），跨库迁移时注意。
+
+---
+
+## 5. 表结构同步（服务 → 数据库 · 表结构页）
+
+存量库的列级演进无需手工 ALTER：管理控制台「服务 → 数据库 → 表结构」页对期望与实际结构做比对，差异按 A-F 分级，自动项（缺表/缺普通列/缺索引）生成同步 SQL 经 danger 强确认后逐条执行（端点契约见 `docs/webui-api.md` §3.19；实现 `internal/db/schema_parse.go` / `schema_catalog.go` / `schema_diff.go` + `internal/adminapi/dbschema.go`）。
+
+- **期望结构权威来源 = 运行期 SQLSource**：即本文档所述 `sql/<dbtype>/` 建表/建索引脚本（外挂 `HOT_SCRIPTS_DIR/sql/` 优先、编译期内嵌兜底），与各挂件实际建表同源；外挂覆写过 sql/ 的部署，检查口径自动跟随，不使用编译期内嵌目录直读。
+- **实际结构 = 当前数据连接 catalog**：查询语句为 `sql/<dbtype>/schema_query_{columns,indexes,tables}.sql`（三方言各三份，`{table}` 占位符，支持外挂覆写，与其他 SQL 脚本同生命周期）。
+- **表清单在装配处注册**：7 张表的 `表名 ↔ 建表脚本` 对应关系在 `cmd/rocksys/main.go` 装配处（`buildTableSpecs`）注册为唯一事实来源——表名无法从脚本文件名推断（`mq_create_table.sql` 实际表名 `outbox`），一致性由 `TestTableSpecsMatchScripts` 单测防漏防漂移。
+- **`SHIELD_EVENT_TABLE` 口径**：`shield_event` 表名是可配置项（重启生效），表清单注册的是**运行期配置实值**——若自定义了表名，检查与同步均按实值进行；catalog 查询经同一 `{table}` 占位符替换，两边口径自动一致。

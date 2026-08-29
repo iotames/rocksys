@@ -87,6 +87,14 @@ xxx/
   找不到再回退编译期嵌入文件；改 SQL 无需重新编译。
 - `internal/db`：统一数据访问层，数据操作以 easydb 为主，封装 `SQLSource` 接口；
   切换数据库驱动时若 `sql/<dbtype>/` 缺脚本则直接报错。
+- `sql/<dbtype>/schema_query_*.sql`：表结构实际结构查询脚本（columns/indexes/tables，三方言各三份，
+  `{table}` 占位符，支持外挂覆写）——表结构同步的数据源之一。
+- **表结构同步链路**（「服务 → 数据库 → 表结构」页）：期望结构解析 `internal/db/schema_parse.go`
+  （DDL 解析）+ 实际结构查询 `internal/db/schema_catalog.go`（catalog，走 SQLSource 与运行时同源）+
+  差异分级与 SQL 生成 `internal/db/schema_diff.go`（A-F 分级，保守生成）→
+  管理端点 `internal/adminapi/dbschema.go`（`GET /admin/db/schema`、`POST /admin/db/exec`）→
+  前端 `webui/assets/js/views/database.js`（检查 / 差异表 / SQL 编辑器 / danger 强确认执行）；
+  表清单（`表名 ↔ 建表脚本`，文件名 ≠ 表名）在 `cmd/rocksys/main.go` 装配处注册。
 - 底座（反向代理转发引擎）**不直连业务数据库**（架构红线），本层仅服务可插拔组件（mq 等）。
 
 ## 4. ★ 生产热运维引擎（hotswap）

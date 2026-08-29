@@ -2,6 +2,7 @@
 .reasonix/
 .crush/
 .vscode/
+.zcode/
 .omo/
 .codegraph/
 .tmp-sqltest/

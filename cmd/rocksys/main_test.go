@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"rocksys/internal/hotswap"
+	sqlfiles "rocksys"
 )
 
 // cleanupEnvFiles 清理 easyconf 在包目录自动创建的工作目录 .env / default.env，以及
@@ -360,6 +362,46 @@ func TestBuildServerAutoEnable(t *testing.T) {
 	for _, name := range []string{"trace", "auth", "dispatch", "rewrite", "script", "copy", "result"} {
 		if states[name] != hotswap.StateDisabled {
 			t.Errorf("%s 默认应不挂载，得到 %s", name, states[name])
+		}
+	}
+}
+
+// TestTableSpecsMatchScripts 表清单-脚本文件一致性单测（防未来新表漏注册——
+// 三方言 *_create_table.sql / *_create_index.sql 文件有而 buildTableSpecs 清单无即失败）。
+func TestTableSpecsMatchScripts(t *testing.T) {
+	specs := buildTableSpecs("shield_event")
+	specTables := map[string]bool{}
+	specCreate := map[string]bool{}
+	specIndex := map[string]bool{}
+	for _, s := range specs {
+		if specTables[s.Table] {
+			t.Errorf("表 %s 重复注册", s.Table)
+		}
+		specTables[s.Table] = true
+		specCreate[s.CreateScript] = true
+		if s.IndexScript != "" {
+			specIndex[s.IndexScript] = true
+		}
+	}
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		entries, err := fs.ReadDir(sqlfiles.FS, "sql/"+dialect)
+		if err != nil {
+			t.Fatalf("读取内嵌 sql/%s/ 失败: %v", dialect, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			switch {
+			case strings.HasSuffix(e.Name(), "_create_table.sql"):
+				if !specCreate[e.Name()] {
+					t.Errorf("方言 %s：脚本 %s 存在但未注册进表清单（新表须在 buildTableSpecs 同步注册）", dialect, e.Name())
+				}
+			case strings.HasSuffix(e.Name(), "_create_index.sql"):
+				if !specIndex[e.Name()] {
+					t.Errorf("方言 %s：索引脚本 %s 存在但未注册进表清单", dialect, e.Name())
+				}
+			}
 		}
 	}
 }

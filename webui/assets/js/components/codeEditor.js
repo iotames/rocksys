@@ -1,9 +1,10 @@
 /* ==========================================================================
  * RockSys 管理控制台 - components/codeEditor.js 通用代码编辑器组件（业务无关）
  * textarea 透明文字 + 底层语法高亮层：输入/滚动联动、Tab 缩进、Ctrl/Cmd+S。
- * 在 luaEditor 基础上泛化：语法高亮器可插拔（lang 可选 'lua' | 'lines' | null）。
+ * 在 luaEditor 基础上泛化：语法高亮器可插拔（lang 可选 'lua' | 'lines' | 'sql' | null）。
  *   - lua：复用 Rock.comp.luaEditor 的 Lua 着色与近似校验
  *   - lines：规则清单（# 注释行灰显，其余原色，适合 .txt 特征文件）
+ *   - sql：SQL 轻量着色（关键字/注释/字符串三类，适合 DDL 预览与编辑）
  *   - null/缺省：不着色（纯文本）
  * API：
  *   html(id, opts)   生成编辑器 HTML（.editor-wrap + 高亮层 + textarea）
@@ -26,6 +27,30 @@
   // 各实例状态：id → { value, initial, lang }
   const instances = {};
 
+  // sql 高亮：-- 注释 / 单双引号字符串 / 关键字 三类着色（大小写不敏感，纯前端轻量实现）
+  const SQL_TOKEN_RE = /(--[^\n]*)|('(?:''|[^'\n])*')|("(?:""|[^"\n])*")|(\b(?:select|from|where|insert|into|values|update|set|delete|create|table|index|unique|if|not|exists|drop|alter|add|column|primary|key|foreign|references|constraint|default|null|and|or|on|using|autoincrement|auto_increment|serial|view|trigger|begin|commit|rollback|pragma|rename|to|as|with|order|group|by|limit|offset|join|left|inner|distinct|cascade)\b)/gi;
+
+  // 与正则分组顺序一一对应的着色类（注释 / 字符串 / 关键字）
+  const SQL_CLS = ['tok-com', 'tok-str', 'tok-str', 'tok-kw'];
+
+  function highlightSQL(src) {
+    let out = '';
+    let last = 0;
+    let m;
+    SQL_TOKEN_RE.lastIndex = 0;
+    while ((m = SQL_TOKEN_RE.exec(src)) !== null) {
+      out += esc(src.slice(last, m.index));
+      let cls = '';
+      for (let i = 0; i < SQL_CLS.length; i++) {
+        if (m[i + 1] !== undefined) { cls = SQL_CLS[i]; break; }
+      }
+      out += '<span class="' + cls + '">' + esc(m[0]) + '</span>';
+      last = m.index + m[0].length;
+    }
+    out += esc(src.slice(last));
+    return out;
+  }
+
   // lines 高亮：# 开头注释行灰显，其余不着色（规则清单语义）
   function highlightLines(src) {
     return src.split('\n').map(function (line) {
@@ -42,6 +67,7 @@
     let html;
     if (st.lang === 'lua') html = Rock.comp.luaEditor.highlight(st.value);
     else if (st.lang === 'lines') html = highlightLines(st.value);
+    else if (st.lang === 'sql') html = highlightSQL(st.value);
     else html = esc(st.value);
     layer.innerHTML = html + '\n';
   }

@@ -64,6 +64,8 @@
 | 38 | GET | `/admin/proxy/trusted` | 可信代理文件清单（外挂覆写状态/生效行数/修改时间，WebUI·全局配置可信代理页签） |
 | 39 | GET | `/admin/proxy/trusted/file` | 读可信代理文件当前生效内容 + 内嵌默认内容（`?name=`，仅允许装配的 `TRUSTED_PROXIES_FILE`） |
 | 40 | POST | `/admin/proxy/trusted/save` | 保存可信代理文件到 `HOT_SCRIPTS_DIR/trusted_proxies/`（原子写，保存前先解析校验非法 IP/CIDR 直接 400；ScriptHub ≤3s 自动热更生效；body `{name, content}`，上限 512KB） |
+| 41 | GET | `/admin/db/schema` | 表结构检查（期望 = 运行期 SQL 源脚本，实际 = 当前数据连接 catalog；返回 A-F 分级差异与自动项生成 SQL） |
+| 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；danger 级危险操作，服务端不做语句白名单） |
 
 ---
 
@@ -489,6 +491,90 @@ WebUI「可信代理」页数据源（实现 `internal/netutil/proxies_admin.go`
 
 ---
 
+### 3.19 数据库表结构同步端点组 — 表结构检查 + SQL 执行（实现 `internal/adminapi/dbschema.go`）
+
+WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运行期 SQL 源（`HOT_SCRIPTS_DIR/sql/` 外挂优先、内嵌兜底，与各挂件实际建表同源）经 DDL 解析器产出；实际结构 = 当前数据连接 catalog（`sql/<dbtype>/schema_query_*.sql`，三方言）。仅 `DB_DRIVER`/`DB_DSN` 配置且表清单已装配时可用，否则 503。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /admin/db/schema` | 逐表比对期望与实际结构，返回差异项与自动项生成 SQL；无差异时 `items:[]`、`sql:""` |
+| `POST /admin/db/exec` | body `{sql}`；拆句（分号切分，感知字符串字面量与注释内分号）逐条执行、**遇错即停**（DDL 无跨方言统一事务语义），返回已执行到的位置 |
+
+**`GET /admin/db/schema` 响应 200**：
+
+```json
+{
+  "driver": "sqlite",
+  "items": [
+    {"level": "B", "auto": true, "table": "ip_blacklist", "object": "warn_times",
+     "expected": "INTEGER NOT NULL DEFAULT 0", "actual": "", "note": "缺普通列，可自动补齐"}
+  ],
+  "sql": "-- ip_blacklist · 缺普通列 warn_times\nALTER TABLE ip_blacklist ADD COLUMN warn_times INTEGER NOT NULL DEFAULT 0;"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| driver | string | 数据方言（`sqlite` / `postgres` / `mysql`） |
+| items | array | 差异项列表（无差异为空数组） |
+| items[].level | string | 差异分级 `A`-`F`（语义见下表） |
+| items[].auto | bool | 是否可自动处理（A/B/D 为 true；C/E/F 为 false） |
+| items[].table | string | 表名 |
+| items[].object | string | 差异对象（列名 / 索引名 / 表名自身） |
+| items[].expected | string | 期望结构（来自脚本解析） |
+| items[].actual | string | 实际结构（来自 catalog；对象缺失时为空串） |
+| items[].note | string | 差异说明与建议文案 |
+| sql | string | 全部自动项（A/B/D）生成的 SQL 文本（各段带 `-- 表名 · 差异说明` 注释分隔），直接喂前端编辑器；无自动项时为空串 |
+
+**A-F 分级语义**：
+
+| 级别 | 差异类型 | 处理 |
+|------|----------|------|
+| A | 缺表 | 自动：生成建表脚本原文（`{table}` 替换后） |
+| B | 缺普通列 | 自动：生成 `ALTER TABLE … ADD COLUMN`（列定义取脚本原文，天然方言正确） |
+| C | 缺 PK/UNIQUE/自增列 | 需人工：不生成（SQLite 不支持 ADD 带 PK/UNIQUE 的列），`note` 说明原因与建议 |
+| D | 缺索引 | 自动：生成建索引脚本原文（幂等 `IF NOT EXISTS`） |
+| E | 类型/非空/默认值不一致 | 仅提示：不生成（SQLite 改列需重建表，跨方言不可靠），展示期望 vs 实际值 |
+| F | 库中多余列/表 | 仅提示：不生成 DROP（危险，可能是历史遗留或有数据） |
+
+**`POST /admin/db/exec` 请求体**：
+
+```json
+{ "sql": "ALTER TABLE ip_blacklist ADD COLUMN warn_times INTEGER NOT NULL DEFAULT 0;" }
+```
+
+**响应 200**（全部成功或中途失败，均回逐条结果）：
+
+```json
+{
+  "results": [{"sql": "ALTER TABLE ip_blacklist ADD COLUMN warn_times …", "ok": true, "rows": 0}],
+  "executed": 1,
+  "failed": 0
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| results | array | 逐条执行结果（按语句顺序） |
+| results[].sql | string | 该条语句文本 |
+| results[].ok | bool | 是否执行成功 |
+| results[].rows | int | 受影响行数（仅成功且驱动可取时出现） |
+| results[].error | string | 失败原因（仅失败条目出现） |
+| executed | int | 成功执行条数 |
+| failed | int | 失败条数 |
+| message | string | **仅失败时出现**：三要素文案（第 N 条执行失败 + 原因；前面 N-1 条已生效且不可回滚；修正后可仅重发剩余语句，再执行表结构检查复核） |
+
+**错误语义**：
+
+- `503`：数据连接或表清单未装配（响应文本，含排查指引）。
+- `400`：请求体非法 / `sql` 为空 / 未解析出可执行语句（仅含注释或空白），响应文本含原因与下一步。
+- `500`：`GET /admin/db/schema` 检查或生成 SQL 失败，响应文本为错误原文 + 重试指引。
+- 执行中途失败仍返回 200（结果在 `results`/`failed`/`message` 中）：前面已执行的语句**不可回滚**，前端据此引导仅重发剩余语句。
+
+> **安全提示**：执行端点为 danger 级危险操作，前端须做强确认（说明作用对象、DDL 不可回滚、建议先备份）；服务端**不做语句类型白名单**——编辑器内容可自由编辑（含手工救急语句），原样逐条执行。调用方（如脚本）务必自行确认 SQL 内容来源可信。
+
+---
+
 ## 4. 数据字典（前端展示映射）
 
 ### 4.0 组件/服务元数据（/admin/meta 返回结构）
@@ -549,5 +635,6 @@ WebUI「可信代理」页数据源（实现 `internal/netutil/proxies_admin.go`
 | 1.3 | 2026-08-20 | 登录响应新增 `warnings` 字段 + 新增 `GET /admin/warnings`（数据清理未开启警告，WebUI 常驻置顶横幅数据源） |
 | 1.4 | 2026-08-21 | 端点总览补齐 WAF 监控统计与动态黑白名单端点（`/admin/shield/*` 14 个 + `/admin/logs/prune` + `/admin/logs/storage`），新增 §3.18 shield 管理端点组详解 |
 | 1.5 | 2026-08-27 | 新增 `GET /admin/meta`（组件/服务元数据统一出口，前端不再硬编码说明文案；无状态不缓存） |
+| 1.6 | 2026-08-29 | 新增 §3.19 数据库表结构同步端点组：`GET /admin/db/schema`（A-F 分级差异检查 + 自动项生成 SQL）、`POST /admin/db/exec`（拆句逐条执行、遇错即停；danger 级，无语句白名单） |
 
 > 契约原则：只增不改删；新增字段不影响旧字段语义。

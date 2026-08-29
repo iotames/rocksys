@@ -389,6 +389,9 @@ func buildServer(args []string) (*Server, error) {
 	adminSrv.SetVersionInfo(Version, BuildTime, GoVersion)
 	if dataDB != nil {
 		adminSrv.SetSQLSource(dataDB) // 用户存储 SQL 脚本源（sql/<dbtype>/admin_users_*.sql）
+		// 表结构同步：表清单在装配处注册（表名在这里已知，无法从脚本文件名推断），
+		// 数据连接与清单一并注入（详见 buildTableSpecs）。
+		adminSrv.SetTableSpecs(dataDB, buildTableSpecs(configValue(cfgMgr.List(), "SHIELD_EVENT_TABLE")))
 	}
 	scriptAdmin := script.NewAdminHandler(mgr)
 	if err := adminSrv.RegisterPlugin(script.PathPublish, scriptAdmin.Publish); err != nil {
@@ -569,4 +572,38 @@ func genDefaultEnv(args []string) error {
 	}
 	fmt.Printf("default.env 已生成（基于当前工作目录）: %s\n", conf.DefaultEnvPath())
 	return nil
+}
+
+// buildTableSpecs 表结构同步表清单（装配处单一事实来源，见 docs/DB_SCHEMA_SYNC_PLAN.md §3.1）。
+// 表名无法从脚本文件名推断，来源已在设计期逐一核实：
+//   - ip_blacklist / ip_whitelist：IPListStore 构造内字面量（plugins/shield/ip_list_store.go）
+//   - shield_event：SHIELD_EVENT_TABLE 配置实值（可改，重启生效；缺省回落 shield_event）
+//   - access_log（plugins/obs）、admin_users（adminapi userstore）、attack_archive（shield）：
+//     各组件建表处字面量/常量
+//   - outbox：mq.New(..., "outbox") 字面量（mq_create_table.sql 文件名 ≠ 表名）
+//
+// 防漏防漂移：cmd/rocksys/main_test.go 的一致性单测比对三方言脚本文件集合与本清单。
+func buildTableSpecs(shieldEventTable string) []db.TableSpec {
+	if strings.TrimSpace(shieldEventTable) == "" {
+		shieldEventTable = "shield_event"
+	}
+	return []db.TableSpec{
+		{Table: "admin_users", CreateScript: "admin_users_create_table.sql"},
+		{Table: "ip_blacklist", CreateScript: "ip_blacklist_create_table.sql", IndexScript: "ip_blacklist_create_index.sql"},
+		{Table: "ip_whitelist", CreateScript: "ip_whitelist_create_table.sql", IndexScript: "ip_whitelist_create_index.sql"},
+		{Table: "attack_archive", CreateScript: "attack_archive_create_table.sql", IndexScript: "attack_archive_create_index.sql"},
+		{Table: shieldEventTable, CreateScript: "shield_event_create_table.sql", IndexScript: "shield_event_create_index.sql"},
+		{Table: "access_log", CreateScript: "access_log_create_table.sql", IndexScript: "access_log_create_index.sql"},
+		{Table: "outbox", CreateScript: "mq_create_table.sql", IndexScript: "mq_create_index.sql"},
+	}
+}
+
+// configValue 从配置项清单读取指定 key 的当前值（未注册/未设置返回空串）。
+func configValue(items []conf.ConfigItem, key string) string {
+	for _, it := range items {
+		if it.Key == key {
+			return it.Current
+		}
+	}
+	return ""
 }
