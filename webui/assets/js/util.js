@@ -104,6 +104,28 @@
     input.focus();
   }
 
+  // IP / CIDR 格式校验（IPv4 精确校验八组段；IPv6 宽松校验字符集与前缀长度）
+  function validIPOrCIDR(s) {
+    const v = String(s || '').trim();
+    if (!v) return false;
+    const slash = v.indexOf('/');
+    const ip = slash >= 0 ? v.slice(0, slash) : v;
+    const plen = slash >= 0 ? v.slice(slash + 1) : null;
+    if (plen !== null && !/^\d{1,3}$/.test(plen)) return false;
+    if (ip.indexOf(':') >= 0) {
+      // IPv6（含压缩写法）：仅做字符集与双冒号次数的宽松校验
+      if (!/^[0-9a-fA-F:]+$/.test(ip) || (ip.match(/::/g) || []).length > 1) return false;
+      if (plen !== null && Number(plen) > 128) return false;
+      return true;
+    }
+    // IPv4：四段 0-255；前缀长度 0-32
+    const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!m) return false;
+    for (let i = 1; i <= 4; i++) { if (Number(m[i]) > 255) return false; }
+    if (plen !== null && Number(plen) > 32) return false;
+    return true;
+  }
+
   window.Rock.util = {
     $,
     $$,
@@ -119,5 +141,6 @@
     parseNdjson,
     debounce,
     insertAtCursor,
+    validIPOrCIDR,
   };
 })();

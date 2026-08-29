@@ -103,8 +103,37 @@
 
   // 枚举值配置项（编辑态渲染下拉而非手填）：key → 可选值数组（首个为默认/推荐）
   const ENUM_KEYS = {
+    DB_DRIVER: ['sqlite', 'mysql', 'postgres'],
     OBS_STORE: ['db', 'file'], // db 默认；file 已弃用，将不再被支持
+    ROCKSYS_LOG_LEVEL: ['debug', 'info', 'warn', 'error'],
+    SHIELD_RATE_LIMIT_BY: ['ip'], // 当前仅支持 ip
   };
+
+  // 布尔配置项（编辑态渲染 switch 开关）：*_ENABLED 挂载开关按命名约定识别，
+  // 其余显式列于 BOOL_KEY_EXTRA（与后端 Register 的 bool 默认值一一对应）
+  const BOOL_KEY_EXTRA = [
+    'RESULT_WRAP', 'ROCKSYS_LOG_TO_FILE', 'DB_ENABLE', 'OBS_LOG_PRUNE_ENABLED',
+    'SHIELD_EVENT_LOG_ENABLED', 'SHIELD_EVENT_PRUNE_ENABLED',
+  ];
+  function isBoolKey(k) { return /_ENABLED$/.test(k) || BOOL_KEY_EXTRA.indexOf(k) >= 0; }
+
+  // 整数配置项（编辑态渲染 number 输入 + 非负整数前端校验）
+  const INT_KEYS = [
+    'ROCKSYS_TIMEOUT', 'ROCKSYS_LOG_MAX_SIZE', 'DB_PORT', 'AUTH_JWT_TTL',
+    'SHIELD_RATE_LIMIT_RPS', 'SHIELD_RATE_LIMIT_BURST', 'SHIELD_MAX_BODY_SIZE',
+    'OBS_RETENTION_DAYS', 'OBS_LOG_RETENTION_DAYS',
+    'SHIELD_EVENT_BUFFER', 'SHIELD_EVENT_FLUSH_ROWS', 'SHIELD_EVENT_FLUSH_INTERVAL',
+    'SHIELD_EVENT_RETENTION_DAYS', 'REGISTRY_TTL',
+    'MQ_MAX_RETRIES', 'MQ_BASE_BACKOFF', 'MQ_POLL_INTERVAL',
+  ];
+  function isIntKey(k) { return INT_KEYS.indexOf(k) >= 0; }
+
+  // 长文本配置项（编辑态渲染多行 textarea）：规则 / 目标列表 / DSN / 逗号分隔清单
+  const TEXTAREA_KEYS = [
+    'DISPATCH_RULES', 'REWRITE_RULES', 'COPY_TARGETS', 'DB_DSN',
+    'RESULT_MASK_FIELDS', 'SHIELD_IP_WHITELIST', 'SHIELD_WAF_RISK_PATHS', 'SHIELD_ALLOW_METHODS',
+  ];
+  function isTextareaKey(k) { return TEXTAREA_KEYS.indexOf(k) >= 0; }
 
   // 需重启才生效的配置项
   const RESTART_KEYS = ['ROCKSYS_LISTEN', 'ROCKSYS_ADMIN', 'ROCKSYS_CONFIG'];
@@ -178,6 +207,12 @@
     blockTypeName,
     PREFIX_GROUPS,
     ENUM_KEYS,
+    BOOL_KEY_EXTRA,
+    isBoolKey,
+    INT_KEYS,
+    isIntKey,
+    TEXTAREA_KEYS,
+    isTextareaKey,
     RESTART_KEYS,
     isSensitiveKey,
     COMPONENT_PREFIX,

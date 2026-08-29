@@ -359,6 +359,11 @@ b, strong { font-weight: 600; }
   min-height: 0;
 }
 
+/* 侧边栏收起态：隐藏侧边栏，主内容占满全宽（偏好记忆见 main.js bindSidebarToggle） */
+.layout.sidebar-hidden .sidebar { display: none; }
+
+.sidebar-toggle { flex: 0 0 auto; padding: 4px 8px; font-size: 14px; line-height: 1; }
+
 .sidebar {
   flex: 0 0 240px;
   background: var(--panel);
@@ -510,6 +515,12 @@ b, strong { font-weight: 600; }
 .input::placeholder { color: var(--placeholder); }
 
 .input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--focus-ring); }
+
+/* 前端校验失败错误态（红框 + 红色光环） */
+.input.is-invalid, .select.is-invalid, textarea.input.is-invalid {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px rgba(245, 108, 108, .18);
+}
 
 .input-sm { padding: 4px 8px; font-size: 12px; }
 
@@ -977,6 +988,11 @@ b, strong { font-weight: 600; }
 .cfg-key { font-size: 11px; color: var(--text-2); font-family: var(--font-mono); margin-top: 2px; }
 
 .cfg-current { font-family: var(--font-mono); font-size: 12.5px; word-break: break-all; }
+
+/* 配置行内开关编辑（布尔配置项）：开关 + 开/关文字 */
+.cfg-switch-row { display: inline-flex; align-items: center; gap: 8px; }
+.cfg-switch-state { font-size: 12px; color: var(--text-2); }
+.cfg-edit-textarea { min-height: 64px; resize: vertical; font-family: var(--font-mono); line-height: 1.6; }
 
 .cfg-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
 .cfg-tip { font-size: 12px; color: var(--text-2); }

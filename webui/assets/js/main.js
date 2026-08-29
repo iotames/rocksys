@@ -234,6 +234,21 @@
     }
   }
 
+  // 侧边栏收起/展开：顶栏 ☰ 按钮切换，偏好记忆于 localStorage（rocksys.sidebar）
+  function bindSidebarToggle() {
+    const layout = document.querySelector('.layout');
+    const btn = $('#btn-sidebar');
+    if (!layout || !btn) return;
+    let hidden = false;
+    try { hidden = localStorage.getItem('rocksys.sidebar') === 'hidden'; } catch (e) { /* 隐私模式等场景静默 */ }
+    layout.classList.toggle('sidebar-hidden', hidden);
+    btn.addEventListener('click', function () {
+      hidden = !hidden;
+      layout.classList.toggle('sidebar-hidden', hidden);
+      try { localStorage.setItem('rocksys.sidebar', hidden ? 'hidden' : 'open'); } catch (e) { /* 忽略 */ }
+    });
+  }
+
   function initRoute() {
     window.addEventListener('hashchange', function () {
       renderPage(currentRoute());
@@ -265,6 +280,7 @@
       Rock.auth.setError('访问凭证无效或已过期，请重新登录');
     });
     bindToolbar();
+    bindSidebarToggle();
     initRoute();
     restartAutoRefresh();
     fetchVersion();

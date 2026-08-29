@@ -53,11 +53,11 @@
         </div>
         <div class="form-row">
           <label class="form-label">密码（至少 8 位）</label>
-          <input class="input" type="password" id="auth-reg-pass" autocomplete="new-password" placeholder="请输入密码">
+          <input class="input" type="password" id="auth-reg-pass" autocomplete="new-password" minlength="8" placeholder="请输入密码（至少 8 位）">
         </div>
         <div class="form-row">
           <label class="form-label">确认密码</label>
-          <input class="input" type="password" id="auth-reg-pass2" autocomplete="new-password" placeholder="请再次输入密码">
+          <input class="input" type="password" id="auth-reg-pass2" autocomplete="new-password" minlength="8" placeholder="请再次输入密码">
         </div>
         <button class="btn btn-primary btn-block" id="auth-reg-btn">注册并进入</button>
       </div>
@@ -72,11 +72,11 @@
         </div>
         <div class="form-row">
           <label class="form-label">新密码（至少 8 位）</label>
-          <input class="input" type="password" id="auth-reset-pass" autocomplete="new-password" placeholder="请输入新密码">
+          <input class="input" type="password" id="auth-reset-pass" autocomplete="new-password" minlength="8" placeholder="请输入新密码（至少 8 位）">
         </div>
         <div class="form-row">
           <label class="form-label">确认新密码</label>
-          <input class="input" type="password" id="auth-reset-pass2" autocomplete="new-password" placeholder="请再次输入新密码">
+          <input class="input" type="password" id="auth-reset-pass2" autocomplete="new-password" minlength="8" placeholder="请再次输入新密码">
         </div>
         <button class="btn btn-primary btn-block" id="auth-reset-btn">重置并登录</button>
       </div>
@@ -88,6 +88,8 @@
   <!-- ============ 顶部工具条 ============ -->
   <header class="topbar">
     <div class="brand">
+      <!-- 侧边栏收起/展开（偏好记忆于 localStorage，见 main.js bindSidebarToggle） -->
+      <button class="btn btn-sm sidebar-toggle" id="btn-sidebar" title="收起/展开侧边栏" aria-label="收起或展开侧边栏">☰</button>
       <!-- 磐石盾牌标识 -->
       <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z"/>

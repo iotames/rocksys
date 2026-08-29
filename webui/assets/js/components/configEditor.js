@@ -48,6 +48,69 @@
     return lines.join('\n');
   }
 
+  // 前端值校验（保存前拦截明显非法输入；返回错误文案，空串 = 通过）
+  function validateValue(key, val) {
+    const v = String(val == null ? '' : val).trim();
+    if (Rock.state.isIntKey(key)) {
+      if (!/^\d+$/.test(v)) return '需为非负整数';
+      return '';
+    }
+    const enums = Rock.state.ENUM_KEYS[key];
+    if (enums && enums.length && enums.indexOf(v) < 0) {
+      return '需为以下之一：' + enums.join(' / ');
+    }
+    switch (key) {
+      case 'ROCKSYS_LISTEN':
+      case 'ROCKSYS_ADMIN':
+      case 'REGISTRY_ADDR':
+        if (!/^[A-Za-z0-9_.\-]*:\d{1,5}$/.test(v)) return '格式需为 host:port（如 127.0.0.1:19527 或 :8080）';
+        break;
+      case 'ROCKSYS_UPSTREAM':
+        if (!/^https?:\/\/\S+$/i.test(v)) return '需为 http(s):// 开头的后端地址（如 http://127.0.0.1:9000）';
+        break;
+      case 'SHIELD_IP_WHITELIST': {
+        if (!v) break; // 空 = 不限，合法
+        const bad = v.split(',').map(s => s.trim()).filter(s => s && !Rock.util.validIPOrCIDR(s));
+        if (bad.length) return '存在非法 IP/CIDR：' + bad.slice(0, 3).join('、');
+        break;
+      }
+      case 'DB_PORT':
+        if (!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 65535) return '端口需为 1-65535 的整数';
+        break;
+    }
+    return '';
+  }
+
+  // 编辑控件 HTML（按配置类型选择：布尔=开关 / 枚举=下拉 / 长文本=textarea / 整数=number / 其余=文本）
+  function editInputHTML(item, value) {
+    const key = item.key;
+    const attrs = 'class="cfg-edit-input" data-k="' + esc(key) + '"';
+    if (Rock.state.isBoolKey(key)) {
+      const on = String(value).trim() === 'true';
+      return '<span class="cfg-switch-row">' +
+        '<label class="el-switch" title="开 = true / 关 = false">' +
+        '<input type="checkbox" ' + attrs + (on ? ' checked' : '') + '>' +
+        '<span class="el-switch-core"></span></label>' +
+        '<span class="cfg-switch-state">' + (on ? 'true（开）' : 'false（关）') + '</span>' +
+        '</span>';
+    }
+    const enums = Rock.state.ENUM_KEYS[key];
+    if (enums && enums.length) {
+      // 枚举值：下拉选择，不允许手填
+      return '<select ' + attrs.replace('class="', 'class="select select-sm ') + '>' +
+        Rock.comp.select.options(enums.map(o => [o, o]), String(value)) + '</select>';
+    }
+    if (Rock.state.isIntKey(key)) {
+      return '<input type="number" min="0" step="1" ' + attrs.replace('class="', 'class="input input-sm ') +
+        ' value="' + esc(value) + '">';
+    }
+    if (Rock.state.isTextareaKey(key)) {
+      return '<textarea rows="3" placeholder="' + esc(item.example || '') + '" ' +
+        attrs.replace('class="', 'class="input input-sm cfg-edit-textarea ') + '>' + esc(value) + '</textarea>';
+    }
+    return '<input ' + attrs.replace('class="', 'class="input input-sm ') + ' value="' + esc(value) + '">';
+  }
+
   // 共享配置行 HTML（配置页 + 组件展开配置区共用）
   function configRowHTML(item) {
     const key = item.key;
@@ -59,16 +122,9 @@
     let display = current;
     if (sensitive && showMask) display = maskText(current);
     else if (display === '') display = '（空）';
-    const enumOptions = Rock.state.ENUM_KEYS[key];
     let valueCell;
     if (editing) {
-      if (enumOptions && enumOptions.length) {
-        // 枚举值：下拉选择，不允许手填
-        valueCell = '<select class="select select-sm cfg-edit-input" data-k="' + esc(key) + '">' +
-          Rock.comp.select.options(enumOptions.map(o => [o, o]), String(configEditing.value)) + '</select>';
-      } else {
-        valueCell = '<input class="input input-sm cfg-edit-input" data-k="' + esc(key) + '" value="' + esc(configEditing.value) + '">';
-      }
+      valueCell = editInputHTML(item, configEditing.value);
     } else {
       valueCell = '<span class="cfg-current" title="' + esc(current) + '">' + esc(display) + '</span>';
     }
@@ -112,13 +168,17 @@
     container.innerHTML = '<div class="config-table">' + items.map(configRowHTML).join('') + '</div>';
     const inp = container.querySelector('.cfg-edit-input');
     if (inp) {
-      if (inp.tagName === 'SELECT') {
-        inp.addEventListener('change', () => { configEditing.value = inp.value; });
-      } else {
-        inp.addEventListener('input', () => { configEditing.value = inp.value; });
-      }
+      // 编辑值同步：开关取 checked（true/false），其余取 value
+      const sync = function () {
+        configEditing.value = (inp.type === 'checkbox') ? (inp.checked ? 'true' : 'false') : inp.value;
+        // 开关旁的 true/false 文案联动
+        const st = container.querySelector('.cfg-switch-state');
+        if (st) st.textContent = configEditing.value === 'true' ? 'true（开）' : 'false（关）';
+      };
+      const ev = (inp.tagName === 'SELECT' || inp.type === 'checkbox') ? 'change' : 'input';
+      inp.addEventListener(ev, sync);
       inp.addEventListener('keydown', e => {
-        if (e.key === 'Enter') saveEdit(configEditing.key);
+        if (e.key === 'Enter' && inp.tagName !== 'TEXTAREA') saveEdit(configEditing.key);
         if (e.key === 'Escape') cancelEdit();
       });
       inp.focus();
@@ -149,10 +209,22 @@
 
   async function saveEdit(key) {
     if (configEditing.key !== key) return;
-    // 从当前编辑控件（input / select）取最新值：键盘 Enter 保存时 change 事件可能未触发
+    // 从当前编辑控件（input / select / checkbox）取最新值：键盘 Enter 保存时 change 事件可能未触发
     const inp = document.querySelector('.cfg-edit-input');
-    if (inp && inp.value !== undefined) configEditing.value = inp.value;
+    if (inp) {
+      configEditing.value = (inp.type === 'checkbox') ? (inp.checked ? 'true' : 'false') : inp.value;
+    }
     const val = configEditing.value;
+    // 前端校验：类型不符 / 格式非法直接拦截，不打后端
+    const err = validateValue(key, val);
+    if (err) {
+      toast('保存失败：' + err, 'error');
+      if (inp && inp.classList) {
+        inp.classList.add('is-invalid');
+        inp.addEventListener('input', function onInput() { inp.classList.remove('is-invalid'); inp.removeEventListener('input', onInput); });
+      }
+      return;
+    }
     try {
       const res = await api.put('/admin/config')({ [key]: val });
       if (res && res.ok === false) {
@@ -220,6 +292,7 @@
 
   window.Rock.comp.configEditor = {
     render,
+    validateValue,
     startEdit,
     cancelEdit,
     saveEdit,

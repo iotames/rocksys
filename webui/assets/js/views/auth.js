@@ -150,10 +150,19 @@
     $('#auth-login-btn').addEventListener('click', login);
     $('#auth-reg-btn').addEventListener('click', register);
     $('#auth-reset-btn').addEventListener('click', reset);
-    // Enter 键提交
-    $('#auth-login-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
-    $('#auth-reg-pass2').addEventListener('keydown', function (e) { if (e.key === 'Enter') register(); });
-    $('#auth-reset-pass2').addEventListener('keydown', function (e) { if (e.key === 'Enter') reset(); });
+    // Enter 键提交（用户名 / 确认密码框均可直接回车）
+    ['auth-login-user', 'auth-login-pass'].forEach(function (id) {
+      const el = $('#' + id);
+      if (el) el.addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
+    });
+    ['auth-reg-user', 'auth-reg-pass2'].forEach(function (id) {
+      const el = $('#' + id);
+      if (el) el.addEventListener('keydown', function (e) { if (e.key === 'Enter') register(); });
+    });
+    ['auth-reset-user-input', 'auth-reset-pass2'].forEach(function (id) {
+      const el = $('#' + id);
+      if (el) el.addEventListener('keydown', function (e) { if (e.key === 'Enter') reset(); });
+    });
   }
 
   window.Rock.auth = {

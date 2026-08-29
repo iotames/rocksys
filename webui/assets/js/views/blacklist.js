@@ -138,7 +138,8 @@
       '<input class="input input-sm" id="iplist-add-title" placeholder="备注（可选）" style="width:160px">' +
       (isBlack
         ? '<select class="select select-sm" id="iplist-add-bt">' + btOptions + '</select>' +
-          '<input class="input input-sm" id="iplist-add-expires" placeholder="过期 RFC3339（空=永久）" style="width:200px">'
+          '<span class="tool-group"><span class="muted">过期时间</span>' +
+          '<input class="input input-sm" type="datetime-local" id="iplist-add-expires" title="留空 = 永久有效"></span>'
         : '') +
       '<button class="btn btn-sm btn-primary" data-act="waf-iplist-add">新增</button>' +
       '</div></div>' +
@@ -182,15 +183,33 @@
     await loadIPList();
   }
 
+  // 输入框错误态标记（输入即清除）
+  function markInvalid(el) {
+    if (!el) return;
+    el.classList.add('is-invalid');
+    el.addEventListener('input', function onInput() { el.classList.remove('is-invalid'); el.removeEventListener('input', onInput); });
+  }
+
   async function add() {
     const isBlack = ipListState.kind === 'black';
-    const ip = ($('#iplist-add-ip') || {}).value || '';
-    if (!ip) { toast('ip 必填（精确 IP 或 CIDR）', 'error'); return; }
+    const ipEl = $('#iplist-add-ip');
+    const ip = (ipEl || {}).value || '';
+    if (!ip) { toast('ip 必填（精确 IP 或 CIDR）', 'error'); markInvalid(ipEl); return; }
+    if (!Rock.util.validIPOrCIDR(ip.trim())) {
+      toast('IP/CIDR 格式非法：' + ip.trim(), 'error');
+      markInvalid(ipEl);
+      return;
+    }
     const body = { ip: ip.trim(), title: ($('#iplist-add-title') || {}).value || '' };
     if (isBlack) {
       body.block_type = Number(($('#iplist-add-bt') || {}).value) || 1;
+      // 过期时间：datetime-local 本地时间 → RFC3339（UTC）；留空 = 永久
       const exp = ($('#iplist-add-expires') || {}).value || '';
-      if (exp) body.expires_at = exp.trim();
+      if (exp) {
+        const d = new Date(exp);
+        if (isNaN(d.getTime())) { toast('过期时间非法', 'error'); markInvalid($('#iplist-add-expires')); return; }
+        body.expires_at = d.toISOString();
+      }
     }
     try {
       await api.post(ipListBase())(body);
@@ -230,8 +249,21 @@
   }
 
   async function importRows() {
-    const text = ($('#iplist-import-text') || {}).value || '';
+    const textEl = $('#iplist-import-text');
+    const text = (textEl || {}).value || '';
     if (!text.trim()) { toast('导入内容为空', 'error'); return; }
+    // 逐行前端校验（# 开头注释与空行忽略）：存在非法行直接整体拦截，避免半成功
+    const bad = [];
+    text.split('\n').forEach(function (line) {
+      const t = line.trim();
+      if (!t || t.indexOf('#') === 0) return;
+      if (!Rock.util.validIPOrCIDR(t)) bad.push(t);
+    });
+    if (bad.length) {
+      toast('存在 ' + bad.length + ' 行非法 IP/CIDR（如：' + bad.slice(0, 2).join('、') + '），请修正后再导入', 'error');
+      markInvalid(textEl);
+      return;
+    }
     const isBlack = ipListState.kind === 'black';
     const q = isBlack ? ('?block_type=' + (Number(($('#iplist-import-bt') || {}).value) || 1)) : '';
     try {
