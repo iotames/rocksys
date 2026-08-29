@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/iotames/easyserver/log"
@@ -131,6 +132,8 @@ func (s *Shield) RestoreIPList(isBlack bool, id int64) error {
 }
 
 // ImportIPList 批量导入（每行一个精确 IP/CIDR；注释/空行忽略；重复幂等跳过）。
+// 逐行 validIPEntry 校验（与前端/文件同步同口径）：非法行不落库、计入 skipped——
+// 管理面导入的请求体是自由文本，后端不校验会把任意字符串写进 ip 列。
 // 返回成功导入数与跳过数。黑名单 block_type 合法域 0-11、缺省 11 人工收录；白名单忽略。
 func (s *Shield) ImportIPList(isBlack bool, ips []string, title string, bt BlockType) (int, int, error) {
 	if isBlack && !validBlackBlockType(bt) {
@@ -140,6 +143,20 @@ func (s *Shield) ImportIPList(isBlack bool, ips []string, title string, bt Block
 	if err != nil {
 		return 0, 0, err
 	}
+	invalid := 0
+	valid := make([]string, 0, len(ips))
+	for _, line := range ips {
+		ip := strings.TrimSpace(line)
+		if ip == "" || strings.HasPrefix(ip, "#") {
+			continue // 注释/空行：与 store 层同口径，不计 skipped
+		}
+		if validIPEntry(ip) {
+			valid = append(valid, ip)
+		} else {
+			invalid++
+		}
+	}
+	ips = valid
 	if !isBlack {
 		bt = BlockIPBlacklist
 	}
@@ -150,7 +167,7 @@ func (s *Shield) ImportIPList(isBlack bool, ips []string, title string, bt Block
 	if imported > 0 {
 		s.rebuildAfter("import")
 	}
-	return imported, skipped, nil
+	return imported, skipped + invalid, nil
 }
 
 // BanIP 封禁三态入库（决策 8/10，自动拉黑/人工封禁共用；写库成功后重建快照）：

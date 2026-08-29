@@ -379,3 +379,23 @@ func TestRestoreBanTitleOverlong(t *testing.T) {
 		t.Errorf("转永久标记应保留: %q", e.Title)
 	}
 }
+
+// TestImportIPListInvalidLinesSkipped 导入逐行校验：非法 IP 不落库、计入 skipped
+// （管理面请求体是自由文本，后端不校验会把任意字符串写进 ip 列——浏览器验收发现）。
+func TestImportIPListInvalidLinesSkipped(t *testing.T) {
+	s, _ := newTestShield(t)
+	white, _ := newTestListStore(t, false)
+	black, _ := newTestListStore(t, true)
+	s.SetIPListStores(black, white)
+	imported, skipped, err := s.ImportIPList(true,
+		[]string{"10.7.1.1", "not-an-ip", "10.7.1.2", "#注释", "  ", "10.7.1.1"}, "t", BlockManual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported != 2 || skipped != 2 {
+		t.Errorf("imported=%d skipped=%d, want 2/2（非法行+重复各计 1 跳过，注释/空行不计）", imported, skipped)
+	}
+	if _, err := black.GetByIP("not-an-ip"); err == nil {
+		t.Error("非法文本不应入库")
+	}
+}

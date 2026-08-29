@@ -315,26 +315,27 @@
       return;
     }
     const btName = typeName(row && row.block_type);
+    // 纵向表单布局（form-row/label/hint）：不复用 detail-grid（键值网格列宽 ~200px，
+    // 装不下宽输入框与长提示，会把弹窗撑出横向滚动条、radio 挤成竖排折行）
     const body =
-      '<div class="detail-grid">' +
-      '<div class="detail-item"><span class="k">来源 IP：</span><span class="v mono">' + esc(ip) + '</span>' +
-      '<span class="muted" id="waf-ban-status" style="margin-left:8px">状态查询中…</span></div>' +
-      '<div class="detail-item"><span class="k">封禁理由：</span>' +
-      '<input class="input" id="waf-ban-title" style="width:320px" maxlength="200" value="人工封禁：' + esc(btName) + '拦截"></div>' +
-      '<div class="detail-item"><span class="k">拉黑原因类别：</span>' +
-      '<select class="select" id="waf-ban-bt" style="width:180px">' +
+      '<div class="form-row"><label class="form-label">来源 IP</label>' +
+      '<span class="v mono">' + esc(ip) + '</span>' +
+      '<span class="form-hint" id="waf-ban-status" style="margin-left:10px">状态查询中…</span></div>' +
+      '<div class="form-row"><label class="form-label">封禁理由</label>' +
+      '<input class="input" id="waf-ban-title" style="width:100%" maxlength="200" value="人工封禁：' + esc(btName) + '拦截"></div>' +
+      '<div class="form-row"><label class="form-label">拉黑原因类别</label>' +
+      '<select class="select" id="waf-ban-bt" style="width:220px">' +
       Rock.comp.select.options(BLOCK_TYPES.filter(t => t[0] > 0).map(t => [String(t[0]), t[0] + ' ' + t[1]]), '11') +
-      '</select><span class="muted" style="margin-left:8px">缺省人工收录，可改选具体拦截类别</span></div>' +
-      '<div class="detail-item"><span class="k">封禁时长：</span>' +
-      '<label style="margin-right:16px"><input type="radio" name="waf-ban-duration" value="24h" checked> 封禁 24 小时</label>' +
-      '<label><input type="radio" name="waf-ban-duration" value="permanent"> 永久封禁</label></div>' +
-      '</div>' +
-      '<div class="muted" style="margin-top:8px;line-height:1.8">提交后该 IP 封禁次数 +1；限时封禁累计达 5 次将自动转为永久封禁。</div>' +
+      '</select><div class="form-hint" style="margin-top:4px">缺省人工收录，可改选具体拦截类别</div></div>' +
+      '<div class="form-row"><label class="form-label">封禁时长</label>' +
+      '<label style="margin-right:20px;cursor:pointer"><input type="radio" name="waf-ban-duration" value="24h" checked> 封禁 24 小时</label>' +
+      '<label style="cursor:pointer"><input type="radio" name="waf-ban-duration" value="permanent"> 永久封禁</label></div>' +
+      '<div class="form-hint" style="line-height:1.8">提交后该 IP 封禁次数 +1；限时封禁累计达 5 次将自动转为永久封禁。</div>' +
       '<div id="waf-ban-err" class="status-red" style="margin-top:8px;display:none;white-space:pre-wrap"></div>';
     const overlay = Rock.ui.openModal({
       title: 'IP封禁',
       body: body,
-      width: 560,
+      width: 480,
       footer: '<button class="btn btn-primary" data-act="waf-ban-submit">确认封禁</button>',
     });
 

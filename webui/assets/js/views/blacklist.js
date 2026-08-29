@@ -68,7 +68,11 @@
         { key: 'block_type', label: '类别', render: function (r) { return esc(typeName(r.block_type)); } },
         { key: 'hit_count', label: '命中', render: function (r) { return fmtInt(Number(r.hit_count) || 0); } },
         { key: 'warn_times', label: '封禁次数', render: function (r) { return fmtInt(Number(r.warn_times) || 0); } },
-        { key: 'expires_at', label: '过期时间', render: function (r) { return esc(r.expires_at || '永久'); } }
+        { key: 'expires_at', label: '过期时间', render: function (r) {
+          if (!r.expires_at) return '永久';
+          var d = Rock.util.fmtDateTime(r.expires_at); // RFC3339 → 本地 'YYYY-MM-DD HH:mm:ss'，解析失败回原文
+          return esc(d === '--:--:--' ? r.expires_at : d);
+        } }
       );
     }
     cols.push({ key: 'status', label: '状态', render: ipListStatusHTML });
