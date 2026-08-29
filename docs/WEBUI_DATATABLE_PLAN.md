@@ -194,7 +194,30 @@ filterBar：`bar.html()` 渲染后视图调 `bar.bind(host)` 绑定即改即查�
 
 ---
 
-> **✅ 已全部完成（2026-08-29）**：全部任务 1.1–6.2 已完成并经浏览器三页回归验证。提交须经用户确认（见 AGENTS.md）。
+> **✅ 已全部完成（2026-08-29）**：全部任务 1.1–6.2 已完成并经浏览器三页回归验证。提交 4b85622。
+> **二期（七、服务端分页改造）✅ 已全部完成（2026-08-29）**：拦截明细/访问日志已改服务端分页，7.1–7.8 全部完成并经浏览器两页回归验证。
+
+---
+
+## 七、二期：后端服务端分页改造（2026-08-29 启动）
+
+> 原「六、明确不做」中"后端服务端分页改造本期不动"一项经用户确认解除。
+> 设计要点：两接口保持 NDJSON 响应不变，新增 `offset` 参数，总数经 `X-Total-Count` 响应头回传；
+> 访问日志原前端本地筛选（状态分组/仅异常）与本地排序（耗时）必须下沉后端（`status_group`/`only_error`/`sort` 参数），否则翻页后失真；
+> 前端两页 dataTable 切 `server` 模式，limit/offset 取自 `table.state()`；导出改为按条件全量拉取（大 limit 单次请求）。
+
+| ID | 任务 | 依赖 | 验证要点 | 状态 | 备注 |
+|---|---|---|---|---|---|
+| 7.1 | SQL 三方言：`shield_event_query.sql`/`access_log_query.sql` 加 OFFSET（访问日志另加状态分组/仅异常/排序参数）；新增 `shield_event_count.sql`/`access_log_count.sql` | — | go test（db 门控测试过，其余单测覆盖 file store） | 已完成 | SQL 三方言 query 加 OFFSET（访问日志含状态分组/仅异常/排序 15 参数）+ 新增 count 脚本（COUNT(*) AS cnt 跨方言列名稳定）；bin/hotscripts/sql 已同步（外挂优先防旧文件覆盖）（2026-08-29） |
+| 7.2 | shield 后端：EventQuery 加 Offset、QueryEvents 传 offset、新增 CountEvents、admin.go Events 解析 offset 并回 X-Total-Count | 7.1 | go test：单测覆盖 offset 分页与 count；events 参数校验测试 | 已完成 | EventQuery 加 Offset、QueryEvents 传 limit+offset、CountEvents 复用查询条件；admin.go 解析 offset 并回 X-Total-Count；单测覆盖 offset 分页与 count（2026-08-29） |
+| 7.3 | obs 后端：Query 加 Offset/StatusGroup/OnlyError/Sort，DBStore/FileStore 实现分页与排序，新增 Count，admin.go Logs 解析新参数并回 X-Total-Count | 7.1 | go test：file store 分页/排序/筛选单测；logs 参数校验测试 | 已完成 | Query 加 Offset/StatusGroup/OnlyError/Sort；DBStore SQL 分页/排序，FileStore 收集后排序切片；Store 接口加 Count（AsyncStore/Obs 转发）；admin.go 解析 4 个新参数并回 X-Total-Count；file store 单测覆盖分页/计数/分组/排序（2026-08-29） |
+| 7.4 | 前端：api.js 增加 textMeta（读 X-Total-Count）；dataTable 删除 cap 触顶提示（服务端分页后无截断语义） | — | node --check | 已完成 | api.textMeta 读 X-Total-Count；dataTable 删除 cap/capText（服务端分页后无截断语义，无使用方）（2026-08-29） |
+| 7.5 | 前端 waf.js：eventsTable 切 server 分页，limit/offset 取自 table.state()，筛选变更回第 1 页；删 cap 提示与 limit=10000 | 7.2 7.4 | 浏览器：翻页/跳页/每页条数走服务端、总数正确 | 已完成 | eventsTable 切 server 分页，limit/offset 取自 table.state()，条件变更 go(1) 再查，翻页回调直接 queryEvents()；删除 cap 提示与 limit=10000（2026-08-29） |
+| 7.6 | 前端 logs.js：logsTable 切 server 分页；状态分组/仅异常/耗时排序改传后端参数；导出改按条件全量拉取（不受分页影响） | 7.3 7.4 | 浏览器：翻页/筛选/排序/导出条数=服务端总数 | 已完成 | logsTable 切 server 分页；状态分组/仅异常/耗时排序传后端参数（buildLogParams 统一组参）；导出改单次 limit=50000 全量拉取；删除 filteredLogs/statusGroup 本地过滤排序（2026-08-29） |
+| 7.7 | 文档同步：webui-api.md 两端点参数、webui.md 4.6/4.7 服务端分页描述、本文档状态 | 7.5 7.6 | 人工核对 | 已完成 | webui-api.md /admin/logs 参数表+响应说明与 shield events 行已更新；webui.md 4.6/4.7 改为服务端分页描述（2026-08-29） |
+| 7.8 | 全量验证：go test/vet + node --check + 浏览器两页回归 | 7.7 | 全绿后标记完成，提交注明验证结果 | 已完成 | 2026-08-29 全绿：go test/vet 通过；浏览器实测：拦截明细 1002 条 51 页翻页/跳页/类别过滤回第 1 页(27 条)/每页条数/弹层/ESC 全过；入网数据 1235 条 62 页/仅异常后端筛选 225 条全 4xx/耗时降序后端排序/弹层/ESC 全过；导出全量 225 条=服务端总数；全程 console 无错误。验证中发现并修复两问题：hotscripts 旧 SQL 副本覆盖（已在 7.1 备注）、api.js 导出清单漏 textMeta |
+
+---
 
 ## 六、明确不做（防过度设计）
 

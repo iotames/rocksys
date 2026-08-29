@@ -85,9 +85,11 @@ func (h *AdminHandler) Metrics(w http.ResponseWriter, r *http.Request) {
 //     缺省 from = 当天 00:00，缺省 to = 当天 23:59；
 //   - block_type：拦截类别（1-10，缺省 0 = 全部）；
 //   - client_ip：客户端 IP 精确匹配；
-//   - limit：返回上限（缺省 500）。
+//   - limit：单页条数（缺省 500，最大 10000）；
+//   - offset：分页偏移（缺省 0）。
 //
-// 响应：application/x-ndjson，每行一个平铺 JSON；参数非法返回 400。
+// 响应：application/x-ndjson，每行一个平铺 JSON；总数经 X-Total-Count 响应头回传
+// （与 limit/offset 配合实现服务端分页）；参数非法返回 400。
 func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 	if h.shield == nil {
 		http.Error(w, "shield 未注册", http.StatusServiceUnavailable)
@@ -122,18 +124,36 @@ func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	rows, err := rec.QueryEvents(EventQuery{
+	offset := 0
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			http.Error(w, "offset 应为非负整数", http.StatusBadRequest)
+			return
+		}
+		offset = n
+	}
+	eq := EventQuery{
 		From:      from,
 		To:        to,
 		BlockType: bt,
 		ClientIP:  q.Get("client_ip"),
 		Limit:     limit,
-	})
+		Offset:    offset,
+	}
+	rows, err := rec.QueryEvents(eq)
 	if err != nil {
 		log.Error("shield: events 查询失败", "err", err.Error())
 		http.Error(w, "events 查询失败", http.StatusInternalServerError)
 		return
 	}
+	total, err := rec.CountEvents(eq)
+	if err != nil {
+		log.Error("shield: events 计数失败", "err", err.Error())
+		http.Error(w, "events 查询失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
 	enc := json.NewEncoder(w)
 	for _, row := range rows {

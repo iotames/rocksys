@@ -101,6 +101,11 @@
 
   const api = {
     get: url => request('GET', url).then(r => r.json().catch(() => null)),
+    // textMeta：NDJSON 文本 + X-Total-Count 响应头总数（服务端分页端点用）
+    textMeta: url => request('GET', url).then(async r => ({
+      text: await r.text(),
+      total: Number(r.headers.get('X-Total-Count')) || 0,
+    })),
     put: url => body => request('PUT', url, body).then(r => r.json().catch(() => ({}))),
     post: url => body => request('POST', url, body).then(r => r.json().catch(() => ({}))),
     text: url => request('GET', url).then(r => r.text()),
@@ -117,5 +122,6 @@
     put: api.put,
     post: api.post,
     text: api.text,
+    textMeta: api.textMeta,
   };
 })();

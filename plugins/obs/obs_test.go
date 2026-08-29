@@ -515,7 +515,61 @@ func TestFileStoreQuery(t *testing.T) {
 	if rows[0][DimPath] != "/api/b" {
 		t.Errorf("limit 截断应取最新 2 条（倒序），实际 %v", rows[0][DimPath])
 	}
+	// offset 分页：page2 = 跳过最新 2 条后的剩余 1 条；Count 与总数一致
+	page2, _ := s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), Limit: 2, Offset: 2})
+	if len(page2) != 1 || page2[0][DimPath] != "/api/old" {
+		t.Errorf("offset=2 应返回剩余 1 条 /api/old，实际 %v", page2)
+	}
+	total, err := s.Count(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour)})
+	if err != nil || total != 3 {
+		t.Errorf("Count 应为 3，实际 %d (err=%v)", total, err)
+	}
+	// 状态分组（'4' = 4xx）
+	err = s.Write([]*AccessRecord{mk4xx(-2 * time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), StatusGroup: "4"})
+	if len(rows) != 1 || rows[0][DimStatusCode] != float64(404) {
+		t.Errorf("status_group=4 应只有 1 条 404，实际 %v", rows)
+	}
+	total, _ = s.Count(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), StatusGroup: "4"})
+	if total != 1 {
+		t.Errorf("status_group=4 计数应为 1，实际 %d", total)
+	}
+	// 仅异常
+	total, _ = s.Count(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), OnlyError: true})
+	if total != 1 {
+		t.Errorf("only_error 计数应为 1，实际 %d", total)
+	}
+	// 耗时排序
+	recs2 := []*AccessRecord{
+		&AccessRecord{Time: base.Add(-30 * time.Minute), TraceID: "s1", TenantID: "t1", Path: "/sort/a", Method: http.MethodGet, StatusCode: 200, TotalMs: 30},
+		&AccessRecord{Time: base.Add(-29 * time.Minute), TraceID: "s2", TenantID: "t1", Path: "/sort/b", Method: http.MethodGet, StatusCode: 200, TotalMs: 10},
+	}
+	if err := s.Write(recs2); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), PathLike: "/sort/", Sort: "total_desc"})
+	if len(rows) != 2 || rows[0][DimPath] != "/sort/a" {
+		t.Errorf("total_desc 应耗时高的在前，实际 %v", rows)
+	}
+	rows, _ = s.Query(Query{From: base.Add(-2 * time.Hour), To: base.Add(time.Hour), PathLike: "/sort/", Sort: "total_asc"})
+	if len(rows) != 2 || rows[0][DimPath] != "/sort/b" {
+		t.Errorf("total_asc 应耗时低的在前，实际 %v", rows)
+	}
 }
+
+// mk4xx 构造一条 404 记录（状态分组/仅异常测试用）。
+func mk4xx(offset time.Duration) *AccessRecord {
+	return &AccessRecord{
+		Time: base4xx.Add(offset), TraceID: "tid404", TenantID: "t1", Path: "/missing",
+		Method: http.MethodGet, StatusCode: 404, TotalMs: 1,
+	}
+}
+
+// base4xx 与 TestFileStoreQuery 的 base 对齐（包内共享基准时间）。
+var base4xx = time.Now()
 
 // DBStore 写读 + 过滤（sqlite 临时库）。
 func TestDBStoreWriteQuery(t *testing.T) {

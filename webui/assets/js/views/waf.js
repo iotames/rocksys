@@ -49,7 +49,7 @@
   const eventsBar = Rock.comp.filterBar.create({
     ns: 'waf-events-filter',
     live: true,
-    onQuery: function (state) { queryEvents(state); },
+    onQuery: function () { eventsTable.go(1); queryEvents(); }, // 条件变更回第 1 页再查
     fields: [
       { type: 'dateRange', key: '', default: { fromDate: today(), fromTime: '00:00', toDate: today(), toTime: '23:59' } },
       { type: 'select', key: 'blockType', options: TYPE_OPTIONS },
@@ -57,8 +57,7 @@
     ],
   });
 
-  // 明细表（客户端分页）+ 行详情弹层；显式拉满 limit=10000（后端上限，此前缺省只看 500 条）
-  const EVENTS_CAP = 10000;
+  // 明细表（服务端分页：limit/offset 由后端执行，总数经 X-Total-Count 回传）+ 行详情弹层
   const eventsTable = Rock.comp.dataTable.create({
     ns: 'waf-events',
     columns: [
@@ -87,9 +86,9 @@
         { key: 'extra_xff', label: 'X-Forwarded-For', render: r => esc(extraField(r, 'x_forwarded_for')) },
       ],
     },
-    paging: { mode: 'client', pageSize: 20 },
+    paging: { mode: 'server', pageSize: 20 },
     emptyText: '所选条件无拦截明细',
-    onPaging: function () { renderEventsWrap(); },
+    onPaging: function () { queryEvents(); }, // 翻页/跳页/改条数：按新 limit/offset 重新拉数
   });
 
   // extra 为 JSON 串：单独取字段展示（非法 JSON 忽略）
@@ -126,19 +125,23 @@
 
   async function loadEvents() {
     const s = eventsBar.state();
+    const st = eventsTable.state();
     const params = new URLSearchParams();
     params.set('from', qFrom(s));
     params.set('to', qTo(s));
     if (s.blockType) params.set('block_type', s.blockType);
     if (s.clientIP) params.set('client_ip', s.clientIP);
-    params.set('limit', String(EVENTS_CAP));
+    params.set('limit', String(st.pageSize));
+    params.set('offset', String(st.offset));
     try {
-      const txt = await api.text('/admin/shield/events?' + params.toString());
-      store.wafEvents = parseNdjson(txt);
+      const r = await api.textMeta('/admin/shield/events?' + params.toString());
+      store.wafEvents = parseNdjson(r.text);
+      store.wafEventsTotal = r.total;
       store.wafEventsError = null;
       noteUpdated();
     } catch (e) {
       store.wafEvents = [];
+      store.wafEventsTotal = 0;
       store.wafEventsError = e.message || '加载失败';
     }
   }
@@ -248,12 +251,12 @@
       '</tbody></table></div></div>';
   }
 
-  // 明细表渲染：表格 + 分页栏交给 dataTable 实例；错误态/空态由组件 emptyText 兜底
+  // 明细表渲染：表格 + 分页栏交给 dataTable 实例（server 模式喂总数）；错误态由视图兜底
   function eventsHTML() {
     if (store.wafEventsError) {
       return '<div class="empty">' + esc(store.wafEventsError) + '</div>';
     }
-    return eventsTable.html(store.wafEvents || [], { cap: EVENTS_CAP, maxHeight: '520px' });
+    return eventsTable.html(store.wafEvents || [], { total: store.wafEventsTotal || 0, maxHeight: '520px' });
   }
 
   function renderEventsWrap() {
@@ -412,9 +415,10 @@
 
   // ── 交互动作 ────────────────────────────────────────────────────────
 
-  // 明细查询（state 缺省时从筛选栏收集；时间非法直接提示）
-  async function queryEvents(state) {
-    state = state || eventsBar.collect();
+  // 明细查询（state 缺省时从筛选栏收集；时间非法直接提示；页码由调用方决定：
+  // 条件变更先 eventsTable.go(1)，翻页回调保持当前页）
+  async function queryEvents() {
+    const state = eventsBar.collect();
     if (qFrom(state) > qTo(state)) {
       toast('开始时间不能晚于结束时间', 'error');
       return;

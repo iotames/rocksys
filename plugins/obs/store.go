@@ -20,18 +20,34 @@ import (
 const defaultQueryLimit = 2000
 
 // Query 访问日志查询条件（/admin/logs 参数映射）。
-// 时间范围含端点；Path/PathLike/TraceID 为空串表示不过滤。
+// 时间范围含端点；Path/PathLike/TraceID/StatusGroup 为空串、OnlyError=false 表示不过滤。
 type Query struct {
-	From     time.Time // 开始时间（含）
-	To       time.Time // 结束时间（含）
-	Path     string    // path 精确匹配
-	PathLike string    // path 模糊匹配（Contains / LIKE %v%）
-	TraceID  string    // trace_id 模糊匹配
-	Limit    int       // 返回上限，<=0 用 defaultQueryLimit
+	From        time.Time // 开始时间（含）
+	To          time.Time // 结束时间（含）
+	Path        string    // path 精确匹配
+	PathLike    string    // path 模糊匹配（Contains / LIKE %v%）
+	TraceID     string    // trace_id 模糊匹配
+	StatusGroup string    // 状态分组：状态码首字符 '2'-'5'（如 '4' = 4xx），空串不过滤
+	OnlyError   bool      // 仅异常（status_code >= 400）
+	Sort        string    // 排序："time_desc"（缺省，最新在前）/ "total_desc" / "total_asc"
+	Limit       int       // 返回上限，<=0 用 defaultQueryLimit
+	Offset      int       // 分页偏移，<0 视为 0（服务端分页）
+}
+
+// sortCode 排序参数 → SQL 排序分支码（0=时间倒序 1=耗时降序 2=耗时升序）。
+func (q Query) sortCode() int {
+	switch q.Sort {
+	case "total_desc":
+		return 1
+	case "total_asc":
+		return 2
+	default:
+		return 0
+	}
 }
 
 // Store 访问日志存储后端接口。
-// Write 为同步批量写（异步排队由 AsyncStore 承担）；Query 返回平铺维度 map（time 升序）。
+// Write 为同步批量写（异步排队由 AsyncStore 承担）；Query 返回平铺维度 map（按 q.Sort 排序）。
 type Store interface {
 	// Name 存储后端名（"file" / "db"）。
 	Name() string
@@ -39,6 +55,8 @@ type Store interface {
 	Write(batch []*AccessRecord) error
 	// Query 按条件查询，返回平铺维度 map 列表（含负载维度）。
 	Query(q Query) ([]map[string]any, error)
+	// Count 按相同过滤条件（不含 limit/offset）统计总数，配合 Query 实现服务端分页。
+	Count(q Query) (int64, error)
 	// SizeBytes 返回该后端已存储日志的总字节数（file 为 access-*.jsonl 文件合计；db 为表+索引）。
 	SizeBytes() (int64, error)
 	// Flush 冲刷后端缓冲（file 无缓冲返回 nil；DB 由事务/连接层保证）。
@@ -133,6 +151,14 @@ func (a *AsyncStore) Query(q Query) ([]map[string]any, error) {
 	s := a.store
 	a.mu.Unlock()
 	return s.Query(q)
+}
+
+// Count 转发当前底层后端计数。
+func (a *AsyncStore) Count(q Query) (int64, error) {
+	a.mu.Lock()
+	s := a.store
+	a.mu.Unlock()
+	return s.Count(q)
 }
 
 // Flush 阻塞直到已入队记录全部写入底层并冲刷后端；成功后标记关闭。

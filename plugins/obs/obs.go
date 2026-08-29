@@ -233,6 +233,11 @@ func (o *Obs) Query(q Query) ([]map[string]any, error) {
 	return o.sink.Load().(*AsyncStore).Query(q)
 }
 
+// Count 按相同过滤条件统计访问日志总数（转发当前启用的存储后端，服务端分页用）。
+func (o *Obs) Count(q Query) (int64, error) {
+	return o.sink.Load().(*AsyncStore).Count(q)
+}
+
 // StorageSize 当前日志存储总占用（字节）：
 // file 为 OBS_LOG_DIR 下所有 access-*.jsonl 合计（遗留数据，file 已弃用）；
 // db 为 access_log 表 + 索引占用。两者独立统计并求和（与当前启用后端无关，

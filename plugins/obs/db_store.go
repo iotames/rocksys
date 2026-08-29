@@ -97,6 +97,7 @@ func (s *DBStore) Write(batch []*AccessRecord) error {
 }
 
 // Query 按条件查询，返回平铺维度 map（extra 已合并进顶层）。
+// 支持状态分组/仅异常/耗时排序与 offset 服务端分页（参数顺序见 access_log_query.sql 注释）。
 func (s *DBStore) Query(q Query) ([]map[string]any, error) {
 	sel, err := s.sqlText("access_log_query.sql")
 	if err != nil {
@@ -106,10 +107,21 @@ func (s *DBStore) Query(q Query) ([]map[string]any, error) {
 	if limit <= 0 {
 		limit = defaultQueryLimit
 	}
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	onlyError := 0
+	if q.OnlyError {
+		onlyError = 1
+	}
+	sortCode := q.sortCode()
 	args := []any{
 		q.From.UTC(), q.To.UTC(),
 		q.Path, q.Path, q.PathLike, q.PathLike, q.TraceID, q.TraceID,
-		limit,
+		q.StatusGroup, q.StatusGroup, onlyError,
+		sortCode, sortCode,
+		limit, offset,
 	}
 	var rows []map[string]any
 	if err := s.edb.GetMany(sel, &rows, args...); err != nil {
@@ -120,6 +132,31 @@ func (s *DBStore) Query(q Query) ([]map[string]any, error) {
 		normalizeRowTypes(row)
 	}
 	return rows, nil
+}
+
+// Count 按相同过滤条件（不含 limit/offset/sort）统计总数（服务端分页 X-Total-Count 用）。
+func (s *DBStore) Count(q Query) (int64, error) {
+	cnt, err := s.sqlText("access_log_count.sql")
+	if err != nil {
+		return 0, err
+	}
+	onlyError := 0
+	if q.OnlyError {
+		onlyError = 1
+	}
+	args := []any{
+		q.From.UTC(), q.To.UTC(),
+		q.Path, q.Path, q.PathLike, q.PathLike, q.TraceID, q.TraceID,
+		q.StatusGroup, q.StatusGroup, onlyError,
+	}
+	var rows []map[string]any
+	if err := s.edb.GetMany(cnt, &rows, args...); err != nil {
+		return 0, fmt.Errorf("obs: 统计访问日志总数失败: %w", err)
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return toInt64(rows[0]["cnt"]), nil
 }
 
 // normalizeRowTypes 将 DB 查询返回的行按维度注册表（dimIndex）归一化类型：

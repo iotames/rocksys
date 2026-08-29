@@ -89,8 +89,7 @@
         '</div></div>';
     }
 
-    // rows：当前页数据（client 模式传全量，组件内切片）；opts.total 仅 server 模式；
-    // opts.cap / opts.capText：结果触顶提示（如拦截明细 10000 / 访问日志 2000）
+    // rows：当前页数据（client 模式传全量，组件内切片）；opts.total 仅 server 模式（喂分页总数）
     function html(rows, opts) {
       rows = rows || [];
       opts = opts || {};
@@ -109,10 +108,6 @@
         body = '<div class="table-wrap"' + (opts.maxHeight ? ' style="max-height:' + esc(opts.maxHeight) + '"' : '') + '>' +
           '<table class="table"><thead><tr>' + head + '</tr></thead><tbody>' +
           shown.map(rowHTML).join('') + '</tbody></table></div>';
-        if (opts.cap && rows.length >= opts.cap) {
-          body += '<div class="form-hint" style="margin-top:8px">' +
-            esc(opts.capText || '已达单次查询上限，请收窄时间范围或筛选条件') + '</div>';
-        }
       }
       return body + pagingHTML();
     }

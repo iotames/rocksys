@@ -36,6 +36,7 @@ func (s *failStore) Write(batch []*AccessRecord) error {
 	return nil
 }
 func (s *failStore) Query(q Query) ([]map[string]any, error) { return nil, nil }
+func (s *failStore) Count(q Query) (int64, error)                { return 0, nil }
 func (s *failStore) SizeBytes() (int64, error)               { return 0, nil }
 func (s *failStore) Flush(ctx context.Context) error         { return nil }
 func (s *failStore) Close() error                            { return nil }

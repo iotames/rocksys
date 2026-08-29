@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"rocksys/internal/hotswap"
@@ -54,9 +55,15 @@ func (h *AdminHandler) Metrics(w http.ResponseWriter, r *http.Request) {
 //     缺省 from = 当天 00:00，缺省 to = 当天 23:59；
 //   - path：请求路径精确匹配；
 //   - path_like：请求路径模糊匹配（子串包含）；
-//   - trace_id：链路标识模糊匹配（API 层保留，WebUI 已移除该输入框）。
+//   - trace_id：链路标识模糊匹配（API 层保留，WebUI 已移除该输入框）；
+//   - status_group：状态分组，状态码首字符 '2'-'5'（如 '4' = 4xx）；
+//   - only_error：'1' = 仅异常（status_code >= 400）；
+//   - sort：排序，"time_desc"（缺省，最新在前）/ "total_desc" / "total_asc"；
+//   - limit：单页条数（缺省 2000，最大 50000）；
+//   - offset：分页偏移（缺省 0）。
 //
-// 响应：application/x-ndjson，每行一个平铺维度 JSON；参数非法返回 400。
+// 响应：application/x-ndjson，每行一个平铺维度 JSON；总数经 X-Total-Count 响应头回传
+// （与 limit/offset 配合实现服务端分页）；参数非法返回 400。
 func (h *AdminHandler) Logs(w http.ResponseWriter, r *http.Request) {
 	if h.obs == nil {
 		http.Error(w, "obs 未注册", http.StatusServiceUnavailable)
@@ -68,19 +75,62 @@ func (h *AdminHandler) Logs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	rows, err := h.obs.Query(Query{
-		From:     from,
-		To:       to,
-		Path:     q.Get("path"),
-		PathLike: q.Get("path_like"),
-		TraceID:  q.Get("trace_id"),
-		Limit:    defaultQueryLimit,
-	})
+	limit := 0
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 || n > 50000 {
+			http.Error(w, "limit 应为 1-50000 的整数", http.StatusBadRequest)
+			return
+		}
+		limit = n
+	}
+	offset := 0
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			http.Error(w, "offset 应为非负整数", http.StatusBadRequest)
+			return
+		}
+		offset = n
+	}
+	statusGroup := q.Get("status_group")
+	if statusGroup != "" && statusGroup != "2" && statusGroup != "3" && statusGroup != "4" && statusGroup != "5" {
+		http.Error(w, "status_group 应为 '2'-'5'", http.StatusBadRequest)
+		return
+	}
+	onlyError := q.Get("only_error") == "1"
+	sort := q.Get("sort")
+	switch sort {
+	case "", "time_desc", "total_desc", "total_asc":
+	default:
+		http.Error(w, "sort 应为 time_desc / total_desc / total_asc", http.StatusBadRequest)
+		return
+	}
+	lq := Query{
+		From:        from,
+		To:          to,
+		Path:        q.Get("path"),
+		PathLike:    q.Get("path_like"),
+		TraceID:     q.Get("trace_id"),
+		StatusGroup: statusGroup,
+		OnlyError:   onlyError,
+		Sort:        sort,
+		Limit:       limit,
+		Offset:      offset,
+	}
+	rows, err := h.obs.Query(lq)
 	if err != nil {
 		log.Error("obs: logs 查询失败", "err", err.Error())
 		http.Error(w, "logs 查询失败", http.StatusInternalServerError)
 		return
 	}
+	total, err := h.obs.Count(lq)
+	if err != nil {
+		log.Error("obs: logs 计数失败", "err", err.Error())
+		http.Error(w, "logs 查询失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
 	enc := json.NewEncoder(w)
 	for _, row := range rows {

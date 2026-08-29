@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,12 +64,9 @@ func (s *FileStore) Write(batch []*AccessRecord) error {
 	return nil
 }
 
-// Query 跨天读文件，逐行解析平铺维度并按条件过滤，返回 time 倒序列表（最新在前）。
-func (s *FileStore) Query(q Query) ([]map[string]any, error) {
-	limit := q.Limit
-	if limit <= 0 {
-		limit = defaultQueryLimit
-	}
+// queryAll 跨天读取文件，收集全部符合条件的行为 time 倒序（最新在前，与 DB 的 id DESC 语义一致）。
+// 供 Query（分页切片）与 Count（总数）共用。
+func (s *FileStore) queryAll(q Query) ([]map[string]any, error) {
 	var out []map[string]any
 	day := time.Date(q.To.Year(), q.To.Month(), q.To.Day(), 0, 0, 0, 0, time.Local)
 	endDay := time.Date(q.From.Year(), q.From.Month(), q.From.Day(), 0, 0, 0, 0, time.Local)
@@ -96,17 +94,64 @@ func (s *FileStore) Query(q Query) ([]map[string]any, error) {
 			// 文件内行倒序（新写入在前），与 DB 的 id DESC 语义一致
 			for i := len(lines) - 1; i >= 0; i-- {
 				out = append(out, lines[i])
-				if len(out) >= limit {
-					break
-				}
 			}
-		}
-		if len(out) >= limit {
-			break
 		}
 		day = day.AddDate(0, 0, -1)
 	}
 	return out, nil
+}
+
+// rowTotalMs 取平铺记录的 total_ms（缺省 0）。
+func rowTotalMs(m map[string]any) float64 {
+	switch v := m[DimTotalMs].(type) {
+	case float64:
+		return v
+	case int64:
+		return float64(v)
+	case int:
+		return float64(v)
+	default:
+		return 0
+	}
+}
+
+// Query 按条件查询：排序（时间倒序缺省 / 耗时降序 / 耗时升序）后按 offset 分页切片。
+func (s *FileStore) Query(q Query) ([]map[string]any, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = defaultQueryLimit
+	}
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out, err := s.queryAll(q)
+	if err != nil {
+		return nil, err
+	}
+	switch q.sortCode() {
+	case 1: // total_desc
+		sort.SliceStable(out, func(i, j int) bool { return rowTotalMs(out[i]) > rowTotalMs(out[j]) })
+	case 2: // total_asc
+		sort.SliceStable(out, func(i, j int) bool { return rowTotalMs(out[i]) < rowTotalMs(out[j]) })
+	}
+	if offset >= len(out) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
+}
+
+// Count 按相同过滤条件（不含 limit/offset/sort）统计总数（服务端分页 X-Total-Count 用）。
+func (s *FileStore) Count(q Query) (int64, error) {
+	out, err := s.queryAll(q)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(out)), nil
 }
 
 // Flush 无缓冲（异步队列在 AsyncStore），直接返回。
@@ -231,7 +276,34 @@ func matchQuery(m map[string]any, q Query) bool {
 			return false
 		}
 	}
+	if q.StatusGroup != "" {
+		code := int(rowStatusCode(m))
+		if code < 200 || string(rune('0'+code/100)) != q.StatusGroup {
+			return false
+		}
+	}
+	if q.OnlyError && int(rowStatusCode(m)) < 400 {
+		return false
+	}
 	return true
+}
+
+// rowStatusCode 取平铺记录的 status_code（缺省 0）。
+func rowStatusCode(m map[string]any) int64 {
+	switch v := m[DimStatusCode].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case string:
+		var n int64
+		_, _ = fmt.Sscan(v, &n)
+		return n
+	default:
+		return 0
+	}
 }
 
 // parseRowTime 解析平铺记录中的 time 维度（RFC3339），失败返回 false。

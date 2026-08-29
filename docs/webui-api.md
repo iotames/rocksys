@@ -331,8 +331,13 @@
 | path | 请求路径精确匹配（如 `/api/order/1`） |
 | path_like | 请求路径模糊匹配（子串包含，如 `/api/order`） |
 | trace_id | 链路标识模糊匹配（API 层保留，WebUI 已移除该输入框） |
+| status_group | 状态分组，状态码首字符 `'2'`-`'5'`（如 `'4'` = 4xx），缺省不过滤 |
+| only_error | `'1'` = 仅异常（`status_code >= 400`），缺省不过滤 |
+| sort | 排序：`time_desc`（缺省，最新在前）/ `total_desc`（耗时降序）/ `total_asc`（耗时升序） |
+| limit | 单页条数，1-50000，缺省 2000 |
+| offset | 分页偏移，非负整数，缺省 0 |
 
-**响应 200**：`Content-Type: application/x-ndjson`，每行一个 JSON 对象（平铺维度，扩展负载字段如 `request_body` 直接出现在顶层）：
+**响应 200**：`Content-Type: application/x-ndjson`，每行一个 JSON 对象；`X-Total-Count` 响应头回传满足条件的总条数（与 `limit`/`offset` 配合实现服务端分页）（平铺维度，扩展负载字段如 `request_body` 直接出现在顶层）：
 
 ```json
 {"time":"2026-08-04T10:12:03+08:00","trace_id":"ab34...","path":"/api/order/1","method":"GET","client_ip":"127.0.0.1:1234","status_code":200,"upstream":"http://o1:9001","shield_ms":1,"biz_ms":11,"total_ms":12,"req_bytes":512,"resp_bytes":1024}
@@ -355,7 +360,7 @@
 | resp_bytes | int | 响应流量（字节） |
 | （扩展维度） | 不定 | 负载维度（如 `request_body`），由 obs 维度注册表定义，平铺输出 |
 
-**数据来源**：当前启用的 obs 存储后端（默认 `OBS_STORE=db` 查 `access_log` 表；`OBS_STORE=file` 读 `logs/access-YYYY-MM-DD.jsonl`，已弃用），切换后端后只查当前后端。`access_log` 表字段定义见 `docs/DATA_DICT.md`。**返回按完成时间倒序（最新在前），最多 `2000` 条**；耗时排序由 WebUI 端对已加载数据本地排序。
+**数据来源**：当前启用的 obs 存储后端（默认 `OBS_STORE=db` 查 `access_log` 表；`OBS_STORE=file` 读 `logs/access-YYYY-MM-DD.jsonl`，已弃用），切换后端后只查当前后端。`access_log` 表字段定义见 `docs/DATA_DICT.md`。**按 `sort` 排序（缺省完成时间倒序），`limit`/`offset` 服务端分页（WebUI 每页 20/50/100）**；状态分组/仅异常/耗时排序均由后端执行。
 
 **失败 `400`**：时间格式非法（应为 `YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`）/ `from` 晚于 `to`，响应体文本为错误原因。
 **失败 `503`**：观测组件未注册。
@@ -453,7 +458,7 @@
 | 端点 | 说明 |
 |------|------|
 | `GET /admin/shield/metrics` | 近 1 分钟实时计数（内存滑动窗口，DB 未配置也可用）；响应 `{window_seconds,total,by_type,written,dropped}` |
-| `GET /admin/shield/events` | 拦截明细（JSONL）；query：`from`/`to`（日期或分钟精度）、`block_type`（1-10）、`client_ip`、`limit` |
+| `GET /admin/shield/events` | 拦截明细（JSONL）；query：`from`/`to`（日期或分钟精度）、`block_type`（1-10）、`client_ip`、`limit`（1-10000，缺省 500）、`offset`；总数经 `X-Total-Count` 头回传 |
 | `GET /admin/shield/stats` | 聚合统计；响应 `{days,total,daily:[{day,block_type,cnt}],top_ips:[{client_ip,cnt}]}` |
 | `POST /admin/shield/prune` | 手动清理拦截明细；body `{"days":N}`（0-3650，缺省用配置默认值）；响应 `{"ok":true,"deleted":N}` |
 

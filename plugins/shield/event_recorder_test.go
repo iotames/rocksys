@@ -212,6 +212,26 @@ func TestEventRecorderRecordAndQuery(t *testing.T) {
 	if len(rows) != 2 {
 		t.Errorf("limit=2 应返回 2 条，实际 %d", len(rows))
 	}
+	// offset 分页：跳过最新 2 条，limit=2 取第 3-4 条；总数与条件一致
+	total, err := r.CountEvents(EventQuery{From: base.Add(-time.Minute), To: base.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("CountEvents: %v", err)
+	}
+	if total != 5 {
+		t.Errorf("CountEvents 应为 5，实际 %d", total)
+	}
+	// 记录顺序：3 条 SQL 注入（10.0.0.1）先写、2 条限流（10.0.0.2）后写；倒序即最新（限流）在前
+	page1, _ := r.QueryEvents(EventQuery{From: base.Add(-time.Minute), To: base.Add(time.Minute), Limit: 2, Offset: 0})
+	page2, _ := r.QueryEvents(EventQuery{From: base.Add(-time.Minute), To: base.Add(time.Minute), Limit: 2, Offset: 2})
+	if len(page1) != 2 || len(page2) != 2 {
+		t.Fatalf("offset 分页应返回 2/2 条，实际 %d/%d", len(page1), len(page2))
+	}
+	if page1[0]["client_ip"] != "10.0.0.2" || page1[1]["client_ip"] != "10.0.0.2" {
+		t.Errorf("page1 应为最新的 2 条限流记录（10.0.0.2），实际 %v/%v", page1[0]["client_ip"], page1[1]["client_ip"])
+	}
+	if page2[0]["client_ip"] != "10.0.0.1" {
+		t.Errorf("page2 应从 SQL 注入记录（10.0.0.1）开始，实际 %v", page2[0]["client_ip"])
+	}
 }
 
 // StatsDaily / StatsTopIP 查询时聚合正确。

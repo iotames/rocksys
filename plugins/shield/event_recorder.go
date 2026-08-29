@@ -463,12 +463,14 @@ type EventQuery struct {
 	BlockType BlockType
 	ClientIP  string
 	Limit     int // <=0 用默认值
+	Offset    int // <0 视为 0（服务端分页偏移）
 }
 
 // defaultEventQueryLimit 明细查询默认返回上限。
 const defaultEventQueryLimit = 500
 
 // QueryEvents 按条件查询拦截明细，返回归一化后的行（time → RFC3339 字符串）。
+// 配合 CountEvents 实现 offset 服务端分页（总数经 X-Total-Count 回传）。
 func (r *EventRecorder) QueryEvents(q EventQuery) ([]map[string]any, error) {
 	sel, err := r.sqlText("shield_event_query.sql")
 	if err != nil {
@@ -478,11 +480,15 @@ func (r *EventRecorder) QueryEvents(q EventQuery) ([]map[string]any, error) {
 	if limit <= 0 {
 		limit = defaultEventQueryLimit
 	}
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
 	args := []any{
 		q.From.UTC(), q.To.UTC(),
 		int(q.BlockType), int(q.BlockType),
 		q.ClientIP, q.ClientIP,
-		limit,
+		limit, offset,
 	}
 	var rows []map[string]any
 	if err := r.edb.GetMany(sel, &rows, args...); err != nil {
@@ -492,6 +498,27 @@ func (r *EventRecorder) QueryEvents(q EventQuery) ([]map[string]any, error) {
 		normalizeEventRow(row)
 	}
 	return rows, nil
+}
+
+// CountEvents 按相同条件统计拦截明细总数（与 QueryEvents 的过滤条件一致，不含 limit/offset）。
+func (r *EventRecorder) CountEvents(q EventQuery) (int64, error) {
+	cnt, err := r.sqlText("shield_event_count.sql")
+	if err != nil {
+		return 0, err
+	}
+	args := []any{
+		q.From.UTC(), q.To.UTC(),
+		int(q.BlockType), int(q.BlockType),
+		q.ClientIP, q.ClientIP,
+	}
+	var rows []map[string]any
+	if err := r.edb.GetMany(cnt, &rows, args...); err != nil {
+		return 0, fmt.Errorf("shield: 统计拦截明细总数失败: %w", err)
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return eventToInt64(rows[0]["cnt"]), nil
 }
 
 // StatsDaily 按日 × 拦截类别聚合（查询时聚合，不建物化表）。
