@@ -141,6 +141,8 @@
       views.syslogs.leave();
     }
     prevRoute = route;
+    // 切换页面清空残留提示（常驻错误提示不跨页携带；刷新页面天然清空）
+    Rock.ui.clearToasts();
     $$('.page').forEach(sec => sec.classList.add('hidden'));
     const page = $('#page-' + route.base);
     if (page) page.classList.remove('hidden');

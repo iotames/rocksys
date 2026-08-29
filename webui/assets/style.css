@@ -863,10 +863,26 @@ b, strong { font-weight: 600; }
 
 .toast.show { opacity: 1; transform: none; }
 
-.toast-icon { font-weight: 700; flex: 0 0 auto; }
-.toast-msg { word-break: break-all; }
+.toast-sticky { cursor: default; }
+
+.toast-head { display: flex; align-items: flex-start; gap: 8px; }
+.toast-msg { word-break: break-all; flex: 1; }
+.toast-x {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px;
+  cursor: pointer;
+}
+.toast-x:hover { color: var(--text); }
+.toast-foot { display: flex; justify-content: flex-end; margin-top: 8px; }
 .toast-success .toast-icon { color: var(--ok); }
 .toast-error .toast-icon { color: var(--danger-light); }
+.toast-error { border-left: 3px solid var(--danger-light); }
+.toast-warning { border-left: 3px solid var(--warn); }
 .toast-warning .toast-icon { color: var(--warn); }
 .toast-info .toast-icon { color: var(--primary-light); }
 

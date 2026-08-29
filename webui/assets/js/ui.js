@@ -14,25 +14,44 @@
   const fmtTime = Rock.util.fmtTime;
   const fmtDateTime = Rock.util.fmtDateTime;
 
-  // 右上角消息提示（成功 / 失败 / 警告 / 信息）
+  // 右上角消息提示（唯一提示组件，全站统一走这里，禁止再造轮子）：
+  // - success / info：操作正常反馈，显示完自动消失（默认 3.2s，点击也可关闭）；
+  // - error / warning：异常信息，不自动消失——需点右上角 ✕ 或「知道了」按钮关闭；
+  //   传显式 duration 时仍自动消失（如登录页警告 6s）。
+  // 切换页面经 clearToasts() 清空（刷新页面天然清空），不让过期提示跨页残留。
   function toast(message, type, duration) {
     type = type || 'success';
-    duration = duration == null ? 3200 : duration;
+    const sticky = (type === 'error' || type === 'warning') && duration == null;
     const root = $('#toast-root');
     if (!root) return;
     const el = document.createElement('div');
-    el.className = 'toast toast-' + type;
+    el.className = 'toast toast-' + type + (sticky ? ' toast-sticky' : '');
     const icons = { success: '✓', error: '✕', warning: '⚠', info: 'ℹ' };
-    el.innerHTML = '<span class="toast-icon">' + (icons[type] || 'ℹ') + '</span><span class="toast-msg"></span>';
+    el.innerHTML =
+      '<div class="toast-head"><span class="toast-icon">' + (icons[type] || 'ℹ') + '</span>' +
+      '<span class="toast-msg"></span>' +
+      (sticky ? '<button class="toast-x" data-toast-act="close" title="关闭">✕</button>' : '') +
+      '</div>' +
+      (sticky ? '<div class="toast-foot"><button class="btn btn-sm" data-toast-act="close">知道了</button></div>' : '');
     el.querySelector('.toast-msg').textContent = message;
     root.appendChild(el);
     requestAnimationFrame(() => el.classList.add('show'));
     const close = () => {
+      if (!el.isConnected) return;
       el.classList.remove('show');
       setTimeout(() => el.remove(), 260);
     };
-    el.addEventListener('click', close);
-    setTimeout(close, duration);
+    el.addEventListener('click', e => {
+      // 常驻提示仅 ✕ /「知道了」可关闭，避免误点正文丢失信息
+      if (!sticky || e.target.closest('[data-toast-act="close"]')) close();
+    });
+    if (!sticky) setTimeout(close, duration == null ? 3200 : duration);
+  }
+
+  // 清空全部提示（路由切换时调用；刷新页面天然清空）
+  function clearToasts() {
+    const root = $('#toast-root');
+    if (root) root.innerHTML = '';
   }
 
   // 二次确认弹窗（危险操作为红色按钮）
@@ -161,6 +180,7 @@
 
   window.Rock.ui = {
     toast,
+    clearToasts,
     confirmDialog,
     openModal,
     skeletonHTML,
