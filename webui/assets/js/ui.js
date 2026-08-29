@@ -72,6 +72,7 @@
         if (a === 'ok') close(true);
         else if (a === 'cancel') close(false);
       });
+      overlay._rockClose = () => close(false);
     });
   }
 
@@ -99,6 +100,18 @@
     });
     return overlay;
   }
+
+  // ESC 关闭最上层弹层：confirmDialog 优先走 _rockClose（等价取消，resolve(false)），
+  // 其余（openModal / detailModal 等）直接移除 overlay。仅在有弹层时响应。
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    const root = document.getElementById('modal-root');
+    if (!root || !root.lastElementChild) return;
+    const overlay = root.lastElementChild;
+    e.preventDefault();
+    if (typeof overlay._rockClose === 'function') overlay._rockClose();
+    else overlay.remove();
+  });
 
   // 骨架屏
   function skeletonHTML(rows) {

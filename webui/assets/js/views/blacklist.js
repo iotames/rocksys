@@ -21,13 +21,61 @@
   const BLOCK_TYPES = Rock.state.BLOCK_TYPES;
   const typeName = Rock.state.blockTypeName;
 
-  // 查询 / 分页 / 数据状态（页内私有）
+  // 查询 / 分页 / 数据状态（页内私有；筛选值在 filterBar 实例、分页在 dataTable 实例）
   const ipListState = {
     kind: 'black', // 'black' | 'white'
-    ip: '', blockType: '', validOnly: false,
     limit: 20, offset: 0,
     rows: [], total: 0, loaded: false, error: '',
   };
+
+  // 筛选栏与表格实例：黑/白切换时重建（类别字段仅黑名单有，不做动态显隐配置）
+  let ipBar = null;
+  let ipTable = null;
+
+  function buildInstances() {
+    const isBlack = ipListState.kind === 'black';
+    const btOptions = [['', '全部类别']].concat(BLOCK_TYPES.map(function (t) { return [String(t[0]), t[1]]; }));
+    const fields = [{ type: 'text', key: 'ip', placeholder: 'IP 模糊', width: '140px' }];
+    if (isBlack) fields.push({ type: 'select', key: 'blockType', options: btOptions });
+    fields.push({ type: 'check', key: 'validOnly', label: '仅有效' });
+    ipBar = Rock.comp.filterBar.create({
+      ns: 'waf-iplist-filter',
+      live: true,
+      onQuery: function () { query(); },
+      fields: fields,
+    });
+    const cols = [
+      { key: 'id', label: 'ID' },
+      { key: 'ip', label: 'IP / CIDR', render: function (r) { return '<b>' + esc(r.ip) + '</b>'; } },
+      { key: 'title', label: '备注' },
+    ];
+    if (isBlack) {
+      cols.push(
+        { key: 'block_type', label: '类别', render: function (r) { return esc(typeName(r.block_type)); } },
+        { key: 'hit_count', label: '命中', render: function (r) { return fmtInt(Number(r.hit_count) || 0); } },
+        { key: 'expires_at', label: '过期时间', render: function (r) { return esc(r.expires_at || '永久'); } }
+      );
+    }
+    cols.push({ key: 'status', label: '状态', render: ipListStatusHTML });
+    ipTable = Rock.comp.dataTable.create({
+      ns: 'waf-iplist',
+      columns: cols,
+      rowActions: function (row) {
+        return row.deleted_at
+          ? '<button class="btn btn-sm btn-text" data-act="waf-iplist-restore" data-id="' + row.id + '">恢复</button>'
+          : '<button class="btn btn-sm btn-text" data-act="waf-iplist-del" data-id="' + row.id + '">删除</button>';
+      },
+      detail: null, // 行内已展示全部字段，无点行详情
+      paging: { mode: 'server', pageSize: 20 },
+      emptyText: '暂无条目',
+      onPaging: function (st) {
+        ipListState.offset = st.offset;
+        ipListState.limit = st.pageSize;
+        loadIPList();
+      },
+    });
+  }
+  buildInstances();
 
   // 页面上下文（waf.js 注入）：tabsHTML() 主 Tab HTML、activeTab() 当前主 Tab
   let pageCtx = { tabsHTML: function () { return ''; }, activeTab: function () { return 'stats'; } };
@@ -38,11 +86,15 @@
   }
 
   async function loadIPList() {
+    const s = ipBar.state();
+    const st = ipTable.state();
     const p = [];
-    if (ipListState.ip) p.push('ip=' + encodeURIComponent(ipListState.ip));
-    if (ipListState.blockType) p.push('block_type=' + ipListState.blockType);
-    if (ipListState.validOnly) p.push('valid_only=1');
-    p.push('limit=' + ipListState.limit, 'offset=' + ipListState.offset);
+    if (s.ip) p.push('ip=' + encodeURIComponent(s.ip));
+    if (s.blockType) p.push('block_type=' + s.blockType);
+    if (s.validOnly) p.push('valid_only=1');
+    ipListState.limit = st.pageSize;
+    ipListState.offset = st.offset;
+    p.push('limit=' + st.pageSize, 'offset=' + st.offset);
     ipListState.loaded = true;
     try {
       const r = await api.get(ipListBase() + '?' + p.join('&'));
@@ -69,33 +121,7 @@
   function ipListRowsHTML() {
     if (!ipListState.loaded) return '<div class="empty">加载中…</div>';
     if (ipListState.error) return '<div class="empty">' + esc(ipListState.error) + '</div>';
-    if (!ipListState.rows.length) return '<div class="empty">暂无条目</div>';
-    const isBlack = ipListState.kind === 'black';
-    const head = isBlack
-      ? '<th>ID</th><th>IP / CIDR</th><th>备注</th><th>类别</th><th>命中</th><th>过期时间</th><th>状态</th><th>操作</th>'
-      : '<th>ID</th><th>IP / CIDR</th><th>备注</th><th>状态</th><th>操作</th>';
-    const rows = ipListState.rows.map(function (row) {
-      const id = row.id;
-      const del = row.deleted_at
-        ? '<button class="btn btn-sm btn-text" data-act="waf-iplist-restore" data-id="' + id + '">恢复</button>'
-        : '<button class="btn btn-sm btn-text" data-act="waf-iplist-del" data-id="' + id + '">删除</button>';
-      const base = isBlack
-        ? '<td>' + id + '</td><td><b>' + esc(row.ip) + '</b></td><td>' + esc(row.title || '') + '</td>' +
-          '<td>' + esc(typeName(row.block_type)) + '</td><td>' + fmtInt(Number(row.hit_count) || 0) + '</td>' +
-          '<td>' + esc(row.expires_at || '永久') + '</td><td>' + ipListStatusHTML(row) + '</td>'
-        : '<td>' + id + '</td><td><b>' + esc(row.ip) + '</b></td><td>' + esc(row.title || '') + '</td><td>' + ipListStatusHTML(row) + '</td>';
-      return '<tr>' + base + '<td>' + del + '</td></tr>';
-    }).join('');
-    return '<div class="table-wrap"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
-  }
-
-  function ipListPagingHTML() {
-    return Rock.comp.dataTable.pagingHTML({
-      total: ipListState.total,
-      offset: ipListState.offset,
-      limit: ipListState.limit,
-      act: 'waf-iplist-page',
-    });
+    return ipTable.html(ipListState.rows, { total: ipListState.total });
   }
 
   // 渲染整个 WAF 页面（黑白名单视图：主 Tab + 黑/白切换 + 列表/新增/导入）
@@ -119,18 +145,12 @@
         { act: 'waf-iplist-kind', nameAttr: 'data-kind' }
       ) +
       '<div class="card"><div class="card-title">' + (isBlack ? '黑名单' : '白名单') + '条目 <span class="card-sub">' + (isBlack ? 'DB 表 ∪ 外挂 rules/ip_blacklist.txt（.env 已不再支持黑名单）' : 'DB 表 ∪ .env SHIELD_IP_WHITELIST') + '</span></div>' +
-      '<div class="log-toolbar">' +
-      '<input class="input input-sm" id="iplist-filter-ip" placeholder="IP 模糊" style="width:140px" value="' + esc(ipListState.ip) + '">' +
-      (isBlack
-        ? '<select class="select select-sm" id="iplist-filter-bt">' +
-          '<option value="">全部类别</option>' + btOptions + '</select>'
-        : '') +
-      '<label class="chk"><input type="checkbox" id="iplist-filter-valid"' + (ipListState.validOnly ? ' checked' : '') + '> 仅有效</label>' +
+      ipBar.html() +
+      '<div class="log-toolbar" style="margin-top:-6px">' +
       '<button class="btn btn-sm btn-primary" data-act="waf-iplist-query">查询</button>' +
       '<button class="btn btn-sm btn-text" data-act="waf-iplist-reset">重置</button>' +
       '</div>' +
-      ipListRowsHTML() +
-      ipListPagingHTML() +
+      '<div id="iplist-table-wrap">' + ipListRowsHTML() + '</div>' +
       '</div>' +
       '<div class="card"><div class="card-title">新增' + (isBlack ? '黑名单' : '白名单') + '条目</div>' +
       '<div class="log-toolbar">' +
@@ -151,6 +171,9 @@
         : '') +
       '<button class="btn btn-sm" data-act="waf-iplist-import">批量导入</button>' +
       '</div></div>';
+    // 筛选栏即改即查（组件内防抖）+ 分页控件委托（wrap 每次渲染重建，随渲染重绑安全）
+    ipBar.bind(host);
+    ipTable.bind($('#iplist-table-wrap'));
   }
 
   async function switchKind(kind) {
@@ -160,27 +183,18 @@
     ipListState.rows = [];
     ipListState.total = 0;
     ipListState.loaded = false;
+    buildInstances(); // 类别字段仅黑名单有：黑/白切换重建筛选栏与表格实例
     await loadIPList();
   }
 
   async function query() {
-    ipListState.ip = ($('#iplist-filter-ip') || {}).value || '';
-    ipListState.blockType = ($('#iplist-filter-bt') || {}).value || '';
-    ipListState.validOnly = !!($('#iplist-filter-valid') || {}).checked;
-    ipListState.offset = 0;
+    ipBar.collect();
+    ipTable.go(1); // 新查询回第 1 页
     await loadIPList();
   }
 
   function reset() {
-    ipListState.ip = ''; ipListState.blockType = ''; ipListState.validOnly = false; ipListState.offset = 0;
-    loadIPList();
-  }
-
-  async function page(dir) {
-    const next = ipListState.offset + dir * ipListState.limit;
-    if (next < 0 || next >= ipListState.total) return;
-    ipListState.offset = next;
-    await loadIPList();
+    ipBar.reset(); // 回默认值并触发 onQuery → query()
   }
 
   // 输入框错误态标记（输入即清除）
@@ -214,7 +228,7 @@
     try {
       await api.post(ipListBase())(body);
       toast('已新增 ' + ip.trim(), 'success');
-      ipListState.offset = 0;
+      ipTable.go(1); // 回第 1 页
       await loadIPList();
     } catch (e) {
       toast('新增失败：' + e.message, 'error');
@@ -270,7 +284,7 @@
       const r = await api.post(ipListBase() + '/import' + q)(text);
       toast('已导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条', 'success');
       ($('#iplist-import-text') || {}).value = '';
-      ipListState.offset = 0;
+      ipTable.go(1); // 回第 1 页
       await loadIPList();
     } catch (e) {
       toast('导入失败：' + e.message, 'error');
@@ -284,7 +298,6 @@
     switchKind: switchKind,
     query: query,
     reset: reset,
-    page: page,
     add: add,
     del: del,
     restore: restore,

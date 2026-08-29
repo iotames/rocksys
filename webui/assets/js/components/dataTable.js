@@ -1,11 +1,10 @@
 /* ==========================================================================
  * RockSys 管理控制台 - components/dataTable.js 通用数据表格组件
- * 提供三块业务无关能力，供日志 / WAF / 黑白名单等列表视图复用：
- *   - tableHTML：表格壳（表头 + 行渲染 + 条数上限提示 + 空态）
- *   - createExpander：展开状态器（以行键管理展开/收起，排序过滤后不错位）
- *   - pagingHTML：客户端分页控件（总数 / 页码 / 上一页下一页）
- * 行内容与展开详情由调用方通过 rowHTML 提供，组件不感知业务字段。
- * 依赖 Rock.util.esc / Rock.util.fmtInt。挂载 window.Rock.comp.dataTable。
+ * 有状态实例 create()：列声明 + 行渲染 + 客户端/服务端分页 + 行点击详情钩子，
+ * 配置与事件接线规范见 docs/WEBUI_DATATABLE_PLAN.md 4.3/4.4。
+ * XSS 约定：组件渲染的值默认经 Rock.util.esc；列 render / rowActions 回调返回 HTML
+ * 属视图显式信任边界，review 只盯 render 回调。
+ * 依赖 Rock.util.esc / Rock.util.fmtInt / Rock.comp.detailModal。挂载 window.Rock.comp.dataTable。
  * ========================================================================== */
 (function () {
   'use strict';
@@ -16,52 +15,160 @@
   const esc = Rock.util.esc;
   const fmtInt = Rock.util.fmtInt;
 
-  // 表格壳：columns 为表头（{label,width?} 或字符串），rows 为数据，
-  // rowHTML(row, idx) 返回 <tr>…</tr>（可自带展开详情行），maxRows 超限时给提示
-  function tableHTML(opts) {
-    opts = opts || {};
-    const rows = opts.rows || [];
-    if (!rows.length) {
-      return opts.emptyHTML || '<div class="empty">' + esc(opts.emptyText || '暂无数据') + '</div>';
+  // ── 有状态实例（新版）───────────────────────────────────────────────
+  // cfg：{ ns, columns, rowKey?, rowActions?, detail?, paging?, emptyText?, rowClass?, onPaging? }
+  // 分页交互接线说明：全局事件委托只覆盖 click，select/input 的 change 无委托通道，
+  // 故翻页按钮/跳页输入/每页条数由实例 bind(host) 内部委托并回调 cfg.onPaging(state)，
+  // 视图只需提供 onPaging 重新拉数/渲染；行详情仍走 data-act="<ns>-detail"（click 委托）。
+  function create(cfg) {
+    const ns = cfg.ns;
+    const pagingCfg = cfg.paging || {};
+    const mode = pagingCfg.mode || 'client';
+    const sizeOptions = pagingCfg.pageSizeOptions || [20, 50, 100];
+    let page = 1;
+    let pageSize = pagingCfg.pageSize || 20;
+    let total = 0; // server 模式由 html(opts.total) 喂入；client 模式 = rows.length
+
+    function pages() { return Math.max(1, Math.ceil(total / pageSize)); }
+
+    // 状态查询：server 模式视图拼 limit/offset 用
+    function state() {
+      return { page: page, pageSize: pageSize, offset: (page - 1) * pageSize };
     }
-    const maxRows = opts.maxRows || rows.length;
-    const shown = rows.slice(0, maxRows);
-    const head = (opts.columns || []).map(function (c) {
-      const col = typeof c === 'string' ? { label: c } : c;
-      return '<th' + (col.width ? ' style="width:' + col.width + '"' : '') + '>' + esc(col.label) + '</th>';
-    }).join('');
-    const body = shown.map(function (r, i) { return opts.rowHTML(r, i); }).join('');
-    const hint = rows.length > maxRows
-      ? '<div class="form-hint" style="margin-top:8px">已达 ' + maxRows + ' 条展示上限，请收窄时间范围或筛选条件。</div>'
-      : '';
-    return '<div class="table-wrap"' + (opts.maxHeight ? ' style="max-height:' + opts.maxHeight + '"' : '') + '>' +
-      '<table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>' + hint;
+
+    function go(n) {
+      n = Math.floor(Number(n) || 0);
+      page = Math.min(Math.max(1, n), pages());
+    }
+
+    function setPageSize(n) {
+      pageSize = Number(n) || 20;
+      page = 1;
+    }
+
+    // ── 渲染（纯函数，分页状态内聚）────────────────────────────────────
+    function cellHTML(col, row) {
+      if (typeof col.render === 'function') return col.render(row); // 显式信任边界
+      const v = row[col.key];
+      return esc(v == null ? '' : String(v));
+    }
+
+    function rowHTML(row) {
+      const cls = 'dt-row' + (cfg.rowClass ? ' ' + cfg.rowClass(row) : '');
+      let tr;
+      if (cfg.detail) {
+        tr = '<tr class="' + cls + ' dt-row-clickable" data-act="' + esc(ns) + '-detail" data-key="' +
+          esc(cfg.rowKey ? String(cfg.rowKey(row)) : '') + '">';
+      } else {
+        tr = '<tr class="' + cls + '">';
+      }
+      tr += cfg.columns.map(function (col) {
+        return '<td' + (col.cls ? ' class="' + esc(col.cls) + '"' : '') +
+          (col.width ? ' style="width:' + esc(col.width) + '"' : '') + '>' + cellHTML(col, row) + '</td>';
+      }).join('');
+      if (cfg.rowActions) tr += '<td class="dt-row-actions">' + cfg.rowActions(row) + '</td>';
+      return tr + '</tr>';
+    }
+
+    function pagingHTML() {
+      const left = '<div class="dt-paging-left">共 ' + fmtInt(total) + ' 条 · 每页 ' +
+        '<select class="select select-sm" data-dt-size>' +
+        sizeOptions.map(function (n) {
+          return '<option value="' + n + '"' + (n === pageSize ? ' selected' : '') + '>' + n + '</option>';
+        }).join('') +
+        '</select></div>';
+      if (pages() <= 1) return '<div class="dt-paging">' + left + '</div>';
+      const cur = Math.min(page, pages());
+      return '<div class="dt-paging">' + left +
+        '<div class="dt-paging-right">' +
+        '<button class="btn btn-sm" data-dt-page="' + (cur - 1) + '"' + (cur <= 1 ? ' disabled' : '') + '>‹ 上一页</button>' +
+        '<span class="muted">第</span>' +
+        '<input type="number" class="input input-sm dt-page-input" data-dt-page-input min="1" max="' + pages() + '" value="' + cur + '">' +
+        '<span class="muted">/ ' + pages() + ' 页</span>' +
+        '<button class="btn btn-sm" data-dt-page="' + (cur + 1) + '"' + (cur >= pages() ? ' disabled' : '') + '>下一页 ›</button>' +
+        '</div></div>';
+    }
+
+    // rows：当前页数据（client 模式传全量，组件内切片）；opts.total 仅 server 模式；
+    // opts.cap / opts.capText：结果触顶提示（如拦截明细 10000 / 访问日志 2000）
+    function html(rows, opts) {
+      rows = rows || [];
+      opts = opts || {};
+      if (mode === 'server') total = Number(opts.total) || 0;
+      else total = rows.length;
+      if (page > pages()) page = pages();
+
+      let body;
+      if (!rows.length) {
+        body = '<div class="empty">' + esc(cfg.emptyText || '暂无数据') + '</div>';
+      } else {
+        const shown = mode === 'client' ? rows.slice((page - 1) * pageSize, page * pageSize) : rows;
+        const head = cfg.columns.map(function (col) {
+          return '<th' + (col.width ? ' style="width:' + esc(col.width) + '"' : '') + '>' + esc(col.label) + '</th>';
+        }).join('') + (cfg.rowActions ? '<th style="width:' + esc(cfg.rowActionsWidth || '80px') + '">操作</th>' : '');
+        body = '<div class="table-wrap"' + (opts.maxHeight ? ' style="max-height:' + esc(opts.maxHeight) + '"' : '') + '>' +
+          '<table class="table"><thead><tr>' + head + '</tr></thead><tbody>' +
+          shown.map(rowHTML).join('') + '</tbody></table></div>';
+        if (opts.cap && rows.length >= opts.cap) {
+          body += '<div class="form-hint" style="margin-top:8px">' +
+            esc(opts.capText || '已达单次查询上限，请收窄时间范围或筛选条件') + '</div>';
+        }
+      }
+      return body + pagingHTML();
+    }
+
+    // 行详情：视图可注入 table.onDetail = fn；缺省打开 detailModal（detail.fields 必填）
+    let onDetail = null;
+    if (cfg.detail) {
+      onDetail = function (row) {
+        const d = cfg.detail;
+        Rock.comp.detailModal.show({
+          title: typeof d.title === 'function' ? d.title(row) : (d.title || ns),
+          fields: d.fields,
+          row: row,
+          width: d.width,
+        });
+      };
+    }
+
+    // 分页控件事件绑定（host 上委托；host 重渲染 innerHTML 不影响委托；host 须为持久元素，勿重复 bind）
+    function bind(host) {
+      if (!host) return;
+      host.addEventListener('click', function (e) {
+        const btn = e.target.closest('[data-dt-page]');
+        if (!btn || btn.disabled) return;
+        go(btn.getAttribute('data-dt-page'));
+        if (cfg.onPaging) cfg.onPaging(state());
+      });
+      host.addEventListener('change', function (e) {
+        const sizeSel = e.target.closest('[data-dt-size]');
+        if (sizeSel) {
+          setPageSize(sizeSel.value);
+          if (cfg.onPaging) cfg.onPaging(state());
+          return;
+        }
+        const input = e.target.closest('[data-dt-page-input]');
+        if (input) {
+          go(input.value);
+          if (cfg.onPaging) cfg.onPaging(state());
+        }
+      });
+      host.addEventListener('keydown', function (e) {
+        const input = e.target.closest('[data-dt-page-input]');
+        if (input && e.key === 'Enter') {
+          go(input.value);
+          if (cfg.onPaging) cfg.onPaging(state());
+        }
+      });
+    }
+
+    const inst = { html, bind, state, go, setPageSize };
+    Object.defineProperty(inst, 'onDetail', {
+      get: function () { return onDetail; },
+      set: function (fn) { onDetail = fn; },
+    });
+    return inst;
   }
 
-  // 展开状态器：以行键管理展开/收起；reset 在数据重新加载后清空
-  function createExpander() {
-    const state = {};
-    return {
-      toggle: function (key) { state[key] = !state[key]; },
-      isOpen: function (key) { return !!state[key]; },
-      reset: function () { Object.keys(state).forEach(function (k) { delete state[k]; }); },
-    };
-  }
-
-  // 分页控件：total/offset/limit 计算页码，act 为翻页动作名（视图事件委托处理）
-  function pagingHTML(opts) {
-    const total = Number(opts.total) || 0;
-    const limit = Number(opts.limit) || 20;
-    const offset = Number(opts.offset) || 0;
-    const pages = Math.max(1, Math.ceil(total / limit));
-    const cur = Math.floor(offset / limit) + 1;
-    return '<div class="log-toolbar" style="justify-content:space-between">' +
-      '<span class="muted">共 ' + fmtInt(total) + ' 条 · 第 ' + cur + '/' + pages + ' 页</span>' +
-      '<div class="tool-group">' +
-      '<button class="btn btn-sm" data-act="' + esc(opts.act) + '" data-dir="-1"' + (cur <= 1 ? ' disabled' : '') + '>上一页</button>' +
-      '<button class="btn btn-sm" data-act="' + esc(opts.act) + '" data-dir="1"' + (cur >= pages ? ' disabled' : '') + '>下一页</button>' +
-      '</div></div>';
-  }
-
-  window.Rock.comp.dataTable = { tableHTML, createExpander, pagingHTML };
+  window.Rock.comp.dataTable = { create };
 })();

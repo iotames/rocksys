@@ -49,7 +49,7 @@
       if (!o) missing.push(path.join('.'));
     };
     ['util', 'theme', 'ui', 'api', 'state', 'auth'].forEach(function (k) { has([k]); });
-    ['head', 'empty', 'select', 'tabs', 'dataTable', 'dateRange', 'logStream', 'luaEditor',
+    ['head', 'empty', 'select', 'tabs', 'dataTable', 'detailModal', 'filterBar', 'dateRange', 'logStream', 'luaEditor',
       'componentState', 'dataflow', 'metrics', 'chart', 'configEditor'].forEach(function (k) { has(['comp', k]); });
     ['overview', 'detail', 'config', 'scripts', 'waf', 'blacklist', 'logs', 'syslogs'].forEach(function (k) { has(['views', k]); });
     if (missing.length) {

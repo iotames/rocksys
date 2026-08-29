@@ -19,7 +19,6 @@
 
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
-  const debounce = Rock.util.debounce;
   const fmtDate = Rock.util.fmtDate;
   const fmtDateTime = Rock.util.fmtDateTime;
   const fmtInt = Rock.util.fmtInt;
@@ -36,15 +35,70 @@
   const BLOCK_TYPES = Rock.state.BLOCK_TYPES;
   const typeName = Rock.state.blockTypeName;
 
-  // ── 页内私有状态（查询条件 / 明细展开）──────────────────────────────
-  const wafQuery = { fromDate: '', fromTime: '', toDate: '', toTime: '', blockType: '', clientIP: '' };
+  // ── 页内私有状态（统计天数 / 明细筛选栏 / 明细表实例）───────────────
   let statsDays = 7;
-  const eventsExpander = Rock.comp.dataTable.createExpander();
 
   const dateRange = Rock.comp.dateRange;
   function today() { return dateRange.today(); }
-  function qFrom() { return dateRange.from(wafQuery); }
-  function qTo() { return dateRange.to(wafQuery); }
+  function qFrom(s) { return dateRange.from(s || eventsBar.state()); }
+  function qTo(s) { return dateRange.to(s || eventsBar.state()); }
+
+  const TYPE_OPTIONS = [['', '类别：全部']].concat(BLOCK_TYPES.map(t => [String(t[0]), t[1]]));
+
+  // 明细筛选栏：时间范围（dateRange 仅完整区间即改即查）+ 类别 + 来源 IP；查询/重置按钮留在视图
+  const eventsBar = Rock.comp.filterBar.create({
+    ns: 'waf-events-filter',
+    live: true,
+    onQuery: function (state) { queryEvents(state); },
+    fields: [
+      { type: 'dateRange', key: '', default: { fromDate: today(), fromTime: '00:00', toDate: today(), toTime: '23:59' } },
+      { type: 'select', key: 'blockType', options: TYPE_OPTIONS },
+      { type: 'text', key: 'clientIP', placeholder: '来源 IP 精确匹配', width: '160px' },
+    ],
+  });
+
+  // 明细表（客户端分页）+ 行详情弹层；显式拉满 limit=10000（后端上限，此前缺省只看 500 条）
+  const EVENTS_CAP = 10000;
+  const eventsTable = Rock.comp.dataTable.create({
+    ns: 'waf-events',
+    columns: [
+      { key: 'time', label: '时间', cls: 'mono', render: r => esc(fmtDateTime(r.time)) },
+      { key: 'block_type', label: '类别', render: r => '<span class="status status-warn">' + esc(typeName(r.block_type)) + '</span>' },
+      { key: 'client_ip', label: '来源 IP', cls: 'mono' },
+      { key: 'method', label: '方法', render: r => '<span class="method method-' + esc(String(r.method || '').toLowerCase()) + '">' + esc(r.method || '') + '</span>' },
+      { key: 'raw_url', label: 'URL', render: r => { const u = r.raw_url || r.path || ''; return '<span class="log-path" title="' + esc(u) + '">' + esc(truncate(u, 50)) + '</span>'; } },
+      { key: 'status_code', label: '状态', render: r => '<span class="status status-red">' + (Number(r.status_code) || '-') + '</span>' },
+    ],
+    rowKey: expKey, // time|trace_id|client_ip
+    detail: {
+      title: () => '拦截明细',
+      fields: [
+        { key: 'time', label: '时间', render: r => esc(fmtDateTime(r.time)) },
+        { key: 'trace_id', label: '链路 ID' },
+        { key: 'client_ip', label: '来源 IP' },
+        { key: 'method', label: '方法' },
+        { key: 'status_code', label: '状态码' },
+        { key: 'host', label: 'Host' },
+        { key: 'rule_hit', label: '命中规则' },
+        { key: 'req_bytes', label: '请求体积', render: r => esc(fmtBytes(Number(r.req_bytes) || 0)) },
+        { key: 'raw_url', label: '原始 URL', pre: true, copy: true },
+        { key: 'user_agent', label: 'User-Agent', pre: true, copy: true },
+        { key: 'extra_referer', label: 'Referer', render: r => esc(extraField(r, 'referer')) },
+        { key: 'extra_xff', label: 'X-Forwarded-For', render: r => esc(extraField(r, 'x_forwarded_for')) },
+      ],
+    },
+    paging: { mode: 'client', pageSize: 20 },
+    emptyText: '所选条件无拦截明细',
+    onPaging: function () { renderEventsWrap(); },
+  });
+
+  // extra 为 JSON 串：单独取字段展示（非法 JSON 忽略）
+  function extraField(r, key) {
+    if (!r.extra) return '';
+    try { const ex = JSON.parse(r.extra); return ex[key] == null ? '' : String(ex[key]); } catch (e) { return ''; }
+  }
+
+  function expKey(r) { return (r.time || '') + '|' + (r.trace_id || '') + '|' + (r.client_ip || ''); }
 
   // ── 数据加载 ────────────────────────────────────────────────────────
 
@@ -71,20 +125,20 @@
   }
 
   async function loadEvents() {
+    const s = eventsBar.state();
     const params = new URLSearchParams();
-    params.set('from', qFrom());
-    params.set('to', qTo());
-    if (wafQuery.blockType) params.set('block_type', wafQuery.blockType);
-    if (wafQuery.clientIP) params.set('client_ip', wafQuery.clientIP);
+    params.set('from', qFrom(s));
+    params.set('to', qTo(s));
+    if (s.blockType) params.set('block_type', s.blockType);
+    if (s.clientIP) params.set('client_ip', s.clientIP);
+    params.set('limit', String(EVENTS_CAP));
     try {
       const txt = await api.text('/admin/shield/events?' + params.toString());
       store.wafEvents = parseNdjson(txt);
       store.wafEventsError = null;
-      eventsExpander.reset();
       noteUpdated();
     } catch (e) {
       store.wafEvents = [];
-      eventsExpander.reset();
       store.wafEventsError = e.message || '加载失败';
     }
   }
@@ -194,60 +248,25 @@
       '</tbody></table></div></div>';
   }
 
-  // 明细行展开详情（平铺全部字段，extra 为 JSON 串单独解析展示）
-  function eventDetailHTML(r) {
-    const items = [
-      ['链路 ID', r.trace_id],
-      ['原始 URL', r.raw_url],
-      ['User-Agent', r.user_agent],
-      ['Host', r.host],
-      ['命中规则', r.rule_hit],
-      ['请求体积', fmtBytes(Number(r.req_bytes) || 0)],
-    ];
-    if (r.extra) {
-      try {
-        const ex = JSON.parse(r.extra);
-        if (ex.referer) items.push(['Referer', ex.referer]);
-        if (ex.x_forwarded_for) items.push(['X-Forwarded-For', ex.x_forwarded_for]);
-      } catch (e) { /* extra 非法 JSON 忽略 */ }
-    }
-    return '<div class="detail-grid">' + items.map(it =>
-      '<div class="detail-item"><span class="k">' + esc(it[0]) + '：</span><span class="v">' + esc(it[1] === '' || it[1] == null ? '—' : it[1]) + '</span></div>'
-    ).join('') + '</div>';
-  }
-
-  function expKey(r) { return (r.time || '') + '|' + (r.trace_id || '') + '|' + (r.client_ip || ''); }
-
-  function eventRowHTML(r) {
-    const expanded = eventsExpander.isOpen(expKey(r));
-    const st = Number(r.status_code) || 0;
-    return '<tr class="log-row" data-act="waf-expand" data-idx="' + esc(expKey(r)) + '">' +
-      '<td class="mono" title="' + esc(r.time) + '">' + esc(fmtDateTime(r.time)) + '</td>' +
-      '<td><span class="status status-warn">' + esc(typeName(r.block_type)) + '</span></td>' +
-      '<td class="mono">' + esc(r.client_ip || '') + '</td>' +
-      '<td><span class="method method-' + esc(String(r.method || '').toLowerCase()) + '">' + esc(r.method || '') + '</span></td>' +
-      '<td class="log-path" title="' + esc(r.raw_url || r.path) + '">' + esc(truncate(r.raw_url || r.path, 50)) + '</td>' +
-      '<td><span class="status status-red">' + (st || '-') + '</span></td>' +
-      '<td class="row-arrow">' + (expanded ? '▾' : '▸') + '</td>' +
-      '</tr>' +
-      (expanded ? '<tr class="log-detail-row"><td colspan="7">' + eventDetailHTML(r) + '</td></tr>' : '');
-  }
-
+  // 明细表渲染：表格 + 分页栏交给 dataTable 实例；错误态/空态由组件 emptyText 兜底
   function eventsHTML() {
     if (store.wafEventsError) {
       return '<div class="empty">' + esc(store.wafEventsError) + '</div>';
     }
-    const rows = store.wafEvents || [];
-    if (!rows.length) return '<div class="empty">所选条件无拦截明细</div>';
-    const shown = rows.slice(0, 1000);
-    return '<div class="table-wrap" style="max-height:520px">' +
-      '<table class="table"><thead><tr>' +
-      '<th>时间</th><th>类别</th><th>来源 IP</th><th>方法</th><th>URL</th><th>状态</th><th style="width:28px"></th>' +
-      '</tr></thead><tbody>' + shown.map(eventRowHTML).join('') + '</tbody></table></div>' +
-      (rows.length >= 1000 ? '<div class="form-hint" style="margin-top:8px">已达 1000 条展示上限，请收窄时间范围或筛选条件。</div>' : '');
+    return eventsTable.html(store.wafEvents || [], { cap: EVENTS_CAP, maxHeight: '520px' });
   }
 
-  const TYPE_OPTIONS = [['', '类别：全部']].concat(BLOCK_TYPES.map(t => [String(t[0]), t[1]]));
+  function renderEventsWrap() {
+    const wrap = $('#waf-events-wrap');
+    if (wrap) wrap.innerHTML = eventsHTML();
+  }
+
+  // 行详情弹层（data-key = time|trace_id|ip 回查行）
+  function openEventDetail(el) {
+    const key = el.getAttribute('data-key') || '';
+    const row = (store.wafEvents || []).find(r => expKey(r) === key);
+    if (row) eventsTable.onDetail(row);
+  }
 
   // ── 渲染 ────────────────────────────────────────────────────────────
 
@@ -279,10 +298,6 @@
   function renderStatsPage() {
     const host = $('#page-waf');
     if (!host) return;
-    if (!wafQuery.fromDate) wafQuery.fromDate = today();
-    if (!wafQuery.fromTime) wafQuery.fromTime = '00:00';
-    if (!wafQuery.toDate) wafQuery.toDate = today();
-    if (!wafQuery.toTime) wafQuery.toTime = '23:59';
     host.innerHTML =
       Rock.comp.head.headHTML({
         title: 'WAF安全防护',
@@ -303,17 +318,8 @@
       statsHTML() + '</div>' +
       topIPHTML() +
       '<div class="card">' +
-      '<div class="log-toolbar">' +
-      '<div class="tool-group"><span class="muted">开始</span>' +
-      '<input type="date" class="input input-sm" id="waf-from-date" value="' + esc(wafQuery.fromDate) + '">' +
-      '<input type="time" class="input input-sm" id="waf-from-time" value="' + esc(wafQuery.fromTime) + '">' +
-      '</div>' +
-      '<div class="tool-group"><span class="muted">结束</span>' +
-      '<input type="date" class="input input-sm" id="waf-to-date" value="' + esc(wafQuery.toDate) + '">' +
-      '<input type="time" class="input input-sm" id="waf-to-time" value="' + esc(wafQuery.toTime) + '">' +
-      '</div>' +
-      '<select class="select select-sm" id="waf-block-type">' + Rock.comp.select.options(TYPE_OPTIONS, wafQuery.blockType) + '</select>' +
-      '<input class="input input-sm" id="waf-client-ip" placeholder="来源 IP 精确匹配" style="width:160px" value="' + esc(wafQuery.clientIP) + '">' +
+      eventsBar.html() +
+      '<div class="log-toolbar" style="margin-top:-6px">' +
       '<button class="btn btn-sm btn-primary" data-act="waf-query">查询</button>' +
       '<button class="btn btn-sm btn-text" data-act="waf-reset">重置</button>' +
       '</div>' +
@@ -329,27 +335,13 @@
       loadStats().then(render);
     });
 
-    // 明细条件：变更即查询（防抖，与日志页一致）
-    const syncTime = debounce(() => {
-      wafQuery.fromDate = $('#waf-from-date').value;
-      wafQuery.fromTime = $('#waf-from-time').value;
-      wafQuery.toDate = $('#waf-to-date').value;
-      wafQuery.toTime = $('#waf-to-time').value;
-      queryEvents();
-    }, 300);
-    [$('#waf-from-date'), $('#waf-from-time'), $('#waf-to-date'), $('#waf-to-time')].forEach(el => el.addEventListener('change', syncTime));
-
-    const btSel = $('#waf-block-type');
-    btSel.addEventListener('change', () => {
-      wafQuery.blockType = btSel.value;
-      queryEvents();
-    });
-    const ipInput = $('#waf-client-ip');
-    ipInput.addEventListener('input', debounce(() => {
-      wafQuery.clientIP = ipInput.value.trim();
-      queryEvents();
-    }, 400));
+    // 明细筛选栏即改即查（组件内防抖）与分页控件委托（host 持久，只绑一次）
+    eventsBar.bind(host);
+    if (!eventsTableBound) { eventsTable.bind(host); eventsTableBound = true; }
   }
+
+  // dataTable 分页控件在持久 host 上只绑一次（renderStatsPage 重渲染 innerHTML 不影响委托）
+  let eventsTableBound = false;
 
   // ── Canvas 按日柱状图（颜色取 CSS 变量，主题自适应）─────────────────
   function drawDailyChart() {
@@ -420,41 +412,20 @@
 
   // ── 交互动作 ────────────────────────────────────────────────────────
 
-  // 明细查询（读工具栏输入，时间非法直接提示）
-  async function queryEvents() {
-    wafQuery.fromDate = $('#waf-from-date').value || today();
-    wafQuery.fromTime = $('#waf-from-time').value || '00:00';
-    wafQuery.toDate = $('#waf-to-date').value || today();
-    wafQuery.toTime = $('#waf-to-time').value || '23:59';
-    if (qFrom() > qTo()) {
+  // 明细查询（state 缺省时从筛选栏收集；时间非法直接提示）
+  async function queryEvents(state) {
+    state = state || eventsBar.collect();
+    if (qFrom(state) > qTo(state)) {
       toast('开始时间不能晚于结束时间', 'error');
       return;
     }
     await loadEvents();
-    const wrap = $('#waf-events-wrap');
-    if (wrap) wrap.innerHTML = eventsHTML();
+    renderEventsWrap();
   }
 
-  // 重置明细条件（时间回当天全天）
-  async function resetFilter() {
-    wafQuery.fromDate = today();
-    wafQuery.fromTime = '00:00';
-    wafQuery.toDate = today();
-    wafQuery.toTime = '23:59';
-    wafQuery.blockType = '';
-    wafQuery.clientIP = '';
-    render();
-    await loadEvents();
-    const wrap = $('#waf-events-wrap');
-    if (wrap) wrap.innerHTML = eventsHTML();
-  }
-
-  // 行展开 / 收起（key = time|trace_id|ip，跟随行不错位）
-  function toggleExpand(key) {
-    if (!key) return;
-    eventsExpander.toggle(key);
-    const wrap = $('#waf-events-wrap');
-    if (wrap) wrap.innerHTML = eventsHTML();
+  // 重置明细条件：回筛选栏默认值（时间当天全天）并触发查询
+  function resetFilter() {
+    eventsBar.reset();
   }
 
   // 手动清理（二次确认；days 缺省用后端配置的保留天数）
@@ -504,7 +475,6 @@
     drawDailyChart,
     queryEvents,
     resetFilter,
-    toggleExpand,
     pruneEvents,
     pruneLogs,
     typeName,
@@ -514,13 +484,12 @@
       'waf-reset': function () { resetFilter(); },
       'waf-prune-events': function () { pruneEvents(); },
       'waf-prune-logs': function () { pruneLogs(); },
-      'waf-expand': function (el) { toggleExpand(el.getAttribute('data-idx') || ''); },
+      'waf-events-detail': function (el) { openEventDetail(el); },
       'waf-tab': function (el) { ipListSwitchTab(el.getAttribute('data-tab') || 'stats'); },
       'waf-iplist-kind': function (el) { Rock.views.blacklist.switchKind(el.getAttribute('data-kind') || 'black'); },
       'waf-iplist-query': function () { Rock.views.blacklist.query(); },
       'waf-iplist-reset': function () { Rock.views.blacklist.reset(); },
       'waf-iplist-reload': function () { Rock.views.blacklist.query(); },
-      'waf-iplist-page': function (el) { Rock.views.blacklist.page(Number(el.getAttribute('data-dir')) || 0); },
       'waf-iplist-add': function () { Rock.views.blacklist.add(); },
       'waf-iplist-del': function (el) { Rock.views.blacklist.del(el.getAttribute('data-id')); },
       'waf-iplist-restore': function (el) { Rock.views.blacklist.restore(el.getAttribute('data-id')); },

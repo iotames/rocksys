@@ -1320,3 +1320,29 @@ b, strong { font-weight: 600; }
 .ov-name:hover b { color: var(--primary); }
 .ov-head .tag { margin-left: auto; white-space: nowrap; }
 .ov-foot { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+
+/* ---------- 29. 通用数据列表：分页栏 / 行可点态 / 详情弹层 ---------- */
+/* 分页栏：左"共 N 条 · 每页"，右翻页组；页码输入框 48px */
+.dt-paging { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.dt-paging-left { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+.dt-paging-left .select { width: auto; }
+.dt-paging-right { display: flex; align-items: center; gap: 8px; }
+.dt-page-input { width: 48px; text-align: center; }
+.dt-paging .muted { white-space: nowrap; }
+
+/* 行 hover 可点态（dataTable.create 点行详情） */
+tr.dt-row-clickable { cursor: pointer; }
+tr.dt-row-clickable:hover td { background: rgba(127, 127, 127, .06); }
+tr.dt-row-clickable.is-error td { background: var(--row-error); }
+
+/* 详情弹层：键值网格（复用 .detail-grid），长文本等宽块与复制按钮 */
+.detail-grid-modal { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 18px; }
+.detail-item-block { grid-column: 1 / -1; }
+.detail-pre {
+  display: block; margin-top: 4px; padding: 6px 8px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto;
+}
+.detail-copy { margin-left: 6px; padding: 0 4px; font-size: 11px; }
+.detail-item .detail-copy { vertical-align: middle; }
