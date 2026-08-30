@@ -180,6 +180,8 @@
 
   function logDetailFields(r) {
     const core = [
+      { key: 'id', label: '记录 ID' },
+      { key: 'time', label: '完成时刻', render: row => esc(fmtDateTime(row.time)) },
       { key: 'trace_id', label: '请求标识', copy: true },
       { key: 'tenant_id', label: '租户' },
       { key: 'client_ip', label: '请求来源', copy: true },

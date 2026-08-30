@@ -13,7 +13,7 @@
 CREATE TABLE IF NOT EXISTS {table} (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '自增主键',
     ip          VARCHAR(45) NOT NULL COMMENT '精确 IP 或 CIDR（唯一：重复导入幂等拒绝）',
-    title       VARCHAR(64) NOT NULL DEFAULT '' COMMENT '拉黑原因备注（如"Azure 云段扫描器"）',
+    title       VARCHAR(64) NOT NULL DEFAULT '' COMMENT '拉黑原因标题（如"Azure 云段扫描器"）',
     block_type  SMALLINT NOT NULL DEFAULT 1 COMMENT '拉黑原因类别 0-11：0=其他(仅黑名单表) 1=IP黑名单 2=限流 3=方法不允许 4=请求体超限 5=风险路径 6=路径遍历 7=SQL注入 8=XSS 9=爬虫/扫描器UA 10=路径/UA规则deny 11=人工收录(仅黑名单表)；仅管理面过滤统计，非运行时匹配依据',
     hit_count   INT NOT NULL DEFAULT 0 COMMENT '命中拦截计数（异步累加，观测/排序用）',
     warn_times  INT NOT NULL DEFAULT 0 COMMENT '封禁次数（人工+自动累计，限时时达 5 次转永久）',

@@ -79,10 +79,12 @@
       // 详情弹层 footer 注入「IP封禁」（与表格操作列共用同一封禁弹窗，避免双份实现）
       actions: [{ label: 'IP封禁', className: 'btn-primary', onClick: r => openBanModal(r) }],
       fields: [
+        { key: 'id', label: '事件 ID' },
         { key: 'time', label: '时间', render: r => esc(fmtDateTime(r.time)) },
         { key: 'trace_id', label: '链路 ID' },
         { key: 'client_ip', label: '来源 IP' },
         { key: 'method', label: '方法' },
+        { key: 'path', label: '路径', pre: true, copy: true },
         { key: 'status_code', label: '状态码' },
         { key: 'host', label: 'Host' },
         { key: 'rule_hit', label: '命中规则' },

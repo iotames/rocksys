@@ -86,7 +86,7 @@
     }
     cols.push(
       { key: 'status', label: '状态', render: ipListStatusHTML },
-      { key: 'title', label: '备注' }
+      { key: 'title', label: '标题' }
     );
     ipTable = Rock.comp.dataTable.create({
       ns: 'waf-iplist',
@@ -193,7 +193,7 @@
       '<button class="btn btn-sm btn-primary" data-act="waf-iplist-query">查询</button>' +
       '<button class="btn btn-sm btn-text" data-act="waf-iplist-reset">重置</button>' +
       (isBlack()
-        ? '<button class="btn btn-sm btn-text" data-act="waf-iplist-sync-file" data-tip="从外挂规则文件 rules/ip_blacklist.txt 同步 IP 入库。因文件无过期时间/备注等维护字段，同步入数据库后便于统一管理、统计与自动拉黑">从文件同步</button>'
+        ? '<button class="btn btn-sm btn-text" data-act="waf-iplist-sync-file" data-tip="从外挂规则文件 rules/ip_blacklist.txt 同步 IP 入库。因文件无过期时间/标题等维护字段，同步入数据库后便于统一管理、统计与自动拉黑">从文件同步</button>'
         : '') +
       '</div>' +
       '<div id="iplist-table-wrap">' + ipListRowsHTML() + '</div>' +
@@ -201,10 +201,10 @@
       '<div class="card"><div class="card-title">新增' + (isBlack() ? '黑名单' : '白名单') + '条目</div>' +
       '<div class="log-toolbar">' +
       '<input class="input input-sm" id="iplist-add-ip" placeholder="精确 IP 或 CIDR（必填）" style="width:180px">' +
-      '<input class="input input-sm" id="iplist-add-title" placeholder="备注（可选）" style="width:160px">' +
+      '<input class="input input-sm" id="iplist-add-title" placeholder="标题（可选）" style="width:160px">' +
       (isBlack()
-        ? '<span class="muted" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填备注栏">拉黑原因类别</span>' +
-          '<select class="select select-sm" id="iplist-add-bt" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填备注栏">' + btOptions + '</select>' +
+        ? '<span class="muted" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏">拉黑原因类别</span>' +
+          '<select class="select select-sm" id="iplist-add-bt" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏">' + btOptions + '</select>' +
           '<span class="tool-group"><span class="muted">过期时间</span>' +
           '<input class="input input-sm" type="datetime-local" id="iplist-add-expires" title="留空 = 永久有效"></span>'
         : '') +
@@ -214,8 +214,8 @@
       '<textarea class="input" id="iplist-import-text" rows="10" placeholder="每行一个：精确 IP 或 CIDR（兼容外挂文件格式）&#10;示例：192.168.1.100、2001:db8::1、10.0.0.0/8、2001:db8::/32&#10;# 开头为注释、空行忽略"></textarea>' +
       '<div class="log-toolbar">' +
       (isBlack()
-        ? '<span class="muted" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填备注栏">拉黑原因类别</span>' +
-          '<select class="select select-sm" id="iplist-import-bt" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填备注栏">' + btOptions + '</select>'
+        ? '<span class="muted" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏">拉黑原因类别</span>' +
+          '<select class="select select-sm" id="iplist-import-bt" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏">' + btOptions + '</select>'
         : '') +
       '<button class="btn btn-sm" data-act="waf-iplist-import">批量导入</button>' +
       '</div></div>';
@@ -373,23 +373,30 @@
     const btOptions = BLOCK_TYPES.map(function (t) {
       return '<option value="' + t[0] + '"' + (Number(row.block_type) === t[0] ? ' selected' : '') + '>' + esc(t[0] + ' ' + t[1]) + '</option>';
     }).join('');
-    // 只读区（IP/添加时间等不可改字段）+ 编辑区（备注/类别/过期时间）
+    // 只读区：对照 DATA_DICT ip_blacklist 字段尽量齐全（id/ip/类别/计数/各时间戳）；
+    // 编辑区：标题/类别/过期时间（title 以编辑框承载，默认值为当前标题）
     const body =
+      '<div class="form-row"><label class="form-label">ID</label>' +
+      '<span class="v mono">' + esc(row.id) + '</span></div>' +
       '<div class="form-row"><label class="form-label">IP / CIDR</label>' +
       '<span class="v mono">' + esc(row.ip) + '</span></div>' +
-      '<div class="form-row"><label class="form-label">添加时间</label>' +
-      '<span class="v">' + esc(fmtDT(row.created_at) || '—') + '</span></div>' +
-      '<div class="form-row"><label class="form-label">状态</label><span class="v">' + ipListStatusHTML(row) + '</span></div>' +
       (black
         ? '<div class="form-row"><label class="form-label">命中数 / 封禁次数</label><span class="v">' +
           esc(fmtInt(Number(row.hit_count) || 0)) + ' / ' + esc(fmtInt(Number(row.warn_times) || 0)) + '</span></div>'
         : '') +
-      '<div class="form-row"><label class="form-label">备注</label>' +
-      '<input class="input" id="iplist-edit-title" style="width:100%" maxlength="200" value="' + esc(row.title || '') + '"></div>' +
+      '<div class="form-row"><label class="form-label">状态</label><span class="v">' + ipListStatusHTML(row) + '</span>' +
+      (row.deleted_at ? '<span class="v muted" style="margin-left:10px">软删于 ' + esc(fmtDT(row.deleted_at)) + '</span>' : '') +
+      '</div>' +
+      '<div class="form-row"><label class="form-label">添加时间</label>' +
+      '<span class="v">' + esc(fmtDT(row.created_at) || '—') + '</span></div>' +
+      '<div class="form-row"><label class="form-label">最后更新</label>' +
+      '<span class="v">' + esc(fmtDT(row.updated_at) || '—') + '</span></div>' +
+      '<div class="form-row"><label class="form-label">标题</label>' +
+      '<input class="input" id="iplist-edit-title" style="width:100%" maxlength="200" value="' + esc(row.title || '') + '" placeholder="拉黑原因标题（可空）"></div>' +
       (black
-        ? '<div class="form-row"><label class="form-label">拉黑原因类别</label>' +
+        ? '<div class="form-row"><label class="form-label">拉黑原因类别（可改）</label>' +
           '<select class="select" id="iplist-edit-bt" style="width:260px">' + btOptions + '</select></div>' +
-          '<div class="form-row"><label class="form-label">过期时间</label>' +
+          '<div class="form-row"><label class="form-label">过期时间（可改）</label>' +
           '<input class="input" type="datetime-local" id="iplist-edit-expires" style="width:230px" value="' +
           esc(rfc3339ToLocalInput(row.expires_at)) + '">' +
           '<div class="form-hint" style="margin-top:4px">留空 = 永久有效（保存即按此生效，永久条目留空即可）</div></div>'

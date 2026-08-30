@@ -2,7 +2,7 @@
 -- 可选条件传空串/0 即不过滤；status_group 传状态码首字符（'2'-'5'）；sort_code：0=时间倒序 1=耗时降序 2=耗时升序。
 -- 参数顺序：from, to, path, path, path_like, path_like, trace_id, trace_id,
 --           status_group, status_group, only_error, sort_code, sort_code, limit, offset
-SELECT time, trace_id, tenant_id, path, method, client_ip, status_code, upstream,
+SELECT id, time, trace_id, tenant_id, path, method, client_ip, status_code, upstream,
        shield_ms, biz_ms, total_ms, req_bytes, resp_bytes, extra
 FROM {table}
 WHERE time >= ? AND time <= ?

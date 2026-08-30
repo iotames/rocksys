@@ -140,7 +140,7 @@
 |---|---|---|---|---|---|
 | `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
 | `ip` | IP/CIDR | 精确 IP 或 CIDR（唯一约束，重复导入幂等拒绝） | `192.168.1.100`、`10.0.0.0/8` | TEXT / TEXT / VARCHAR(45) | — |
-| `title` | 备注 | 拉黑原因备注 | `Azure 云段扫描器` | TEXT / TEXT / VARCHAR(64) | `''` |
+| `title` | 标题 | 拉黑原因标题 | `Azure 云段扫描器` | TEXT / TEXT / VARCHAR(64) | `''` |
 | `block_type` | 拉黑类别 | 拉黑原因类别（复用 §3.1 枚举，仅管理面过滤统计） | `7`（SQL注入） | INTEGER / SMALLINT / SMALLINT | `1` |
 | `hit_count` | 命中计数 | 命中拦截计数（异步累加，观测/排序用） | `12` | INTEGER / INT / INT | `0` |
 | `warn_times` | 封禁次数 | 该 IP 被人工/风控封禁的累计次数（人工封禁与自动拉黑共用计数；限时封禁累计达 5 次自动转永久） | `3` | INTEGER / INT / INTEGER | `0` |
@@ -158,7 +158,7 @@
 |---|---|---|---|---|---|
 | `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
 | `ip` | IP/CIDR | 精确 IP 或 CIDR（唯一约束，重复导入幂等拒绝） | `10.0.0.5` | TEXT / TEXT / VARCHAR(45) | — |
-| `title` | 备注 | 备注 | `办公出口段` | TEXT / TEXT / VARCHAR(64) | `''` |
+| `title` | 标题 | 标题 | `办公出口段` | TEXT / TEXT / VARCHAR(64) | `''` |
 | `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除，不参与匹配 | `2026-08-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
 | `created_at` | 创建时间 | 创建时间（UTC） | `2026-08-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
 | `updated_at` | 更新时间 | 最后更新时间（UTC） | `2026-08-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |

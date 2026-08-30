@@ -6,7 +6,7 @@
 CREATE TABLE IF NOT EXISTS {table} (
     id          INTEGER PRIMARY KEY AUTOINCREMENT, -- 自增主键
     ip          TEXT NOT NULL UNIQUE,              -- 精确 IP 或 CIDR（唯一：重复导入幂等拒绝）
-    title       TEXT NOT NULL DEFAULT '',          -- 备注（如"办公出口段"）
+    title       TEXT NOT NULL DEFAULT '',          -- 标题（如"办公出口段"）
     deleted_at  DATETIME,                          -- 软删除时间（UTC）；非 NULL 视为已删除
     created_at  DATETIME NOT NULL,                 -- 创建时间（UTC）
     updated_at  DATETIME NOT NULL                  -- 最后更新时间（UTC）

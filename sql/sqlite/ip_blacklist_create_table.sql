@@ -12,7 +12,7 @@
 CREATE TABLE IF NOT EXISTS {table} (
     id          INTEGER PRIMARY KEY AUTOINCREMENT, -- 自增主键
     ip          TEXT NOT NULL UNIQUE,              -- 精确 IP 或 CIDR（唯一：重复导入幂等拒绝）
-    title       TEXT NOT NULL DEFAULT '',          -- 拉黑原因备注（如"Azure 云段扫描器"）
+    title       TEXT NOT NULL DEFAULT '',          -- 拉黑原因标题（如"Azure 云段扫描器"）
     block_type  INTEGER NOT NULL DEFAULT 1,        -- 拉黑原因类别（0-11，含义见表头注释；0/11 仅黑名单语境）
     hit_count   INTEGER NOT NULL DEFAULT 0,        -- 命中拦截计数（异步累加，观测/排序用）
     warn_times  INTEGER NOT NULL DEFAULT 0,        -- 封禁次数（人工+自动累计，限时时达 5 次转永久）
