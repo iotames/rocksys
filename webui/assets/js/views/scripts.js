@@ -55,7 +55,7 @@
     } catch (e) {
       scriptsState.error = e.message;
       scriptsState.loaded = true;
-      if (opts.manual && e.status !== 0) toast('脚本列表加载失败：' + e.message, 'error');
+      if (!opts.silent && e.status !== 0) toast('脚本列表加载失败：' + e.message, 'error');
     }
     render();
   }

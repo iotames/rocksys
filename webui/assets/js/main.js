@@ -118,14 +118,14 @@
 
   // 页面加载器配置（components/services 为详情页，按当前路由参数加载；lazy=true 的页面首次进入拉取）
   const pageLoaders = {
-    overview:   { fetch: () => views.overview.load({}), lazy: false },
+    overview:   { fetch: o => views.overview.load(o || {}), lazy: false },
     components: { fetch: o => views.detail.load(Object.assign({ type: 'component', name: currentRoute().param, tab: currentRoute().query.tab }, o || {})), lazy: false },
     services:   { fetch: o => views.detail.load(Object.assign({ type: 'service', name: currentRoute().param, tab: currentRoute().query.tab }, o || {})), lazy: false },
-    waf:        { fetch: () => views.waf.load({}), lazy: true },
-    config:     { fetch: () => views.config.load({}), lazy: true },
-    scripts:    { fetch: () => views.scripts.load({}), lazy: true },
-    logs:       { fetch: () => views.logs.loadPage({ force: true }), lazy: true },
-    syslogs:    { fetch: () => views.syslogs.load({}), lazy: false },
+    waf:        { fetch: o => views.waf.load(o || {}), lazy: true },
+    config:     { fetch: o => views.config.load(o || {}), lazy: true },
+    scripts:    { fetch: o => views.scripts.load(o || {}), lazy: true },
+    logs:       { fetch: o => views.logs.loadPage(Object.assign({ force: true }, o || {})), lazy: true },
+    syslogs:    { fetch: o => views.syslogs.load(o || {}), lazy: false },
     database:   { fetch: o => views.database.load(o || {}), lazy: true },
   };
 

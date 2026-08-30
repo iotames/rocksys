@@ -109,18 +109,21 @@
   // ── 数据加载 ────────────────────────────────────────────────────────
 
   // 实时计数：DB 未配置也返回（counter 在内存），失败仅置错误标记
-  async function loadMetrics() {
+  async function loadMetrics(opts) {
+    opts = opts || {};
     try {
       store.wafMetrics = await api.get('/admin/shield/metrics');
       store.wafMetricsError = null;
     } catch (e) {
       store.wafMetrics = store.wafMetrics || null;
       store.wafMetricsError = e.message || '加载失败';
+      if (!opts.silent && e.status !== 0) toast('拦截统计加载失败：' + e.message, 'error');
     }
   }
 
   // 聚合统计 + 明细（DB 未配置时 503 → 置 wafDbOff 展示降级态）
-  async function loadStats() {
+  async function loadStats(opts) {
+    opts = opts || {};
     try {
       store.wafStats = await api.get('/admin/shield/stats?days=' + statsDays + '&top=' + Rock.views.topIPs.topN());
       Rock.views.topIPs.setData(store.wafStats);
@@ -129,10 +132,13 @@
       store.wafStats = null;
       Rock.views.topIPs.setData(null);
       store.wafStatsError = e.message || '加载失败';
+      // 503 = 防护/DB 未启用，属降级引导态（页内有引导卡片），不弹 toast
+      if (!opts.silent && e.status !== 0 && e.status !== 503) toast('攻击拦截统计加载失败：' + e.message, 'error');
     }
   }
 
-  async function loadEvents() {
+  async function loadEvents(opts) {
+    opts = opts || {};
     const s = eventsBar.state();
     const st = eventsTable.state();
     const params = new URLSearchParams();
@@ -152,15 +158,17 @@
       store.wafEvents = [];
       store.wafEventsTotal = 0;
       store.wafEventsError = e.message || '加载失败';
+      if (!opts.silent && e.status !== 0 && e.status !== 503) toast('攻击拦截明细加载失败：' + e.message, 'error');
     }
   }
 
   async function load(opts) {
+    opts = opts || {};
     const host = $('#page-waf');
     if (!store.wafLoaded && host && !host.innerHTML.trim()) {
       host.innerHTML = skeletonHTML(5);
     }
-    await Promise.all([loadMetrics(), loadStats(), loadEvents()]);
+    await Promise.all([loadMetrics(opts), loadStats(opts), loadEvents(opts)]);
     store.wafLoaded = true;
     render();
   }
@@ -301,7 +309,9 @@
         history: deleted || expired, // 软删/过期：提交后恢复原条目（决策 10）
       };
     } catch (e) {
-      return null; // 查询失败不阻断封禁（弹窗内提示状态未知）
+      // 查询失败不阻断封禁（弹窗内提示状态未知），但服务端报错仍须弹统一 error toast
+      if (e.status !== 0) toast('封禁状态查询失败：' + (e.message || '未知错误') + '，弹窗内将按状态未知处理', 'error');
+      return null;
     }
   }
 
@@ -371,8 +381,10 @@
         }
         queryEvents(); // 刷新明细（重新拉取后 in_blacklist 标记与按钮置灰同步更新）
       } catch (err) {
-        // 失败常驻（不自动消失）：说清发生了什么 + 为什么 + 下一步（后端文案已含三要素）
-        errEl.textContent = '封禁失败：' + (err.message || '未知错误');
+        // 失败统一走 error toast（常驻不自动消失，后端文案已含三要素）；弹窗保持打开，行内提示同步兜底
+        const m = '封禁失败：' + (err.message || '未知错误');
+        toast(m, 'error');
+        errEl.textContent = m;
         errEl.style.display = 'block';
       }
     });

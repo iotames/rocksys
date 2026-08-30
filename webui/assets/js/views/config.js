@@ -50,7 +50,7 @@
         store.configList = [];
         store.configListLoaded = true;
         store.configUnavailable = true;
-      } else if (opts.manual && e.status !== 0) {
+      } else if (!opts.silent && e.status !== 0) {
         toast('配置加载失败：' + e.message, 'error');
       }
     }

@@ -121,6 +121,7 @@
     } catch (e) {
       store.syslogInfo = null;
       store.syslogInfoError = e.message;
+      if (e.status !== 0) toast('日志状态加载失败：' + e.message, 'error');
     }
     renderInfo();
   }

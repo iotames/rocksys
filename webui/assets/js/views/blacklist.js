@@ -141,7 +141,9 @@
       ipListState.total = Number(r.total) || 0;
       ipListState.error = '';
     } catch (e) {
+      // 503 = DB 未配置，属降级引导态（页内有引导文案），不弹 toast；其余失败统一弹 error toast
       ipListState.error = e.status === 503 ? '黑白名单未启用（DB 未配置）' : (e.message || '加载失败');
+      if (e.status !== 0 && e.status !== 503) toast('黑白名单加载失败：' + (e.message || '加载失败') + '，可稍后重试', 'error');
     }
     render($('#page-waf'));
   }

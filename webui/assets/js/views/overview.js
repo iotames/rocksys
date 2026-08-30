@@ -68,7 +68,7 @@
       if (addr) addr.textContent = '管理地址：' + (store.base.admin || '—');
     } catch (e) {
       store.overviewFailed = !store.baseLoaded && !store.switchesLoaded;
-      if (opts.manual && e.status !== 0 && !e.obsDisabled) {
+      if (!opts.silent && e.status !== 0 && !e.obsDisabled) {
         toast('概览加载失败：' + e.message, 'error');
       }
     }
@@ -91,7 +91,7 @@
         noteUpdated();
       } catch (e) {
         if (e.obsDisabled) { store.metricsError = 'obs'; }
-        else if (opts.manual && e.status !== 0) { toast('指标加载失败：' + e.message, 'error'); }
+        else if (!opts.silent && e.status !== 0) { toast('指标加载失败：' + e.message, 'error'); }
       }
     }
     render();
@@ -233,7 +233,8 @@
 
   // ── 页签「小黑屋」：当前在押的限时封禁预览（IP_BLACKLIST_PLAN §3.7）──
 
-  // 拉取小黑屋数据：静默失败保留旧数据并给行内提示，手动刷新才弹 toast
+  // 拉取小黑屋数据：失败统一弹 error toast（不自动消失），同时保留行内提示兜底；
+  // 仅自动刷新（silent）不弹 toast（避免周期性刷屏），只更新行内提示
   let jailFetched = false; // 是否成功拉取过一次（失败时决定是否显示行内错误）
   async function loadJail(opts) {
     opts = opts || {};
@@ -244,8 +245,8 @@
       jailErr = null;
       jailFetched = true;
     } catch (e) {
-      if (opts.manual && e.status !== 0) toast('小黑屋加载失败：' + e.message + '，可稍后重试或检查 DB 配置', 'error');
-      else if (!jailFetched) jailErr = e.message || '加载失败';
+      if (!opts.silent && e.status !== 0) toast('小黑屋加载失败：' + e.message + '，可稍后重试或检查 DB 配置', 'error');
+      if (!jailFetched) jailErr = e.message || '加载失败';
     }
     renderJailBody();
   }

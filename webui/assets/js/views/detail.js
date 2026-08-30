@@ -44,7 +44,7 @@
       }
     } catch (e) {
       store.componentsFailed = !store.switchesLoaded;
-      if (opts.manual && e.status !== 0) toast('组件数据加载失败：' + e.message, 'error');
+      if (!opts.silent && e.status !== 0) toast('组件数据加载失败：' + e.message, 'error');
     }
     render(opts);
   }

@@ -156,6 +156,8 @@
     } catch (e) {
       store.logsStorage = null;
       store.storageError = e.obsDisabled ? 'obs' : e.message;
+      // obs 未开启属降级引导态（页内有引导卡片），不弹 toast
+      if (!e.obsDisabled && e.status !== 0) toast('日志存储信息加载失败：' + e.message, 'error');
     }
     renderStorage();
   }

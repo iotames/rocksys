@@ -102,7 +102,7 @@
           setError((r && r.error) || '登录失败');
         }
       })
-      .catch(function (e) { setError(e.message || '登录失败'); });
+      .catch(function (e) { const m = e.message || '登录失败'; setError(m); ui.toast(m, 'error'); });
   }
 
   // 首次注册（初始化管理员）
@@ -122,7 +122,7 @@
           setError((r && r.error) || '注册失败');
         }
       })
-      .catch(function (e) { setError(e.message || '注册失败'); });
+      .catch(function (e) { const m = e.message || '注册失败'; setError(m); ui.toast(m, 'error'); });
   }
 
   // 重置凭证（忘记密码）
@@ -142,7 +142,7 @@
           setError((r && r.error) || '重置失败');
         }
       })
-      .catch(function (e) { setError(e.message || '重置失败'); });
+      .catch(function (e) { const m = e.message || '重置失败'; setError(m); ui.toast(m, 'error'); });
   }
 
   // 绑定事件

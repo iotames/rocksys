@@ -52,7 +52,8 @@
 
       // ── 数据加载 ──────────────────────────────────────────────────────
 
-      async function loadFiles() {
+      async function loadFiles(opts) {
+        opts = opts || {};
         st.loaded = true;
         try {
           const r = await api.get(cfg.listUrl);
@@ -60,6 +61,7 @@
           st.error = '';
         } catch (e) {
           st.error = e.message || '加载失败';
+          if (!opts.silent && e.status !== 0) toast('文件列表加载失败：' + e.message, 'error');
         }
         render(viewHost);
       }
@@ -97,7 +99,7 @@
           await cfg.save(st.name, content);
           codeEditor.setValue(EDITOR_ID, content);
           toast(cfg.saveToast, 'success');
-          await loadFiles();
+          await loadFiles({ silent: true }); // 保存已成功，列表刷新失败不再叠加报错
           await openFileReload();
         } catch (e) {
           toast('保存失败：' + e.message, 'error');
