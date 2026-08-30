@@ -113,6 +113,12 @@
       return;
     }
     Rock.comp.configEditor.render(container, items, {});
+    // 全局配置页搜索跳转而来：定位并进入编辑（一次性消费，未命中静默忽略）
+    if (store.pendingCfgLocate) {
+      const k = store.pendingCfgLocate;
+      delete store.pendingCfgLocate;
+      Rock.comp.configEditor.locateAndEdit(k);
+    }
   }
 
   function configCount(name) {

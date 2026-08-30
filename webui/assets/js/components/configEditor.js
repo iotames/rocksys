@@ -201,6 +201,21 @@
     refresh();
   }
 
+  // 搜索定位：滚动到目标配置行并闪烁高亮，非"需重启"项同时自动进入行内编辑。
+  // 须在目标容器已渲染且可见（配置页对应分组 / 组件页配置页签）后调用；
+  // 找不到该配置或行（容器未渲染）返回 false，调用方可据此兜底。
+  function locateAndEdit(key) {
+    if (!findConfig(key)) return false;
+    if (Rock.state.RESTART_KEYS.indexOf(key) < 0) startEdit(key); // 内部 refresh() 同步重建行 DOM
+    const row = document.querySelector('.cfg-row[data-key="' + key.replace(/"/g, '') + '"]');
+    if (!row) return false;
+    row.scrollIntoView({ block: 'center' });
+    row.classList.remove('cfg-locate-flash');
+    void row.offsetWidth; // 强制回流，保证连续定位时闪烁动画重放
+    row.classList.add('cfg-locate-flash');
+    return true;
+  }
+
   function cancelEdit() {
     configEditing.key = null;
     configEditing.value = '';
@@ -300,6 +315,7 @@
     toggleMask,
     refresh,
     loadList,
+    locateAndEdit,
     actions: {
       'cfg-edit': function (el) { startEdit(el.getAttribute('data-k') || ''); },
       'cfg-cancel': function () { cancelEdit(); },

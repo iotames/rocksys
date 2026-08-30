@@ -1362,3 +1362,30 @@ tr.dt-row-clickable.is-error td { background: var(--row-error); }
 }
 .detail-copy { margin-left: 6px; padding: 0 4px; font-size: 11px; }
 .detail-item .detail-copy { vertical-align: middle; }
+
+/* ---------- 31. 全局配置搜索工具栏 ---------- */
+.cfg-searchbar { padding: 10px 14px; }
+.cfg-search-wrap { position: relative; max-width: 560px; }
+.cfg-search-wrap .input { width: 100%; }
+.cfg-search-drop {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 80;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .14); max-height: 420px; overflow: auto;
+}
+.cfg-search-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.cfg-search-item:last-of-type { border-bottom: none; }
+.cfg-search-item:hover, .cfg-search-item.is-sel { background: var(--hover-bg); }
+.cfg-search-main { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.cfg-search-key { font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+.cfg-search-title { color: var(--text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-search-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.cfg-search-val { font-size: 12px; color: var(--text-2); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-search-go { margin-left: auto; font-size: 11px; color: var(--text-2); }
+.cfg-search-item:hover .cfg-search-go, .cfg-search-item.is-sel .cfg-search-go { color: var(--text-btn-hover); }
+.cfg-search-empty, .cfg-search-more { padding: 12px; text-align: center; color: var(--text-2); font-size: 12px; }
+.cfg-search-item mark, .cfg-search-key mark, .cfg-search-title mark { background: transparent; color: var(--text-btn-hover); font-weight: 700; padding: 0; }
+.cfg-row.cfg-locate-flash { animation: cfgFlash 1.6s ease-out 1; }
+@keyframes cfgFlash {
+  0%, 45% { background: rgba(102, 177, 255, .22); }
+  100% { background: transparent; }
+}

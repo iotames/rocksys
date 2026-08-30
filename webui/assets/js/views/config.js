@@ -42,6 +42,7 @@
       store.configList = normalizeConfigList(list);
       store.configListLoaded = true;
       store.configUnavailable = false;
+      invalidateSearchIndex(); // 配置快照已更新，重建搜索索引
       noteUpdated();
     } catch (e) {
       store.configFailed = !store.configListLoaded;
@@ -134,6 +135,168 @@
     return groups;
   }
 
+  // ── 配置项搜索工具栏（KEY 优先 / 标题；纯前端过滤，无新接口）──────────
+  // 单一编辑路径：结果点击 = 定位（切分组/跳组件页）+ 滚动高亮 + 自动进入行内编辑，
+  // 不另造弹窗编辑（避免与行内编辑形成需永久双维护的对偶实现）。
+  const cfgSearch = { q: '', sel: 0, results: [], timer: null };
+  let cfgSearchIndex = null; // 渲染后构建：configList 未变则复用
+
+  function invalidateSearchIndex() { cfgSearchIndex = null; }
+
+  // 扁平搜索索引：全量配置项 + 归属（分组名 / 组件·服务名与路由）
+  function buildSearchIndex() {
+    if (cfgSearchIndex) return cfgSearchIndex;
+    const owners = Object.keys(COMPONENT_PREFIX).map(name => ({
+      name,
+      prefix: COMPONENT_PREFIX[name],
+      isService: COMPONENT_ORDER.indexOf(name) < 0 && SERVICE_ORDER.indexOf(name) >= 0,
+    }));
+    cfgSearchIndex = (store.configList || []).map(item => {
+      const o = owners.find(x => item.key.indexOf(x.prefix) === 0);
+      if (o) {
+        const meta = Rock.state.componentMeta(o.name, o.isService ? 'service' : 'middleware');
+        return {
+          item,
+          ownerLabel: meta.title,
+          ownerKind: o.isService ? '服务' : '组件',
+          route: (o.isService ? 'services/' : 'components/') + o.name + '?tab=config',
+        };
+      }
+      const g = groupOf(item.key);
+      return { item, ownerLabel: g.label, ownerKind: '分组', group: g.name };
+    }).filter(e => e.item.key);
+    return cfgSearchIndex;
+  }
+
+  // 匹配评分：KEY 前缀 0 < KEY 包含 1 < 标题包含 2；-1 = 不匹配
+  function searchScore(e, q) {
+    const k = e.item.key.toUpperCase();
+    const t = String(e.item.title || '').toUpperCase();
+    if (k.indexOf(q) === 0) return 0;
+    if (k.indexOf(q) >= 0) return 1;
+    if (t.indexOf(q) >= 0) return 2;
+    return -1;
+  }
+
+  function hiText(text, q) {
+    const s = String(text || '');
+    const i = s.toUpperCase().indexOf(q);
+    if (i < 0) return esc(s);
+    return esc(s.slice(0, i)) + '<mark>' + esc(s.slice(i, i + q.length)) + '</mark>' + esc(s.slice(i + q.length));
+  }
+
+  function searchDropHTML() {
+    const rs = cfgSearch.results;
+    if (!cfgSearch.q) return '';
+    if (!rs.length) return '<div class="cfg-search-empty">无匹配配置项（支持 KEY 与标题，KEY 优先）</div>';
+    const rows = rs.map((e, i) => {
+      const it = e.item;
+      const sensitive = Rock.state.isSensitiveKey(it.key);
+      const restart = Rock.state.RESTART_KEYS.indexOf(it.key) >= 0;
+      const display = sensitive ? maskOf(it.current) : (it.current === '' ? '（空）' : it.current);
+      return '<div class="cfg-search-item' + (i === cfgSearch.sel ? ' is-sel' : '') + '" data-key="' + esc(it.key) + '">' +
+        '<div class="cfg-search-main">' +
+        '<span class="cfg-search-key">' + hiText(it.key, cfgSearch.q) + '</span>' +
+        '<span class="cfg-search-title">' + hiText(it.title, cfgSearch.q) + '</span>' +
+        '</div>' +
+        '<div class="cfg-search-meta">' +
+        '<span class="tag tag-blue">' + esc(e.ownerKind + ' · ' + e.ownerLabel) + '</span>' +
+        (restart ? '<span class="tag tag-gray">需重启</span>' : '') +
+        (sensitive ? '<span class="tag tag-orange">敏感</span>' : '') +
+        '<span class="cfg-search-val mono">' + esc(display) + '</span>' +
+        '<span class="cfg-search-go">回车定位并编辑 →</span>' +
+        '</div></div>';
+    }).join('');
+    const total = buildSearchIndex().filter(e => searchScore(e, cfgSearch.q) >= 0).length;
+    return rows + (total > rs.length
+      ? '<div class="cfg-search-more">共 ' + total + ' 项匹配，仅展示前 ' + rs.length + ' 项，请细化关键字</div>'
+      : '');
+  }
+
+  function maskOf(v) { return String(v == null ? '' : v) === '' ? '（空）' : '••••••••'; }
+
+  function cfgSearchHTML() {
+    return '<div class="card cfg-searchbar"><div class="cfg-search-wrap">' +
+      '<input id="cfg-search" class="input" placeholder="🔍 搜索配置项 KEY / 标题，选择结果定位并编辑" autocomplete="off" spellcheck="false">' +
+      '<div id="cfg-search-drop" class="cfg-search-drop" hidden></div>' +
+      '</div></div>';
+  }
+
+  function runCfgSearch(q) {
+    cfgSearch.q = q.trim().toUpperCase();
+    cfgSearch.sel = 0;
+    const idx = buildSearchIndex();
+    cfgSearch.results = cfgSearch.q
+      ? idx.map(e => ({ e, s: searchScore(e, cfgSearch.q) }))
+          .filter(x => x.s >= 0)
+          .sort((a, b) => a.s - b.s || a.e.item.key.localeCompare(b.e.item.key))
+          .slice(0, 20).map(x => x.e)
+      : [];
+    const drop = $('#cfg-search-drop');
+    if (!drop) return;
+    drop.innerHTML = searchDropHTML();
+    drop.hidden = !cfgSearch.q;
+  }
+
+  // 定位：全局项切分组页签后滚动高亮 + 自动入编辑；组件/服务项跳转对应页面配置页签
+  function locateConfig(key) {
+    const drop = $('#cfg-search-drop');
+    if (drop) drop.hidden = true;
+    $('#cfg-search').value = '';
+    cfgSearch.q = '';
+    const e = buildSearchIndex().find(x => x.item.key === key);
+    if (!e) return;
+    if (e.group) {
+      if (configActiveGroup !== e.group) {
+        configActiveGroup = e.group;
+        render(); // 重建页签与面板后再定位
+      }
+      if (!ce.locateAndEdit(key)) toast('未找到配置项 ' + key + '，请刷新页面后重试', 'warn');
+    } else {
+      store.pendingCfgLocate = key; // detail.js 渲染配置页签后消费
+      window.location.hash = '#/' + e.route;
+    }
+  }
+
+  function bindCfgSearch(host) {
+    const inp = host.querySelector('#cfg-search');
+    const drop = host.querySelector('#cfg-search-drop');
+    if (!inp || !drop) return;
+    inp.addEventListener('input', function () {
+      clearTimeout(cfgSearch.timer);
+      const v = inp.value;
+      cfgSearch.timer = setTimeout(function () { runCfgSearch(v); }, 150);
+    });
+    inp.addEventListener('focus', function () { if (cfgSearch.q) drop.hidden = false; });
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!cfgSearch.results.length) return;
+        cfgSearch.sel = (cfgSearch.sel + (e.key === 'ArrowDown' ? 1 : cfgSearch.results.length - 1)) % cfgSearch.results.length;
+        drop.innerHTML = searchDropHTML();
+        const sel = drop.querySelector('.cfg-search-item.is-sel');
+        if (sel) sel.scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      if (e.key === 'Enter') {
+        const it = cfgSearch.results[cfgSearch.sel];
+        if (it) locateConfig(it.item.key);
+        return;
+      }
+      if (e.key === 'Escape') {
+        inp.value = '';
+        cfgSearch.q = '';
+        drop.hidden = true;
+      }
+    });
+    drop.addEventListener('mousedown', function (e) {
+      // mousedown：先于 input blur 触发，保证点击结果行可靠
+      const row = e.target.closest('.cfg-search-item[data-key]');
+      if (row) { e.preventDefault(); locateConfig(row.getAttribute('data-key')); }
+    });
+    inp.addEventListener('blur', function () { setTimeout(function () { drop.hidden = true; }, 120); });
+  }
+
   function render() {
     const host = $('#page-config');
     if (!host) return;
@@ -171,6 +334,7 @@
         desc: '网关与全局基础设施配置（保存即即时生效，无需重启）；组件/服务各自的配置请前往对应页面',
         actions: '<button class="btn btn-sm" data-act="config-reload">⟳ 手动刷新</button>',
       }) +
+      cfgSearchHTML() +
       (store.configUnavailable ? '<div class="alert alert-warning">配置接口（/admin/config/list）暂不可用或网关版本不支持，当前展示底座配置。修改项保存仍可用。</div>' : '') +
       tabs +
       '<div class="card"><div id="config-group-panel"></div></div>' +
@@ -180,6 +344,7 @@
       '<div class="card-title" style="margin-top:18px">服务配置 <span class="card-sub">独立服务 · 点击进入对应页面查看与修改</span></div>' +
       '<div class="cfg-link-grid">' + linkGridHTML('service') + '</div>' +
       '</div>';
+    bindCfgSearch(host);
     const panel = $('#config-group-panel');
     if (configActiveGroup === 'proxy') {
       // 可信代理页签：外挂文件在线编辑（views/proxy.js，无独立路由）
