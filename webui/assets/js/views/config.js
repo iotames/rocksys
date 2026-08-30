@@ -168,13 +168,15 @@
     return cfgSearchIndex;
   }
 
-  // 匹配评分：KEY 前缀 0 < KEY 包含 1 < 标题包含 2；-1 = 不匹配
+  // 匹配评分：KEY 前缀 0 < KEY 包含 1 < 标题包含 2 < 说明(Usage) 包含 3；-1 = 不匹配。
+  // 综合搜索：历史原因部分配置项的说明写在 Title、部分在 Usage，两处都参与匹配才不漏。
   function searchScore(e, q) {
     const k = e.item.key.toUpperCase();
     const t = String(e.item.title || '').toUpperCase();
     if (k.indexOf(q) === 0) return 0;
     if (k.indexOf(q) >= 0) return 1;
     if (t.indexOf(q) >= 0) return 2;
+    if (String(e.item.example || '').toUpperCase().indexOf(q) >= 0) return 3;
     return -1;
   }
 
@@ -183,6 +185,15 @@
     const i = s.toUpperCase().indexOf(q);
     if (i < 0) return esc(s);
     return esc(s.slice(0, i)) + '<mark>' + esc(s.slice(i, i + q.length)) + '</mark>' + esc(s.slice(i + q.length));
+  }
+
+  // Usage 命中摘录：取命中位置前后各 ~24 字符的窗口，超长以 … 截断
+  function hiSnippet(text, q) {
+    const s = String(text || '');
+    const i = s.toUpperCase().indexOf(q);
+    if (i < 0) return '';
+    const from = Math.max(0, i - 24), to = Math.min(s.length, i + q.length + 24);
+    return (from > 0 ? '…' : '') + hiText(s.slice(from, to), q) + (to < s.length ? '…' : '');
   }
 
   function searchDropHTML() {
@@ -205,7 +216,11 @@
         (sensitive ? '<span class="tag tag-orange">敏感</span>' : '') +
         '<span class="cfg-search-val mono">' + esc(display) + '</span>' +
         '<span class="cfg-search-go">回车定位并编辑 →</span>' +
-        '</div></div>';
+        '</div>' +
+        (hiSnippet(it.example, cfgSearch.q)
+          ? '<div class="cfg-search-usage">说明：' + hiSnippet(it.example, cfgSearch.q) + '</div>'
+          : '') +
+        '</div>';
     }).join('');
     const total = buildSearchIndex().filter(e => searchScore(e, cfgSearch.q) >= 0).length;
     return rows + (total > rs.length
