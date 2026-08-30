@@ -75,7 +75,7 @@
     ],
     rowKey: expKey, // time|trace_id|client_ip
     detail: {
-      title: () => '拦截明细',
+      title: () => '攻击拦截明细',
       // 详情弹层 footer 注入「IP封禁」（与表格操作列共用同一封禁弹窗，避免双份实现）
       actions: [{ label: 'IP封禁', className: 'btn-primary', onClick: r => openBanModal(r) }],
       fields: [
@@ -385,7 +385,7 @@
 
   function tabsHTML() {
     return Rock.comp.tabs.tabsHTML(
-      [{ name: 'stats', label: '拦截统计' }, { name: 'iplist', label: '黑白名单' }, { name: 'files', label: '文件编辑' }],
+      [{ name: 'stats', label: '攻击拦截' }, { name: 'iplist', label: '黑白名单' }, { name: 'files', label: '文件编辑' }],
       wafActiveTab,
       { act: 'waf-tab', nameAttr: 'data-tab' }
     );
@@ -410,7 +410,7 @@
     if (!host) return;
     host.innerHTML =
       Rock.comp.head.headHTML({
-        title: 'WAF安全防护',
+        title: 'WAF安全',
         desc: 'WAF 防护管理：实时计数、按日趋势、Top 攻击源与明细追溯；黑白名单管理（拦截与放行请求分开记录，互不关联）',
         actions:
           '<button class="btn btn-sm" data-act="waf-reload">⟳ 手动刷新</button>' +
@@ -427,7 +427,7 @@
       '</select></div>' +
       statsHTML() + '</div>' +
       Rock.views.topIPs.html() +
-      '<div class="card">' +
+      '<div class="card"><div class="card-title">攻击拦截明细 <span class="card-sub">拦截事件逐条追溯，行内可封禁</span></div>' +
       eventsBar.html() +
       '<div class="log-toolbar" style="margin-top:-6px">' +
       '<button class="btn btn-sm btn-primary" data-act="waf-query">查询</button>' +
@@ -606,6 +606,7 @@
       },
       'waf-tab': function (el) { ipListSwitchTab(el.getAttribute('data-tab') || 'stats'); },
       'waf-iplist-kind': function (el) { Rock.views.blacklist.switchKind(el.getAttribute('data-kind') || 'black'); },
+      'waf-iplist-detail': function (el) { Rock.views.blacklist.openDetail(el.getAttribute('data-key')); },
       'waf-iplist-query': function () { Rock.views.blacklist.query(); },
       'waf-iplist-reset': function () { Rock.views.blacklist.reset(); },
       'waf-iplist-reload': function () { Rock.views.blacklist.query(); },

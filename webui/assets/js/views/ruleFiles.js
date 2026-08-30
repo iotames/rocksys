@@ -25,7 +25,7 @@
     ns: 'rf',
     page: 'waf',
     head: {
-      title: 'WAF安全防护',
+      title: 'WAF安全',
       desc: '规则文件在线编辑：保存到外挂目录（HOT_SCRIPTS_DIR/rules/），≤3s 自动热更生效，无需重启',
     },
     tabsHTML: function () { return pageCtx.tabsHTML(); },

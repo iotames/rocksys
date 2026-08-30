@@ -32,6 +32,12 @@
   let ipBar = null;
   let ipTable = null;
 
+  // RFC3339 → 本地 'YYYY-MM-DD HH:mm:ss'；解析失败回原文（空值回空串）
+  function fmtDT(v) {
+    var d = Rock.util.fmtDateTime(v);
+    return d === '--:--:--' ? (v || '') : d;
+  }
+
   function buildInstances() {
     const isBlack = ipListState.kind === 'black';
     // 类别筛选选项：排除 0（0=其他仅为存储兜底，查询语境 0=全部，不提供筛选）
@@ -60,31 +66,39 @@
     });
     const cols = [
       { key: 'id', label: 'ID' },
-      { key: 'ip', label: 'IP / CIDR', render: function (r) { return '<b>' + esc(r.ip) + '</b>'; } },
-      { key: 'title', label: '备注' },
+      { key: 'created_at', label: '添加时间', render: function (r) { return esc(fmtDT(r.created_at)); } },
     ];
+    if (isBlack) {
+      cols.push({ key: 'expires_at', label: '过期时间', render: function (r) {
+        if (!r.expires_at) return '永久';
+        return esc(fmtDT(r.expires_at));
+      } });
+    }
+    cols.push(
+      { key: 'ip', label: 'IP / CIDR', render: function (r) { return '<b>' + esc(r.ip) + '</b>'; } }
+    );
     if (isBlack) {
       cols.push(
         { key: 'block_type', label: '类别', render: function (r) { return esc(typeName(r.block_type)); } },
-        { key: 'hit_count', label: '命中', render: function (r) { return fmtInt(Number(r.hit_count) || 0); } },
-        { key: 'warn_times', label: '封禁次数', render: function (r) { return fmtInt(Number(r.warn_times) || 0); } },
-        { key: 'expires_at', label: '过期时间', render: function (r) {
-          if (!r.expires_at) return '永久';
-          var d = Rock.util.fmtDateTime(r.expires_at); // RFC3339 → 本地 'YYYY-MM-DD HH:mm:ss'，解析失败回原文
-          return esc(d === '--:--:--' ? r.expires_at : d);
-        } }
+        { key: 'hit_count', label: '命中数', render: function (r) { return fmtInt(Number(r.hit_count) || 0); } },
+        { key: 'warn_times', label: '封禁次数', render: function (r) { return fmtInt(Number(r.warn_times) || 0); } }
       );
     }
-    cols.push({ key: 'status', label: '状态', render: ipListStatusHTML });
+    cols.push(
+      { key: 'status', label: '状态', render: ipListStatusHTML },
+      { key: 'title', label: '备注' }
+    );
     ipTable = Rock.comp.dataTable.create({
       ns: 'waf-iplist',
       columns: cols,
+      rowKey: function (r) { return String(r.id); },
       rowActions: function (row) {
         return row.deleted_at
           ? '<button class="btn btn-sm btn-text" data-act="waf-iplist-restore" data-id="' + row.id + '">恢复</button>'
           : '<button class="btn btn-sm btn-text" data-act="waf-iplist-del" data-id="' + row.id + '">删除</button>';
       },
-      detail: null, // 行内已展示全部字段，无点行详情
+      // 点行打开详情弹层（操作列按钮事件优先于行点击，互不影响）
+      detail: { title: function () { return isBlack ? '黑名单条目详情' : '白名单条目详情'; } },
       paging: { mode: 'server', pageSize: 20 },
       emptyText: '暂无条目',
       onPaging: function (st) {
@@ -93,6 +107,8 @@
         loadIPList();
       },
     });
+    // 覆盖 dataTable 缺省只读详情：点行打开可编辑弹层（黑/白切换重建实例后需重挂）
+    ipTable.onDetail = function (row) { openDetail(row.id); };
   }
   buildInstances();
 
@@ -337,6 +353,76 @@
     }
   }
 
+  // ── 行详情弹层（点数据行打开；只读信息 + 可编辑字段）──────────────────
+
+  // RFC3339 → datetime-local 输入值（本地时区 'YYYY-MM-DDTHH:mm'）；解析失败回空串
+  function rfc3339ToLocalInput(v) {
+    const d = new Date(v || '');
+    if (!v || isNaN(d.getTime())) return '';
+    const p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+      'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  function openDetail(id) {
+    const row = ipListState.rows.find(r => String(r.id) === String(id));
+    if (!row) return;
+    const black = isBlack();
+    const btOptions = BLOCK_TYPES.map(function (t) {
+      return '<option value="' + t[0] + '"' + (Number(row.block_type) === t[0] ? ' selected' : '') + '>' + esc(t[0] + ' ' + t[1]) + '</option>';
+    }).join('');
+    // 只读区（IP/添加时间等不可改字段）+ 编辑区（备注/类别/过期时间）
+    const body =
+      '<div class="form-row"><label class="form-label">IP / CIDR</label>' +
+      '<span class="v mono">' + esc(row.ip) + '</span></div>' +
+      '<div class="form-row"><label class="form-label">添加时间</label>' +
+      '<span class="v">' + esc(fmtDT(row.created_at) || '—') + '</span></div>' +
+      '<div class="form-row"><label class="form-label">状态</label><span class="v">' + ipListStatusHTML(row) + '</span></div>' +
+      (black
+        ? '<div class="form-row"><label class="form-label">命中数 / 封禁次数</label><span class="v">' +
+          esc(fmtInt(Number(row.hit_count) || 0)) + ' / ' + esc(fmtInt(Number(row.warn_times) || 0)) + '</span></div>'
+        : '') +
+      '<div class="form-row"><label class="form-label">备注</label>' +
+      '<input class="input" id="iplist-edit-title" style="width:100%" maxlength="200" value="' + esc(row.title || '') + '"></div>' +
+      (black
+        ? '<div class="form-row"><label class="form-label">拉黑原因类别</label>' +
+          '<select class="select" id="iplist-edit-bt" style="width:260px">' + btOptions + '</select></div>' +
+          '<div class="form-row"><label class="form-label">过期时间</label>' +
+          '<input class="input" type="datetime-local" id="iplist-edit-expires" style="width:230px" value="' +
+          esc(rfc3339ToLocalInput(row.expires_at)) + '">' +
+          '<div class="form-hint" style="margin-top:4px">留空 = 永久有效（保存即按此生效，永久条目留空即可）</div></div>'
+        : '') +
+      '<div class="form-hint" style="margin-top:8px">更新立即重建拦截快照并生效；命中数/封禁次数为系统累计，不支持手工修改。</div>';
+    const overlay = Rock.ui.openModal({
+      title: black ? '黑名单条目详情' : '白名单条目详情',
+      body: body,
+      width: 480,
+      footer: '<button class="btn btn-primary" data-act="waf-iplist-update">保存</button>',
+    });
+    overlay.addEventListener('click', async function (e) {
+      if (!e.target.closest('[data-act="waf-iplist-update"]')) return;
+      const bodyReq = { id: Number(row.id), title: (overlay.querySelector('#iplist-edit-title') || {}).value || '' };
+      if (black) {
+        bodyReq.block_type = Number((overlay.querySelector('#iplist-edit-bt') || {}).value);
+        if (!(bodyReq.block_type >= 0 && bodyReq.block_type <= 11)) bodyReq.block_type = 11;
+        const exp = (overlay.querySelector('#iplist-edit-expires') || {}).value || '';
+        if (exp) {
+          const d = new Date(exp);
+          if (isNaN(d.getTime())) { toast('过期时间非法，请重新选择', 'error'); return; }
+          bodyReq.expires_at = d.toISOString();
+        }
+      }
+      try {
+        await api.post(ipListBase() + '/update')(bodyReq);
+        toast('已更新 ' + row.ip, 'success');
+        overlay.remove();
+        await loadIPList();
+      } catch (err) {
+        toast('更新失败：' + (err.message || '未知错误') + '。请修正后重试，或刷新页面查看条目当前状态', 'error');
+      }
+    });
+  }
+
   window.Rock.views.blacklist = {
     bindPage: bindPage,
     render: render,
@@ -349,5 +435,6 @@
     restore: restore,
     importRows: importRows,
     syncFile: syncFile,
+    openDetail: openDetail,
   };
 })();
