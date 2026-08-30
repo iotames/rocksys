@@ -525,3 +525,32 @@ func TestAdmin_EventsInBlacklistFlag(t *testing.T) {
 		t.Errorf("10.5.0.2 不在黑名单快照，in_blacklist 应为 false")
 	}
 }
+
+// Jail 查询失败 → 500 JSON 错误（{"ok":false,"error":...}），前端据此展示文案而非误报"接口不可达"。
+func TestJailDBErrorReturnsJSON(t *testing.T) {
+	s, _ := newTestShield(t)
+	s.enabled = true
+	store, db := newFileListStore(t, true)
+	s.SetIPListStores(store, nil)
+	t.Cleanup(func() { s.Stop() })
+	db.Close() // 关库使查询必然失败，模拟数据库异常
+
+	h := &AdminHandler{shield: s}
+	w := doReq(t, h.Jail, http.MethodGet, "/admin/shield/jail?limit=20", "")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("期望 500，实际 %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("Content-Type 应为 JSON，实际 %q", ct)
+	}
+	var body struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("响应体应为 JSON: %v（%s）", err, w.Body.String())
+	}
+	if body.OK || body.Error == "" {
+		t.Fatalf("响应应为 {ok:false, error:非空}，实际 %s", w.Body.String())
+	}
+}

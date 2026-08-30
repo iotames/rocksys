@@ -659,11 +659,11 @@ func banDurationToExpires(duration string, now time.Time) (*time.Time, error) {
 // 响应 {total, rows}，rows 含 ip/block_type/hit_count/warn_times/created_at/expires_at。
 func (h *AdminHandler) Jail(w http.ResponseWriter, r *http.Request) {
 	if h.shield == nil {
-		http.Error(w, "shield 未注册", http.StatusServiceUnavailable)
+		writeJSONErr(w, http.StatusServiceUnavailable, "shield 未注册")
 		return
 	}
 	if !h.shield.IPListEnabled(true) {
-		http.Error(w, "IP 黑名单未启用（DB 未配置），小黑屋不可用", http.StatusServiceUnavailable)
+		writeJSONErr(w, http.StatusServiceUnavailable, "IP 黑名单未启用（DB 未配置），小黑屋不可用")
 		return
 	}
 	limit := 0 // 0 → store 层回默认 20（非法/越界同样由 store 收敛）
@@ -675,7 +675,7 @@ func (h *AdminHandler) Jail(w http.ResponseWriter, r *http.Request) {
 	rows, total, err := h.shield.Jail(limit)
 	if err != nil {
 		log.Error("shield: 小黑屋查询失败", "err", err.Error())
-		http.Error(w, "小黑屋查询失败（数据库异常），请稍后重试", http.StatusInternalServerError)
+		writeJSONErr(w, http.StatusInternalServerError, "小黑屋查询失败（数据库异常），请稍后重试；若持续出现请检查数据库状态或查看服务日志")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -693,6 +693,13 @@ func parseExpiresAt(s string) (*time.Time, error) {
 		return nil, errors.New("expires_at 应为 RFC3339 时间（如 2026-09-01T00:00:00Z），空 = 永久")
 	}
 	return &t, nil
+}
+
+// writeJSONErr 统一 JSON 错误响应：{"error": msg}，供前端 api.js 解析 error 字段展示。
+func writeJSONErr(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": msg})
 }
 
 // writeListErr 统一黑白名单操作错误响应：DB 未启用 503、参数类 400、内部错误 500 通用文案。

@@ -74,14 +74,23 @@
         throw new ApiError('观测未开启', 503, { obsDisabled: true });
       }
       if (!r.ok) {
-        if (r.status >= 500) bridgeUnreachable(true);
-        // body 只读一次：优先取 JSON 的 error/message，否则取纯文本原文（如 http.Error 文案）
+        // 服务端有响应即视为可达（含 5xx），不触发"接口不可达"横幅；错误文案交给 toast 展示
+        // body 只读一次，文案决策链：JSON 的 error/message → 短纯文本原样 → 固定兜底提示。
+        // HTML 错误页/超长文本不灌进提示条（无可读性），统一指向服务端日志。
+        const MAX_RAW_LEN = 200;
         let msg = '';
         try {
           const t = await r.text();
-          try { const j = JSON.parse(t); msg = j.error || j.message || ''; } catch (e) { msg = t; }
-        } catch (e) { /* body 不可读 */ }
-        throw new ApiError(msg || ('HTTP ' + r.status), r.status);
+          try {
+            const j = JSON.parse(t);
+            msg = j.error || j.message || '';
+            if (!msg) msg = '服务端响应格式异常（HTTP ' + r.status + '）';
+          } catch (e) {
+            if (t.length <= MAX_RAW_LEN && !t.includes('<')) msg = t;
+          }
+        } catch (e) { /* body 不可读，走兜底 */ }
+        if (!msg) msg = '服务端响应异常（HTTP ' + r.status + '），请查看服务端日志';
+        throw new ApiError(msg, r.status);
       }
       bridgeUnreachable(false);
       return r;
