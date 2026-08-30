@@ -5,6 +5,7 @@ package db
 // 与运行时 SQL 同源（外挂覆写自动跟随），表不存在时返回空结果集（上层判定「缺表」）。
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -31,13 +32,14 @@ func catalogNotExists(err error) bool {
 }
 
 // queryCatalog 执行 catalog 查询脚本（{table} 占位符替换）并逐行回调。
-func (d *DB) queryCatalog(name, table string, scan func(rows *sql.Rows) error) error {
+// ctx 随请求取消（DB 挂起时管理端点不被长时间占用）。
+func (d *DB) queryCatalog(ctx context.Context, name, table string, scan func(rows *sql.Rows) error) error {
 	txt, err := d.SQL(name)
 	if err != nil {
 		return fmt.Errorf("db: 读取 catalog 脚本 %s 失败: %w", name, err)
 	}
 	txt = strings.ReplaceAll(txt, "{table}", table)
-	rows, err := d.edb.GetSqlDB().Query(txt)
+	rows, err := d.edb.GetSqlDB().QueryContext(ctx, txt)
 	if err != nil {
 		if catalogNotExists(err) {
 			return nil // 表不存在 = 空结果集（供上层判定缺表）
@@ -54,9 +56,9 @@ func (d *DB) queryCatalog(name, table string, scan func(rows *sql.Rows) error) e
 }
 
 // CatalogColumns 查询实际列结构（归一化，按定义顺序）。
-func (d *DB) CatalogColumns(table string) ([]CatalogColumn, error) {
+func (d *DB) CatalogColumns(ctx context.Context, table string) ([]CatalogColumn, error) {
 	var cols []CatalogColumn
-	err := d.queryCatalog("schema_query_columns.sql", table, func(rows *sql.Rows) error {
+	err := d.queryCatalog(ctx, "schema_query_columns.sql", table, func(rows *sql.Rows) error {
 		var c CatalogColumn
 		var def sql.NullString
 		if err := rows.Scan(&c.Name, &c.TypeFull, &c.Nullable, &def, &c.Extra); err != nil {
@@ -73,9 +75,9 @@ func (d *DB) CatalogColumns(table string) ([]CatalogColumn, error) {
 }
 
 // CatalogIndexes 查询实际索引名集合。
-func (d *DB) CatalogIndexes(table string) ([]string, error) {
+func (d *DB) CatalogIndexes(ctx context.Context, table string) ([]string, error) {
 	var names []string
-	err := d.queryCatalog("schema_query_indexes.sql", table, func(rows *sql.Rows) error {
+	err := d.queryCatalog(ctx, "schema_query_indexes.sql", table, func(rows *sql.Rows) error {
 		var n string
 		if err := rows.Scan(&n); err != nil {
 			return fmt.Errorf("db: catalog 索引结果扫描失败: %w", err)
@@ -87,9 +89,9 @@ func (d *DB) CatalogIndexes(table string) ([]string, error) {
 }
 
 // CatalogTables 查询库内全部基础表名（sqlite 内部表 sqlite_% 已在脚本侧过滤）。
-func (d *DB) CatalogTables() ([]string, error) {
+func (d *DB) CatalogTables(ctx context.Context) ([]string, error) {
 	var names []string
-	err := d.queryCatalog("schema_query_tables.sql", "", func(rows *sql.Rows) error {
+	err := d.queryCatalog(ctx, "schema_query_tables.sql", "", func(rows *sql.Rows) error {
 		var n string
 		if err := rows.Scan(&n); err != nil {
 			return fmt.Errorf("db: catalog 表清单扫描失败: %w", err)

@@ -11,6 +11,7 @@ package db
 //	F 库中多余列/表   → 仅提示（不生成 DROP，可能含数据或为历史遗留）
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"sort"
@@ -205,7 +206,8 @@ func colSummaryActual(c CatalogColumn) string {
 }
 
 // DiffSchema 全清单比对：遍历表清单逐表 DiffTable，附加 F 级「多余表」检测。
-func DiffSchema(d *DB, specs []TableSpec) ([]DiffItem, error) {
+// ctx 随请求取消，DB 挂起时 catalog 查询可及时中断。
+func DiffSchema(ctx context.Context, d *DB, specs []TableSpec) ([]DiffItem, error) {
 	var items []DiffItem
 	for _, spec := range specs {
 		ddl, err := d.SQL(spec.CreateScript)
@@ -220,13 +222,13 @@ func DiffSchema(d *DB, specs []TableSpec) ([]DiffItem, error) {
 			}
 			idx = strings.ReplaceAll(idx, "{table}", spec.Table)
 		}
-		cols, err := d.CatalogColumns(spec.Table)
+		cols, err := d.CatalogColumns(ctx, spec.Table)
 		if err != nil {
 			return nil, fmt.Errorf("db: 查询表 %s 实际列结构失败: %w", spec.Table, err)
 		}
 		var indexes []string
 		if spec.IndexScript != "" {
-			if indexes, err = d.CatalogIndexes(spec.Table); err != nil {
+			if indexes, err = d.CatalogIndexes(ctx, spec.Table); err != nil {
 				return nil, fmt.Errorf("db: 查询表 %s 实际索引失败: %w", spec.Table, err)
 			}
 		}
@@ -236,7 +238,7 @@ func DiffSchema(d *DB, specs []TableSpec) ([]DiffItem, error) {
 		})...)
 	}
 	// F 级：库中存在但未注册的多余表
-	tables, err := d.CatalogTables()
+	tables, err := d.CatalogTables(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("db: 查询库内表清单失败: %w", err)
 	}

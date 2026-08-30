@@ -3,6 +3,7 @@ package db
 // schema_diff_test.go：diff 分类矩阵（A-F 全级别）+ 归一化用例 + sqlite 内存库 catalog 实测。
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -247,7 +248,7 @@ func TestCatalogSQLite(t *testing.T) {
 		}
 	}
 
-	cols, err := d.CatalogColumns("ip_blacklist")
+	cols, err := d.CatalogColumns(context.Background(), "ip_blacklist")
 	if err != nil {
 		t.Fatalf("CatalogColumns: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestCatalogSQLite(t *testing.T) {
 			t.Fatalf("执行索引语句失败: %v\n%s", err, stmt)
 		}
 	}
-	indexes, err := d.CatalogIndexes("ip_blacklist")
+	indexes, err := d.CatalogIndexes(context.Background(), "ip_blacklist")
 	if err != nil {
 		t.Fatalf("CatalogIndexes: %v", err)
 	}
@@ -283,7 +284,7 @@ func TestCatalogSQLite(t *testing.T) {
 	if _, err := d.edb.GetSqlDB().Exec("INSERT INTO ip_blacklist (ip, title, created_at, updated_at) VALUES ('1.2.3.4', 't', '2026-01-01', '2026-01-01')"); err != nil {
 		t.Fatalf("插入触发 sqlite_sequence: %v", err)
 	}
-	tables, err := d.CatalogTables()
+	tables, err := d.CatalogTables(context.Background())
 	if err != nil {
 		t.Fatalf("CatalogTables: %v", err)
 	}
@@ -300,7 +301,7 @@ func TestCatalogSQLite(t *testing.T) {
 	if _, err := d.edb.GetSqlDB().Exec("CREATE TABLE old_version (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT NOT NULL)"); err != nil {
 		t.Fatalf("建旧版表: %v", err)
 	}
-	oldCols, err := d.CatalogColumns("old_version")
+	oldCols, err := d.CatalogColumns(context.Background(), "old_version")
 	if err != nil {
 		t.Fatalf("CatalogColumns(old_version): %v", err)
 	}
@@ -316,7 +317,7 @@ func TestCatalogSQLite(t *testing.T) {
 	}
 
 	// 表不存在：catalog 返回空集（上层判定缺表），不报错
-	missing, err := d.CatalogColumns("no_such_table")
+	missing, err := d.CatalogColumns(context.Background(), "no_such_table")
 	if err != nil {
 		t.Errorf("查询不存在表不应报错: %v", err)
 	}

@@ -38,7 +38,7 @@ func (s *AdminServer) handleDBSchema(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "表结构检查不可用：数据连接或表清单未装配（请联系管理员检查 main.go 装配）", http.StatusServiceUnavailable)
 		return
 	}
-	items, err := db.DiffSchema(s.dataDB, s.tableSpecs)
+	items, err := db.DiffSchema(r.Context(), s.dataDB, s.tableSpecs)
 	if err != nil {
 		http.Error(w, "表结构检查失败："+err.Error()+"；请确认数据连接正常后重试", http.StatusInternalServerError)
 		return

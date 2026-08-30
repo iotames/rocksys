@@ -46,6 +46,9 @@ var tableConstraintKeywords = map[string]bool{
 	"CONSTRAINT": true, "CHECK": true, "EXCLUDE": true, "FOREIGN": true,
 }
 
+// constraintKeyRe 匹配约束段中的键约束类型关键字（词边界，避免约束名含关键字字样误判）。
+var constraintKeyRe = regexp.MustCompile(`(?i)\b(PRIMARY\s+KEY|UNIQUE)\b`)
+
 // DEFAULT 值的终止关键字（其后跟的 token 不再属于默认值表达式）。
 var defaultStopKeywords = map[string]bool{
 	"NOT": true, "NULL": true, "PRIMARY": true, "UNIQUE": true, "COMMENT": true,
@@ -243,9 +246,9 @@ func ParseTableKeyColumns(ddl string) map[string]bool {
 			continue // 仅表级主键/唯一约束（KEY/INDEX 为纯索引，CHECK/EXCLUDE/FOREIGN 与列缺失无关）
 		}
 		if key == "CONSTRAINT" {
-			// CONSTRAINT <name> PRIMARY KEY(...)/UNIQUE(...)：看约束类型关键字
-			up := strings.ToUpper(rest)
-			if !strings.Contains(up, "PRIMARY KEY") && !strings.Contains(up, "UNIQUE") {
+			// CONSTRAINT <name> PRIMARY KEY(...)/UNIQUE(...)：看约束类型关键字。
+			// 词边界匹配：CHECK 约束名含 UNIQUE/PRIMARY 字样（如 chk_unique_entry）不误判为键约束。
+			if !constraintKeyRe.MatchString(rest) {
 				continue
 			}
 		}

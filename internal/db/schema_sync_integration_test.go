@@ -48,7 +48,7 @@ func runSchemaSyncTest(t *testing.T, driver, dsn string) {
 	}
 
 	// 第一次检查：应产出 B/D 自动项（类型归一后无 E 误报）
-	items, err := db.DiffSchema(d, specs)
+	items, err := db.DiffSchema(context.Background(), d, specs)
 	if err != nil {
 		t.Fatalf("DiffSchema: %v", err)
 	}
@@ -80,7 +80,7 @@ func runSchemaSyncTest(t *testing.T, driver, dsn string) {
 	}
 
 	// 复核：零差异
-	items, err = db.DiffSchema(d, specs)
+	items, err = db.DiffSchema(context.Background(), d, specs)
 	if err != nil {
 		t.Fatalf("复核 DiffSchema: %v", err)
 	}

@@ -14,6 +14,7 @@
 package db_test
 
 import (
+	"context"
 	"os"
 	"strings"
 	"syscall"
@@ -104,7 +105,7 @@ func runAcceptanceFreshDB(t *testing.T, driver, dsn string) {
 	}
 
 	// 第一次检查：7 表全缺 → A 级自动项
-	items, err := db.DiffSchema(d, specs)
+	items, err := db.DiffSchema(context.Background(), d, specs)
 	if err != nil {
 		t.Fatalf("DiffSchema: %v", err)
 	}
@@ -124,7 +125,7 @@ func runAcceptanceFreshDB(t *testing.T, driver, dsn string) {
 	execAll(t, d, sqlText)
 
 	// 复核：零差异
-	items, err = db.DiffSchema(d, specs)
+	items, err = db.DiffSchema(context.Background(), d, specs)
 	if err != nil {
 		t.Fatalf("复核 DiffSchema: %v", err)
 	}
@@ -181,7 +182,7 @@ func runAcceptanceSingleIndex(t *testing.T, driver, dsn string) {
 		_, _ = d.EasyDB().GetSqlDB().Exec("DROP INDEX IF EXISTS " + dropIdx)
 	}
 
-	items, err := db.DiffSchema(d, specs)
+	items, err := db.DiffSchema(context.Background(), d, specs)
 	if err != nil {
 		t.Fatalf("DiffSchema: %v", err)
 	}
@@ -209,7 +210,7 @@ func runAcceptanceSingleIndex(t *testing.T, driver, dsn string) {
 	}
 	execAll(t, d, sqlText)
 
-	items, err = db.DiffSchema(d, specs)
+	items, err = db.DiffSchema(context.Background(), d, specs)
 	if err != nil {
 		t.Fatalf("复核 DiffSchema: %v", err)
 	}
@@ -241,7 +242,7 @@ func runAcceptanceCatalog(t *testing.T, driver, dsn string) {
 		t.Fatalf("建验收表: %v", err)
 	}
 
-	cols, err := d.CatalogColumns(table)
+	cols, err := d.CatalogColumns(context.Background(), table)
 	if err != nil {
 		t.Fatalf("CatalogColumns（pg adbin::text 回归点）: %v", err)
 	}

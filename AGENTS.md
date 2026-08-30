@@ -11,6 +11,7 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 - `webui/`：纯静态管理控制台，经 `go:embed` 内嵌进二进制。
 - `easyconf/`、`easyserver/`、`easydb/`：独立 git 仓库的地基库，经 `go.mod replace` 本地引用。
 - `docs/`：架构与接口文档（目录结构见 `docs/PROJECT_STRUCTURE.md`、数据流见 `docs/HTTP_DATAFLOW.md`），接口变更必须同步。`docs/DATA_DICT.md`：数据字典（数据层字段/枚举唯一可读视图，变动红线见下节）。
+- `docs/plan/`：进行中项目的执行看板与工作方法论（`docs/plan/README.md`）。**存在 `docs/plan/TODO.md` 时，任何会话开工前必读它并按其断点续传协议执行。**
 - `bin/`：构建产物（不入库）。
 
 ## Build, Test, and Development Commands
@@ -68,6 +69,11 @@ go vet ./...
 - 标识符保持工程化英文命名；注释、文档、提交信息一律简体中文。
 - 外部依赖最小化：纯标准库可实现的（如 JWT）不引入第三方库。
 - 配置热更遵循优先级：`bin/.env` → 环境变量 → 命令行参数。
+
+## 调试/测试必读
+- `bin/hotscripts/sql/` 是发布外挂脚本（外挂优先、内嵌兜底），改 `sql/` 后必须同步刷新（`cp -r sql/* bin/hotscripts/sql/`），否则服务端用的还是旧脚本。
+- easyconf 日志模板只渲染 msg 不输出 attr，排查错误细节时可临时用探针程序直查。
+- API 断言通过 ≠ UI 可用；后续涉及前端页面改动必须开浏览器看渲染效果。
 
 ## Testing Guidelines
 

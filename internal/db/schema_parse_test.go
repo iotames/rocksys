@@ -238,3 +238,54 @@ ALTER TABLE t ADD COLUMN title TEXT NOT NULL DEFAULT '';
 		t.Errorf("语句段应保留前置注释便于结果展示，got %q", got[1])
 	}
 }
+
+// TestParseTableKeyColumnsConstraintName 词边界回归：CONSTRAINT 约束名含
+// UNIQUE/PRIMARY 字样的 CHECK 约束不得误判为键约束（否则列被误降 C 级需人工）。
+func TestParseTableKeyColumnsConstraintName(t *testing.T) {
+	cases := []struct {
+		name string
+		ddl  string
+		want map[string]bool
+	}{
+		{
+			name: "CHECK约束名含UNIQUE字样不误判",
+			ddl: `CREATE TABLE ip_blacklist (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				ip TEXT NOT NULL,
+				title TEXT,
+				CONSTRAINT chk_unique_entry CHECK (length(ip) > 0)
+			)`,
+			want: map[string]bool{},
+		},
+		{
+			name: "表级PRIMARY KEY仍识别",
+			ddl: `CREATE TABLE t (
+				a TEXT NOT NULL,
+				b TEXT NOT NULL,
+				CONSTRAINT pk_t PRIMARY KEY (a, b)
+			)`,
+			want: map[string]bool{"a": true, "b": true},
+		},
+		{
+			name: "表级UNIQUE约束仍识别",
+			ddl: `CREATE TABLE t (
+				ip TEXT NOT NULL,
+				CONSTRAINT uk_t UNIQUE (ip)
+			)`,
+			want: map[string]bool{"ip": true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseTableKeyColumns(tc.ddl)
+			if len(got) != len(tc.want) {
+				t.Fatalf("键约束列集合应=%v，got %v", tc.want, got)
+			}
+			for c := range tc.want {
+				if !got[c] {
+					t.Errorf("列 %s 应命中键约束，got %v", c, got)
+				}
+			}
+		})
+	}
+}
