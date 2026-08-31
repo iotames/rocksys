@@ -1,0 +1,27 @@
+# UA白名单：每行一个模式，匹配时转小写（子串匹配）。
+# 优先级：白名单 > 黑名单；UA 黑名单开关（SHIELD_WAF_CRAWLER_UA）开启后，
+# 命中白名单的 UA 在黑名单判定前放行、仅豁免「UA黑名单」这一步，
+# 方法白名单、体积限制、风险路径、路径遍历、SQL/XSS、限流、IP 黑白名单、自动封禁照常生效
+# （搜索引擎爬虫若带攻击特征照样拦）。白名单本身无开关，有数据即生效。
+# 需要禁用某条放行时，在该行行首加 # 即可（热更 ≤3s 生效）。
+# 以 # 开头的行是注释，空行忽略。外挂覆写目录 HOT_SCRIPTS_DIR/rules/ 同名文件可覆盖本文件。
+# ── 搜索引擎爬虫 ──
+# Google 搜索
+googlebot
+# Bing 搜索
+bingbot
+# DuckDuckGo 搜索
+duckduckbot
+# Apple（Siri/iCloud 推荐/Spotlight）
+applebot
+# 百度搜索（Baiduspider 及 -render/-image 等变体，子串均覆盖）
+baiduspider
+# 搜狗搜索
+sogou
+# Yandex 搜索
+yandex
+# Yahoo 搜索（Slurp 爬虫已退役多年，默认注释禁用，保留条目供老场景按需启用）
+# slurp
+# ── 社交平台预览 ──
+# Facebook 分享链接预览
+facebookexternalhit

@@ -44,7 +44,8 @@ var ruleFileMetas = []struct {
 	{ruleFileSQLPatterns, "SQL 注入特征", "SHIELD_WAF_SQL_INJECTION 开启后匹配 URL 路径/查询串的组合特征"},
 	{ruleFileXSSPatterns, "XSS 特征", "SHIELD_WAF_XSS 开启后匹配 URL 查询串的注入特征"},
 	{ruleFilePathTraversal, "路径遍历特征", "SHIELD_WAF_PATH_TRAVERSAL 开启后匹配的目录穿越特征"},
-	{ruleFileCrawlerUA, "爬虫 UA 特征", "SHIELD_WAF_CRAWLER_UA 开启后匹配 User-Agent 的爬虫/扫描器特征"},
+	{ruleFileCrawlerUA, "UA黑名单", "SHIELD_WAF_CRAWLER_UA（即 UA 黑名单开关）开启后匹配 User-Agent 的爬虫/扫描器特征；命中 ua_whitelist.txt 白名单的 UA 优先放行（「黑白名单」页签行级管理，本页整文编辑）"},
+	{ruleFileUAWhitelist, "UA白名单", "无开关，有数据即生效；UA 黑名单开关（SHIELD_WAF_CRAWLER_UA）开启后命中即在黑名单判定前放行，仅豁免该步，其余检测照常（「黑白名单」页签行级管理，本页整文编辑）"},
 	{ruleFileIPBlacklist, "静态 IP 黑名单", "外挂/.env 来源的静态 IP/CIDR 黑名单（与动态 DB 黑名单合并生效）"},
 }
 

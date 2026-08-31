@@ -367,6 +367,20 @@ RockSys 控制台
 
 **自动拉黑说明**（WAF 页说明文案与配置页呼应）：后台风控引擎按配置窗口统计各 IP 拦截次数（**排除 block_type=1 黑名单自我拦截**，避免封禁惩罚自我生产续封证据），跨类别合计达阈值即自动写入黑名单——仅精确 IP，拉黑原因取该 IP 窗口内次数最多的类别；软删/过期条目被再次命中自动恢复且解封时间延长为默认 TTL ×10。四个配置项：`SHIELD_AUTO_BAN_ENABLED`（默认 false，开启需重启）/ `SHIELD_AUTO_BAN_THRESHOLD`（默认 50）/ `SHIELD_AUTO_BAN_WINDOW`（默认 10m）/ `SHIELD_AUTO_BAN_TTL`（默认 24h，0=永久），阈值/窗口/TTL 每轮读配置支持热更（详见 `docs/CONFIGURATION.md`）。
 
+### 4.13 WAF安全 · UA黑名单/UA白名单（规则文件行级管理）
+
+「黑白名单」页签为四个子页签：IP黑名单 / IP白名单（DB 表 CRUD，见 §4.12）/ **UA黑名单** / **UA白名单**（规则文件行级管理，视图 `views/ualist.js`）：
+
+- **数据模型**：无 DB 表、无新增配置项——数据源即 WAF 规则文件 `rules/crawler_ua.txt`（UA黑名单）与 `rules/ua_whitelist.txt`（UA白名单），读写走规则三端点（`GET /admin/shield/rules/file` / `POST /admin/shield/rules/save`），保存原子写落 `HOT_SCRIPTS_DIR/rules/`，ScriptHub ≤3s 自动热更生效。
+- **语义**：UA黑名单开关即 `SHIELD_WAF_CRAWLER_UA`（默认 false，开启需重启）；UA白名单无开关、有数据即生效（同 IP 白名单），命中者在黑名单判定前放行、**仅豁免爬虫 UA 拦截一步**——SQL/XSS/风险路径/限流/IP 黑白名单等其余检测照常（搜索引擎爬虫带攻击特征照样拦）；空 UA 不命中任何白名单模式、照拦。
+- **行级管理**：生效模式表格（小写子串匹配，注释行不参与匹配、原样保留）+ 单条删除（确认弹层，仅移除模式行）+ 追加（输入转小写、空值/`#` 开头/重复模式拦截、请求中禁用输入防双击）+ 恢复默认（整体回退编译期内嵌内容，确认弹层 danger 级）；保存成功后乐观渲染，3.5s（热更窗口后）后台重拉对账。
+- **入口分工**：本页做行级管理；改注释/排序等**整文编辑**前往「文件编辑」页签（crawler_ua.txt / ua_whitelist.txt 仍在该页签清单内，两处粒度不同、不冲突）。
+- **加载失败**：统一弹 error toast（503 引导态除外），页内保留行内错误兜底。
+
+### 4.14 体验规范 · 开关设置原则
+
+开关不是越少越好、也不是越多越好，以**用户体验与流程设计的具体场景**为准：能替用户减负、按需取舍攻击面/行为边界的开关保留（如 shield 各检测项独立开关）；纯技术便利、或给数据类资产配的开关不设——**有数据即生效**（如 UA白名单与 IP 白名单同例，数据本身就是开关）。把"配置当数据收录"或"为对称而对称"加开关，均属违例。
+
 ---
 
 ## 5. 交互与界面规范
@@ -409,10 +423,11 @@ RockSys 控制台
 | WAF 拦截监控（实时计数、按日趋势、Top 攻击源、拦截明细追溯） | WAF安全 |
 | Top 攻击源 IP（Top N 可选 10/20/30/50/100，改即拉）+ 批量加黑（勾选列 + 一键加入黑名单，已在黑名单的行标注且不可选；一次 import 批量导入、幂等跳过重复） | WAF安全·攻击拦截（`/admin/shield/stats` 的 `top` 参数 1-100；返回 `in_blacklist`/`blacklist_addable`；加黑走 `POST /admin/shield/blacklist/import`，`block_type=11` 人工收录、永久生效、快照重建即时拦截） |
 | 动态 IP 黑白名单管理（列表/新增/软删恢复/批量导入/从文件同步/排序/分页过滤） | WAF安全·黑白名单 Tab（`/admin/shield/blacklist` 与 `/whitelist`，含 `sync_file` 从文件同步与 `sort` 排序；DB 未配置时页内提示不可用；交互细节见 §4.12） |
+| UA黑名单/UA白名单行级管理（规则文件：生效模式表格/单条删除/追加/恢复默认，≤3s 热更） | WAF安全·黑白名单 Tab·UA 子页签（`views/ualist.js`，读写 `/admin/shield/rules*` 三端点；UA白名单无开关有数据即生效、仅豁免爬虫 UA 拦截一步；见 §4.13） |
 | 拦截明细行内封禁（操作列「IP封禁」+ 行详情弹层入口，24h/永久单选，封禁次数累计满 5 转永久） | WAF安全·攻击拦截（`POST /admin/shield/blacklist/ban` 专用封禁端点；弹窗与置灰逻辑见 §4.12） |
 | 首页小黑屋预览（当前在押限时封禁条目，临近解封在前） | 概览·小黑屋页签（`GET /admin/shield/jail`，见 §4.2） |
 | 自动拉黑（窗口内拦截达阈值自动入黑名单，可配置开关/阈值/窗口/时长） | 配置 `SHIELD_AUTO_BAN_*` 四项（`docs/CONFIGURATION.md`）；命中结果在概览·小黑屋与黑白名单列表可见 |
-| WAF 规则文件在线编辑（risk_paths.txt / crawler_ua.txt 等 6 个规则文件，含外挂/内置生效状态与生效行数） | WAF安全·文件编辑 Tab（`/admin/shield/rules*` 三端点；保存落点 `HOT_SCRIPTS_DIR/rules/`，ScriptHub ≤3s 自动热更生效，无需重启；编辑器复用 codeEditor 公共组件） |
+| WAF 规则文件在线编辑（risk_paths.txt / crawler_ua.txt / ua_whitelist.txt 等 7 个规则文件，含外挂/内置生效状态与生效行数） | WAF安全·文件编辑 Tab（`/admin/shield/rules*` 三端点；保存落点 `HOT_SCRIPTS_DIR/rules/`，ScriptHub ≤3s 自动热更生效，无需重启；编辑器复用 codeEditor 公共组件；UA 两个名单文件另在黑白名单 Tab 有行级管理入口，见 §4.13） |
 | 可信代理列表在线编辑（IP/CIDR 白名单，保存前服务端解析校验非法内容拒绝） | 全局配置·可信代理页签（`/admin/proxy/trusted*` 三端点；保存落点 `HOT_SCRIPTS_DIR/trusted_proxies/`，ScriptHub ≤3s 自动热更生效；页面骨架与规则文件编辑共用 fileEditor 公共视图工厂） |
 | 数据库表结构同步（检查 A-F 分级差异、编辑生成 SQL、danger 强确认执行、复核闭环；存量升级不再手工 ALTER） | 服务→数据库·表结构页签（`/admin/db/schema` 与 `/admin/db/exec` 两端点；执行为 danger 级操作，服务端不做语句白名单） |
 | 账号登录 | 登录视图（账号密码）；非回环地址下进入控制台前需登录，JWT 失效后自动跳转登录视图 |

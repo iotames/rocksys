@@ -28,7 +28,8 @@ const (
 	ruleFileSQLPatterns   = "sql_patterns.txt"
 	ruleFileXSSPatterns   = "xss_patterns.txt"
 	ruleFilePathTraversal = "path_traversal.txt"
-	ruleFileCrawlerUA     = "crawler_ua.txt"
+	ruleFileCrawlerUA     = "crawler_ua.txt" // UA黑名单（开关 SHIELD_WAF_CRAWLER_UA）
+	ruleFileUAWhitelist   = "ua_whitelist.txt"
 	ruleFileIPBlacklist   = "ip_blacklist.txt"
 )
 
@@ -38,7 +39,8 @@ type RuleSet struct {
 	SQLPatterns   []string // SQL 注入特征
 	XSSPatterns   []string // XSS 特征
 	PathTraversal []string // 路径遍历特征
-	CrawlerUA     []string // 爬虫 UA 特征（小写）
+	CrawlerUA     []string // 爬虫 UA 特征（小写，UA黑名单）
+	UAWhitelist   []string // UA 白名单（小写；优先于黑名单，仅豁免爬虫 UA 拦截步，无开关、有数据即生效）
 	IPBlacklist   []string // IP 黑名单（精确 IP / CIDR）
 }
 
@@ -81,6 +83,9 @@ func (rl *ruleLoader) load() (*RuleSet, error) {
 		return nil, err
 	}
 	if rs.CrawlerUA, err = rl.loadLines(ruleFileCrawlerUA); err != nil {
+		return nil, err
+	}
+	if rs.UAWhitelist, err = rl.loadLines(ruleFileUAWhitelist); err != nil {
 		return nil, err
 	}
 	if rs.IPBlacklist, err = rl.loadLines(ruleFileIPBlacklist); err != nil {

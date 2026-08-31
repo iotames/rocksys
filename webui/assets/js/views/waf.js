@@ -394,8 +394,9 @@
 
   // ── 渲染 ────────────────────────────────────────────────────────────
 
-  // 页内 Tab：拦截统计 / 黑白名单 / 文件编辑（子视图分别见 blacklist.js / ruleFiles.js）
+  // ── 页内 Tab：拦截统计 / 黑白名单 / 文件编辑（子视图分别见 blacklist.js / ualist.js / ruleFiles.js）──
   let wafActiveTab = 'stats'; // 'stats' | 'iplist' | 'files'
+  let iplistKind = 'ipblack'; // 黑白名单子页签：ipblack | ipwhite | uablack | uawhite（渲染派发依据）
 
   function tabsHTML() {
     return Rock.comp.tabs.tabsHTML(
@@ -405,11 +406,27 @@
     );
   }
 
+  // 黑白名单页签的四个子页签（blacklist.js 与 ualist.js 共用，act 统一 waf-iplist-kind）
+  function iplistTabsHTML(kind) {
+    return Rock.comp.tabs.tabsHTML(
+      [
+        { name: 'ipblack', label: 'IP黑名单' }, { name: 'ipwhite', label: 'IP白名单' },
+        { name: 'uablack', label: 'UA黑名单' }, { name: 'uawhite', label: 'UA白名单' },
+      ],
+      kind,
+      { act: 'waf-iplist-kind', nameAttr: 'data-kind' }
+    );
+  }
+
   function render() {
     const host = $('#page-waf');
     if (!host) return;
     if (wafActiveTab === 'iplist') {
-      Rock.views.blacklist.render(host);
+      if (iplistKind === 'uablack' || iplistKind === 'uawhite') {
+        Rock.views.ualist.render(host);
+      } else {
+        Rock.views.blacklist.render(host);
+      }
       return;
     }
     if (wafActiveTab === 'files') {
@@ -591,9 +608,24 @@
   // 主 Tab 切换：拦截统计 / 黑白名单 / 文件编辑（子视图渲染与 CRUD 下沉各自模块）
   async function ipListSwitchTab(tab) {
     wafActiveTab = ['iplist', 'files'].indexOf(tab) >= 0 ? tab : 'stats';
-    if (wafActiveTab === 'iplist') await Rock.views.blacklist.ensureLoaded();
+    if (wafActiveTab === 'iplist') {
+      await Promise.all([Rock.views.blacklist.ensureLoaded(), Rock.views.ualist.ensureLoaded()]);
+    }
     if (wafActiveTab === 'files') await Rock.views.ruleFiles.ensureLoaded();
     render();
+  }
+
+  // 黑白名单子页签切换（4 个）：IP 黑/白走 blacklist.js，UA 黑/白走 ualist.js
+  function ipListSwitchKind(kind) {
+    const k = ['ipblack', 'ipwhite', 'uablack', 'uawhite'].indexOf(kind) >= 0 ? kind : 'ipblack';
+    iplistKind = k;
+    wafActiveTab = 'iplist';
+    if (k === 'uablack' || k === 'uawhite') {
+      Rock.views.ualist.switchKind(k);
+    } else {
+      Rock.views.blacklist.switchKind(k === 'ipwhite' ? 'white' : 'black');
+    }
+    render(); // 目标子视图 kind 未变（switchKind 早退不重渲）时兜底渲染
   }
 
   window.Rock.views.waf = {
@@ -619,11 +651,17 @@
         openBanModal(row || { client_ip: ip, block_type: Number(el.getAttribute('data-bt')) || 0 });
       },
       'waf-tab': function (el) { ipListSwitchTab(el.getAttribute('data-tab') || 'stats'); },
-      'waf-iplist-kind': function (el) { Rock.views.blacklist.switchKind(el.getAttribute('data-kind') || 'black'); },
+      'waf-iplist-kind': function (el) { ipListSwitchKind(el.getAttribute('data-kind') || 'ipblack'); },
+      'waf-ualist-append': function () { Rock.views.ualist.append(); },
+      'waf-ualist-del': function (el) { Rock.views.ualist.del(el.getAttribute('data-pattern') || ''); },
+      'waf-ualist-restore': function () { Rock.views.ualist.restoreDefault(); },
       'waf-iplist-detail': function (el) { Rock.views.blacklist.openDetail(el.getAttribute('data-key')); },
       'waf-iplist-query': function () { Rock.views.blacklist.query(); },
       'waf-iplist-reset': function () { Rock.views.blacklist.reset(); },
-      'waf-iplist-reload': function () { Rock.views.blacklist.query(); },
+      'waf-iplist-reload': function () {
+        if (iplistKind === 'uablack' || iplistKind === 'uawhite') Rock.views.ualist.load();
+        else Rock.views.blacklist.query();
+      },
       'waf-iplist-add': function () { Rock.views.blacklist.add(); },
       'waf-iplist-del': function (el) { Rock.views.blacklist.del(el.getAttribute('data-id')); },
       'waf-iplist-restore': function (el) { Rock.views.blacklist.restore(el.getAttribute('data-id')); },
@@ -637,6 +675,13 @@
   // 注入页面上下文：主 Tab HTML 与当前 Tab（黑白名单子视图渲染主 Tab 用）
   Rock.views.blacklist.bindPage({
     tabsHTML: tabsHTML,
+    iplistTabs: iplistTabsHTML,
+    activeTab: function () { return wafActiveTab; },
+  });
+  // 注入页面上下文：主 Tab / 四子页签 / 当前 Tab（UA 名单子视图渲染用）
+  Rock.views.ualist.bindPage({
+    tabsHTML: tabsHTML,
+    iplistTabs: iplistTabsHTML,
     activeTab: function () { return wafActiveTab; },
   });
   // 注入页面上下文：主 Tab HTML 与当前 Tab（文件编辑子视图渲染主 Tab 用）

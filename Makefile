@@ -79,7 +79,7 @@ cross-build: deps
 # 拷贝外挂资源到 bin/hotscripts/（HOT_SCRIPTS_DIR 默认值），供 release/zip 复用。
 # 外挂资源源 → 目标（运行期外挂优先、内嵌兜底，改文件无需重新编译）：
 #   sql/                              → bin/hotscripts/sql/          （mysql/postgres/sqlite 三方言 SQL 脚本）
-#   plugins/shield/rules/             → bin/hotscripts/rules/         （WAF 规则 5 个 txt 文件）
+#   plugins/shield/rules/             → bin/hotscripts/rules/         （WAF 规则 7 个 txt 文件）
 #   internal/netutil/trusted_proxies.txt → bin/hotscripts/trusted_proxies/（可信代理列表）
 release-assets:
 	@echo "==> 拷贝外挂资源到 bin/hotscripts/"

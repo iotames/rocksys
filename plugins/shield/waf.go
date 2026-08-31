@@ -30,7 +30,8 @@ type wafSnapshot struct {
 	sqlPatterns  []string
 	xssPatterns  []string
 	pathPatterns []string
-	crawlerUAs   []string
+	crawlerUAs   []string // UA黑名单特征（开关 SHIELD_WAF_CRAWLER_UA）
+	uaWhitelist  []string // UA白名单：优先于黑名单，仅豁免爬虫 UA 拦截步；无开关、有数据即生效
 	riskPaths    map[string]struct{} // 文件风险路径 + 配置追加（小写）
 }
 
@@ -93,6 +94,23 @@ func (w *wafSnapshot) hasCrawlerUA(ua string) bool {
 	}
 	lower := strings.ToLower(ua)
 	for _, p := range w.crawlerUAs {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// uaWhitelisted 判定 UA 是否命中白名单（小写子串任一模式）。
+// 白名单优先于黑名单：命中则在爬虫 UA 拦截步放行（仅豁免该步，其余 WAF 检测照常）。
+// 空 UA 不含任何非空模式子串，永不命中 → 空 UA 拦截不受白名单影响。
+// 白名单本身无开关（同 IP 白名单，有数据即生效），仅在 UA 黑名单判定步被咨询。
+func (w *wafSnapshot) uaWhitelisted(ua string) bool {
+	if ua == "" || len(w.uaWhitelist) == 0 {
+		return false
+	}
+	lower := strings.ToLower(ua)
+	for _, p := range w.uaWhitelist {
 		if strings.Contains(lower, p) {
 			return true
 		}

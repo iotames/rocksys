@@ -30,6 +30,7 @@ func testWAF(t *testing.T) *wafSnapshot {
 		pathPatterns: rs.PathTraversal,
 		riskPaths:    mergeRiskPaths(rs.RiskPaths, ""),
 		crawlerUAs:   rs.CrawlerUA,
+		uaWhitelist:  rs.UAWhitelist,
 	}
 }
 
@@ -321,6 +322,156 @@ func TestShield_WAF_RulesDirOverride(t *testing.T) {
 	okCtx, _ := newCtx("/api/ok", "1.2.3.4:80", "sqlmap/1.7")
 	if next := s.Handle(okCtx); !next {
 		t.Fatal("外置文件整体替换后，内嵌默认 UA 应放行")
+	}
+}
+
+// UA 白名单：小写子串匹配、空 UA/空清单不命中。
+func TestWAFUAWhitelisted(t *testing.T) {
+	w := &wafSnapshot{uaWhitelist: []string{"googlebot", "baiduspider"}}
+	cases := []struct {
+		ua   string
+		want bool
+	}{
+		{"Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", true},
+		{"Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)", true},
+		{"Mozilla/5.0 (X11; Linux x86_64)", false},
+		{"sqlmap/1.8", false},
+		{"", false}, // 空 UA 不命中任何非空模式 → 空 UA 拦截不受白名单影响
+	}
+	for _, c := range cases {
+		if got := w.uaWhitelisted(c.ua); got != c.want {
+			t.Errorf("uaWhitelisted(%q)=%v, want %v", c.ua, got, c.want)
+		}
+	}
+	// 空白名单：一律不命中
+	if (&wafSnapshot{}).uaWhitelisted("Googlebot/2.1") {
+		t.Error("空白名单不应命中")
+	}
+}
+
+// UA 白名单集成（内嵌规则：白名单含 googlebot/baiduspider 等，黑名单含 bot/sqlmap 等宽泛模式）：
+// 白名单优先于黑名单，仅豁免爬虫 UA 拦截步，其余检测（SQL 等）与空 UA 拦截照常。
+func TestShield_WAF_UAWhitelist(t *testing.T) {
+	s, _ := newTestShield(t)
+	s.enabled = true
+	s.wafCrawlerOn = true
+	if err := s.Start(nil); err != nil {
+		t.Fatal(err)
+	}
+	// 白名单命中（googlebot 同时被黑名单 bot 覆盖，白名单优先）→ 放行
+	ctx, _ := newCtx("/api/ok", "1.2.3.4:80", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+	if next := s.Handle(ctx); !next {
+		t.Fatal("命中 UA 白名单应放行（白名单优先于黑名单）")
+	}
+	// 白名单命中但带 SQL 注入特征 → SQL 检测照拦（严格作用域）
+	s2, _ := newTestShield(t)
+	s2.enabled = true
+	s2.wafCrawlerOn = true
+	s2.wafSQLEnabled = true
+	if err := s2.Start(nil); err != nil {
+		t.Fatal(err)
+	}
+	injCtx, injW := newCtx("/api/list?id=1%20union%20select%20*%20from%20users", "1.2.3.4:80",
+		"Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)")
+	if next := s2.Handle(injCtx); next {
+		t.Fatal("白名单 UA 携带 SQL 注入特征应被 SQL 检测拦截")
+	}
+	if injW.Code != http.StatusForbidden {
+		t.Errorf("应 403, got %d", injW.Code)
+	}
+	// 空 UA：不在白名单 → 照拦
+	emptyCtx, ew := newCtx("/api/ok", "1.2.3.4:80", "")
+	if next := s.Handle(emptyCtx); next {
+		t.Fatal("空 UA 应照拦（不命中白名单）")
+	}
+	if ew.Code != http.StatusForbidden {
+		t.Errorf("空 UA 应 403, got %d", ew.Code)
+	}
+}
+
+// 外挂覆写 ua_whitelist.txt：整体替换生效（写空模式清单 = 关闭全部放行，回归现状行为）。
+func TestShield_WAF_UAWhitelistOverride(t *testing.T) {
+	origExt := hotswap.HotScriptsDir()
+	t.Cleanup(func() { hotswap.SetHotScriptsDir(origExt) })
+	dir := t.TempDir()
+	hotswap.SetHotScriptsDir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "rules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 外挂只写一条自定义放行：内嵌 googlebot 不再放行，自定义 UA 放行
+	if err := os.WriteFile(filepath.Join(dir, "rules", "ua_whitelist.txt"),
+		[]byte("# 自定义白名单\nmy-trusted-bot\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newTestShield(t)
+	s.enabled = true
+	s.wafCrawlerOn = true
+	if err := s.Start(nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ := newCtx("/api/ok", "1.2.3.4:80", "my-trusted-bot/1.0")
+	if next := s.Handle(ctx); !next {
+		t.Fatal("外挂白名单 UA 应放行")
+	}
+	gCtx, gw := newCtx("/api/ok", "1.2.3.4:80", "Mozilla/5.0 (compatible; Googlebot/2.1)")
+	if next := s.Handle(gCtx); next {
+		t.Fatal("外挂文件整体替换后，内嵌白名单模式不再放行")
+	}
+	if gw.Code != http.StatusForbidden {
+		t.Errorf("应 403, got %d", gw.Code)
+	}
+}
+
+// 规则加载：ua_whitelist.txt 随内嵌规则加载（小写、忽略注释与空行）。
+func TestRulesUAWhitelistLoaded(t *testing.T) {
+	rl, err := newRuleLoader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs, err := rl.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs.UAWhitelist) == 0 {
+		t.Fatal("ua_whitelist.txt 应加载出至少一条模式")
+	}
+	for _, p := range rs.UAWhitelist {
+		if p == "" || strings.HasPrefix(p, "#") {
+			t.Errorf("白名单模式不应含空行/注释: %q", p)
+		}
+		if p != strings.ToLower(p) {
+			t.Errorf("白名单模式应统一小写: %q", p)
+		}
+	}
+	// D7 默认清单关键项在列（slurp 已退役、默认注释禁用，不应生效）
+	has := func(x string) bool {
+		for _, p := range rs.UAWhitelist {
+			if p == x {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{"googlebot", "bingbot", "baiduspider", "sogou", "yandex", "facebookexternalhit"} {
+		if !has(want) {
+			t.Errorf("默认白名单缺少 %q", want)
+		}
+	}
+	if has("slurp") {
+		t.Error("slurp 默认应注释禁用，不应出现在生效清单")
+	}
+}
+
+// 可编辑文件白名单含 ua_whitelist.txt（7 个文件）。
+func TestRuleFileMetasContainUAWhitelist(t *testing.T) {
+	found := false
+	for _, m := range ruleFileMetas {
+		if m.name == ruleFileUAWhitelist {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("ruleFileMetas 应包含 ua_whitelist.txt")
 	}
 }
 

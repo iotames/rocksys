@@ -279,7 +279,7 @@ func New(cfgMgr conf.Manager, hubs ...*hotswap.ScriptHub) (*Shield, error) {
 		{&s.wafXSSEnabled, "SHIELD_WAF_XSS", "false", "XSS 检测（URL 查询串，默认关闭）"},
 		{&s.wafPathEnabled, "SHIELD_WAF_PATH_TRAVERSAL", "false", "路径遍历检测（默认关闭）"},
 		{&s.wafRiskPathOn, "SHIELD_WAF_RISK_PATH", "false", "风险路径检测（内置 + SHIELD_WAF_RISK_PATHS 追加，默认关闭）"},
-		{&s.wafCrawlerOn, "SHIELD_WAF_CRAWLER_UA", "false", "爬虫/扫描器 UA 拦截（特征见规则文件 crawler_ua.txt，默认关闭）"},
+		{&s.wafCrawlerOn, "SHIELD_WAF_CRAWLER_UA", "false", "UA黑名单开关（拦截爬虫/扫描器 UA 与空 UA，特征见规则文件 crawler_ua.txt，默认关闭；命中 ua_whitelist.txt 白名单的 UA 在黑名单判定前放行）"},
 		{&s.wafRiskPaths, "SHIELD_WAF_RISK_PATHS", "", "追加风险路径（逗号分隔，需先开启 SHIELD_WAF_RISK_PATH）"},
 		{&s.allowMethods, "SHIELD_ALLOW_METHODS", "", "HTTP 方法白名单（逗号分隔，空=不限）"},
 		{&s.maxBodySize, "SHIELD_MAX_BODY_SIZE", "0", "请求体大小上限（字节，0=不限）"},
@@ -409,6 +409,7 @@ func (s *Shield) Start(cfg any) error {
 			xssPatterns:     rs.XSSPatterns,
 			pathPatterns:    rs.PathTraversal,
 			crawlerUAs:      rs.CrawlerUA,
+			uaWhitelist:     rs.UAWhitelist,
 			riskPaths:       mergeRiskPaths(rs.RiskPaths, s.wafRiskPaths),
 		},
 	}
@@ -703,8 +704,10 @@ func (s *Shield) runWAF(ctx *chain.Context, waf *wafSnapshot) bool {
 		s.recordEvent(ctx, BlockXSS, "xss_pattern")
 		return false
 	}
-	// 7. 爬虫/扫描器 UA
-	if waf.crawlerEnabled && waf.hasCrawlerUA(ctx.R.UserAgent()) {
+	// 7. 爬虫/扫描器 UA（UA黑名单）。白名单（rules/ua_whitelist.txt）优先：
+	// 命中白名单的 UA 在黑名单判定前放行，仅豁免本步（其余检测与 IP 黑白名单照常）；
+	// 空 UA 不命中任何非空白名单模式，仍照拦。
+	if waf.crawlerEnabled && !waf.uaWhitelisted(ctx.R.UserAgent()) && waf.hasCrawlerUA(ctx.R.UserAgent()) {
 		http.Error(ctx.W, "forbidden", http.StatusForbidden)
 		s.recordEvent(ctx, BlockCrawlerUA, "crawler_ua")
 		return false

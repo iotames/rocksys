@@ -179,11 +179,13 @@
         actions: '<button class="btn btn-sm" data-act="waf-iplist-reload">⟳ 刷新</button>',
       }) +
       pageCtx.tabsHTML() +
-      Rock.comp.tabs.tabsHTML(
-        [{ name: 'black', label: '黑名单' }, { name: 'white', label: '白名单' }],
-        ipListState.kind,
-        { act: 'waf-iplist-kind', nameAttr: 'data-kind' }
-      ) +
+      (pageCtx.iplistTabs
+        ? pageCtx.iplistTabs(ipListState.kind === 'white' ? 'ipwhite' : 'ipblack')
+        : Rock.comp.tabs.tabsHTML(
+            [{ name: 'black', label: '黑名单' }, { name: 'white', label: '白名单' }],
+            ipListState.kind,
+            { act: 'waf-iplist-kind', nameAttr: 'data-kind' }
+          )) +
       '<div class="card"><div class="card-title" data-tip="' + esc(isBlack()
         ? '数据来自数据库 ip_blacklist 表；外挂 rules/ip_blacklist.txt 仅参与拦截判定、不在此展示，可经「从文件同步」入库统一管理'
         : '数据来自数据库 ip_blacklist 表（白名单侧）') + '">' + (isBlack() ? '黑名单条目（DB表）' : '白名单条目（DB表）') +
