@@ -1,6 +1,7 @@
 # EGRESS_TIMING_PLAN — 访问链路计时模型修正：补出网埋点 DoneAt、egress_ms 正式列、耗时语义修正
 
 > 状态：**设计稿（待人类定稿，宪法 §2 阶段 2 唯一强制请示点）**
+> 进度承载：经人类确认本稿即**显式豁免**宪法 §1 的拆步建纲——四阶段规划即执行期唯一进度载体（理由见 §4）。
 > 背景：用户审计访问链路计时点后发现三处语义/完整性问题（详见 §1），本方案给出修正设计。
 
 ## 1. 现状结论（带证据）
@@ -53,7 +54,7 @@ access_log 落库 `time` + 三个毫秒差：
 ### 3.2 chain 取点与写回后回调（`internal/chain/`）
 
 - `adapter.go` `Handle`：
-  - 链中断路径（步骤 4 `!shouldForward` 返回前）与正常路径末端（步骤 9 写回完成后）统一 `df.SetDoneAt(time.Now())`——所有路径（普通/WebSocket 7a/缓冲 7b/流式 7c/被拦截）都有 DoneAt。
+  - 链中断路径（步骤 4 `!shouldForward` 返回前）与正常路径末端（步骤 9 写回完成后）统一 `df.SetDoneAt(time.Now())`——所有路径（普通/WebSocket 7a/缓冲 7b/流式 7c/被拦截）都有 DoneAt。**取点语义注记**：7a/7c 路径写回可横跨长时段（流式转发 DoneAt＝整条流写毕时刻），egress 语义即"响应写回客户端完成的时刻差"；obs 开启时必走缓冲路径（7b）不受影响，被拦截路径不产生 access_log，故该注记仅影响语义解读、不影响落库。
   - 新增步骤 9b：遍历 Tail 响应钩子，实现了新可选接口 `DoneHook`（`interface{ OnDone(ctx *Context) }`，定义在 `internal/chain/interface.go`）的，调用 `OnDone`。此时 DoneAt 已取点。
 - **接口注释写明契约**：OnDone 在响应写回客户端之后、仅调用一次；panic recover 语义与步骤 8 相同。
 
@@ -63,9 +64,10 @@ access_log 落库 `time` + 三个毫秒差：
   - `OnResponse` 改为 no-op（保留方法以维持 ResponseHook 注册——obs 在 Tail 槽位是缓冲路径的前提，`RespBody`/`RespBytes` 依赖缓冲）。
   - 新增 `OnDone(ctx)`：实现 `chain.DoneHook`；把现 OnResponse 的记录构造 + 异步落盘 + 指标聚合整体迁入。取值变化：
     - `Time: ctx.DF.DoneAt()`（零值兜底 `time.Now()`，对齐「完成时刻」= 出网时刻语义）；
-    - `EgressMs: ctx.DF.EgressMs()`（新增字段）；
+    - `EgressMs: ctx.DF.EgressMs()`（新增字段；**语义含客户端网络传输时间**——慢客户端会把 egress 撑大，属"出网"的正确含义，DATA_DICT 说明须点明）；
     - `TotalMs: ctx.DF.TotalMs()`（新口径 ④−①，随 3.1 自动生效）；
-    - `ShieldMs/BizMs` 不变（shield_ms 语义改为「入网耗时」仅展示层）。
+    - `ShieldMs/BizMs` 不变（shield_ms 语义改为「入网耗时」仅展示层）；
+    - `metrics.Add` 的时间取点由 `time.Now()` 对齐为 `ctx.DF.DoneAt()`（零值兜底 `time.Now()`），与记录 `Time` 同源，避免指标与落库两处时间源漂移。
 - `dim.go`：注册 `DimEgressMs = "egress_ms"`（DimIndexed 索引维度，标题「出网耗时（毫秒）」）；`DimShieldMs` 标题「防护耗时（毫秒）」→「入网耗时（毫秒）」；`AccessRecord` 加 `EgressMs int64` 并入 `ToFlatMap`。
 - `db_store.go` `Write`：insert 参数序加 `r.EgressMs`（total_ms 之后）。
 
@@ -89,7 +91,7 @@ access_log 落库 `time` + 三个毫秒差：
 
 ### 3.7 文档同步（红线清单）
 
-- `docs/DATA_DICT.md`：access_log 节列数 15→16；`shield_ms` 标题「防护耗时」→「入网耗时」、说明改「请求到达→转发前（全部前置中间件）耗时；仅中间链只挂 shield 时等价防护耗时」；新增 `egress_ms` 行；`total_ms` 说明改「到达→出网（含出网段）」；历史行差异注记。
+- `docs/DATA_DICT.md`：access_log 节列数 15→16；`shield_ms` 标题「防护耗时」→「入网耗时」、说明改「请求到达→转发前（全部前置中间件）耗时；仅中间链只挂 shield 时等价防护耗时」；新增 `egress_ms` 行（说明点明**含客户端网络传输时间**：＝响应写回客户端完成−转发完成，慢客户端会撑大该值）；`total_ms` 说明改「到达→出网（含出网段）」；历史行差异注记。
 - `docs/HTTP_DATAFLOW.md`：计时点模型 ①→④ 图示与各段语义。
 - `docs/webui.md`：入网数据详情弹层字段描述、排序选项。
 - 代码注释：`dataflow.go`/`adapter.go`/`obs.go` 相关注释随改随新。
@@ -146,4 +148,5 @@ access_log 落库 `time` + 三个毫秒差：
 
 ## 变更记录
 
+- 2026-08-31：定稿前打磨——① §3.2 补 7a/7c 路径 DoneAt 取点语义注记（流式＝整条流写毕时刻，落库不受影响）；② §3.3 `EgressMs` 语义点明含客户端网络传输时间，`metrics.Add` 取点对齐 DoneAt 与落库同源；③ §3.7 DATA_DICT 的 egress_ms 说明同步点明客户端传输时间；④ 头部显式声明经确认豁免拆步建纲（§4 单文档承载进度的宪法依据）。
 - （定稿后回填：验收结论、发现的问题、临时决策审查结果）

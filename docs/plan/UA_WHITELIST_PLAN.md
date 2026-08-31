@@ -22,8 +22,9 @@ shield 组件的 WAF 检测链（`plugins/shield/shield.go` `runWAF`）末环是
 | D4 | 作用域 | **严格限定**：命中白名单仅豁免「爬虫 UA 拦截」这一环（含空 UA 拦截不受影响——空 UA 不会命中任何非空白名单模式）；方法白名单、体积限制、风险路径、路径遍历、SQL/XSS、限流、IP 黑白名单、自动封禁一律照常 | 用户强调"用户要为自己的操作负责"的边界：带 SQL 注入特征的搜索引擎爬虫照样拦 |
 | D5 | 白名单文件名 | `ua_whitelist.txt`（对称黑名单既有 `crawler_ua.txt`） | 用户拍板 |
 | D6 | 黑名单文件是否改名 | **不改名**，继续用 `crawler_ua.txt` | 用户已部署的外挂覆写文件不失效；页面显示名改为「UA(爬虫)黑名单」即可 |
-| D7 | 默认白名单内容 | 保守清单：googlebot、bingbot、duckduckbot、applebot、baiduspider、sogou、yandex、slurp、facebookexternalhit；每条爬虫用**独立注释行**备注归属（★不能行内尾注：`parseRuleLines` 只忽略整行 `#`，行内尾注会混入模式）；文件头写明子串匹配/白名单优先/仅豁免爬虫 UA 拦截/其余检测照常；用户可随时注释行首 `#` 禁用单条（热更 ≤3s） | 用户拍板 + 实现约束（行内注释不兼容） |
+| D7 | 默认白名单内容 | 保守清单：googlebot、bingbot、duckduckbot、applebot、baiduspider、sogou、yandex、slurp（已退役，默认注释禁用，按需启用）、facebookexternalhit；每条爬虫用**独立注释行**备注归属（★不能行内尾注：`parseRuleLines` 只忽略整行 `#`，行内尾注会混入模式）；文件头写明子串匹配/白名单优先/仅豁免爬虫 UA 拦截/其余检测照常；用户可随时注释行首 `#` 禁用单条（热更 ≤3s） | 用户拍板 + 实现约束（行内注释不兼容） |
 | D8 | WebUI 结构 | 「黑白名单」页签子页签由 2 个改 4 个：IP黑名单 / IP白名单 / UA(爬虫)黑名单 / UA(爬虫)白名单。IP 两个沿用现有 DB CRUD 视图；UA 两个做**简单查看 + 追加**（无 DB 表，读写规则文件三端点），页内提示"完整编辑请前往「文件编辑」页签"并带跳转链接；「文件编辑」页签保留不动 | 用户拍板；文件编辑页签是全量规则文件统一入口，保留 |
+| D9 | 白名单开关 | **不设开关，同 IP 白名单一样，有数据即生效**。`SHIELD_WAF_CRAWLER_UA` 就是 UA 黑名单的开关（UA 黑名单＝爬虫特征识别黑名单，二者是同一事物，文档与代码注释统一此称谓）；UA 白名单不新增任何开关。相关代码注释（配置项 title/desc、规则文件头注释、waf.go 判定处）须写清两者关系：黑名单开关开启时，命中白名单的 UA 在黑名单判定前放行 | 用户拍板：不给白名单设开关；开关取舍以用户体验与流程场景为准，白名单是数据、有数据即生效，无需开关 |
 
 ## 3. 设计方案（文件/端点/字段级）
 
@@ -33,9 +34,11 @@ shield 组件的 WAF 检测链（`plugins/shield/shield.go` `runWAF`）末环是
 
   ```
   # UA(爬虫)白名单：每行一个模式，匹配时转小写（子串匹配）。
-  # 优先级：白名单 > 黑名单；命中白名单仅豁免「爬虫/扫描器 UA 拦截」这一步，
+  # 优先级：白名单 > 黑名单；UA 黑名单开关（SHIELD_WAF_CRAWLER_UA）开启后，
+  # 命中白名单的 UA 在黑名单判定前放行、仅豁免「UA(爬虫)黑名单」这一步，
   # 方法白名单、体积限制、风险路径、路径遍历、SQL/XSS、限流、IP 黑白名单、自动封禁照常生效
-  # （搜索引擎爬虫若带攻击特征照样拦）。需要禁用某条放行时，在该行行首加 # 即可（热更 ≤3s 生效）。
+  # （搜索引擎爬虫若带攻击特征照样拦）。白名单本身无开关，有数据即生效。
+  # 需要禁用某条放行时，在该行行首加 # 即可（热更 ≤3s 生效）。
   # 以 # 开头的行是注释，空行忽略。外挂覆写目录 HOT_SCRIPTS_DIR/rules/ 同名文件可覆盖本文件。
   # ── 搜索引擎爬虫 ──
   # Google 搜索
@@ -52,15 +55,17 @@ shield 组件的 WAF 检测链（`plugins/shield/shield.go` `runWAF`）末环是
   sogou
   # Yandex 搜索
   yandex
-  # Yahoo 搜索
-  slurp
+  # Yandex 搜索
+  yandex
+  # Yahoo 搜索（Slurp 爬虫已退役多年，默认注释禁用，保留条目供老场景按需启用）
+  # slurp
   # ── 社交平台预览 ──
   # Facebook 分享链接预览
   facebookexternalhit
   ```
 
 - `plugins/shield/rules.go`：新增常量 `ruleFileUAWhitelist = "ua_whitelist.txt"` 与 `RuleSet.UAWhitelist []string` 字段，`load` 中 `loadLines` 加载（与 CrawlerUA 同路径）。
-- `bin/hotscripts/rules/ua_whitelist.txt`：`make release` 资源同步（开发期手工 `cp -r rules/* bin/hotscripts/rules/`——注意仓库根的 `rules/` 目录不存在，内嵌源在 `plugins/shield/rules/`，同步命令以实际布局为准）。
+- `bin/hotscripts/rules/ua_whitelist.txt`：`make release` 资源同步（开发期手工 `cp -r rules/* bin/hotscripts/rules/`——注意仓库根的 `rules/` 目录不存在，内嵌源在 `plugins/shield/rules/`，同步命令以实际布局为准）；Makefile 第 82 行附近注释「WAF 规则 5 个 txt 文件」已落后实际（现 6 个），本期同步改为 7 个。
 
 ### 3.2 WAF 判定（后端）
 
@@ -68,14 +73,14 @@ shield 组件的 WAF 检测链（`plugins/shield/shield.go` `runWAF`）末环是
 - `plugins/shield/shield.go`：
   - 快照构建（约 :405 附近）注入 `uaWhitelist: rs.UAWhitelist`；
   - `runWAF` 第 7 步改为 `if waf.crawlerEnabled && !waf.uaWhitelisted(ua) && waf.hasCrawlerUA(ua)`——白名单优先（D3），仅豁免该步（D4），空 UA 因不命中任何非空模式仍被拦。
-- `plugins/shield/rules_admin.go`：`ruleFileMetas` 增加 `{ruleFileUAWhitelist, "UA(爬虫)白名单", "SHIELD_WAF_CRAWLER_UA 开启后命中即豁免爬虫 UA 拦截（白名单优先，仅豁免该步，其余检测照常）"}`；`crawler_ua.txt` 的 title 由「爬虫 UA 特征」改为「UA(爬虫)黑名单」（desc 同步点明白名单优先）。文件编辑页签白名单由 6 个变 7 个。
+- `plugins/shield/rules_admin.go`：`ruleFileMetas` 增加 `{ruleFileUAWhitelist, "UA(爬虫)白名单", "无开关，有数据即生效；UA 黑名单开关（SHIELD_WAF_CRAWLER_UA）开启后命中即在黑名单判定前放行，仅豁免该步，其余检测照常"}`；`crawler_ua.txt` 的 title 由「爬虫 UA 特征」改为「UA(爬虫)黑名单」（desc 点明其开关即 `SHIELD_WAF_CRAWLER_UA`、白名单优先）。文件编辑页签白名单由 6 个变 7 个。相关代码注释（配置项 title、waf.go 判定处）统一称谓：`SHIELD_WAF_CRAWLER_UA`＝UA(爬虫)黑名单开关。
 
 ### 3.3 WebUI（前端）
 
 - `webui/assets/js/views/waf.js`：主 Tab 结构不变（攻击拦截 / 黑白名单 / 文件编辑）；`iplist` 子视图的子页签改为 4 个：`ipblack` / `ipwhite` / `uablack` / `uawhite`。前两个路由到 `blacklist.js`（kind black/white 不变），后两个路由到新模块 `ualist.js`。
 - 新增 `webui/assets/js/views/ualist.js`（借鉴 IP 白名单页的简单形态，无 DB）：
   - **查看**：`GET /admin/shield/rules/file?name=<ua_whitelist.txt|crawler_ua.txt>` 展示当前生效内容（保留注释原样展示，标注外挂覆写/内嵌状态与生效行数——清单接口 `GET /admin/shield/rules` 已含这些字段）；
-  - **追加**：单行输入框 + 追加按钮 = 取当前生效文本 → 末尾插入新行 → `POST /admin/shield/rules/save` 整体保存（原子写，服务端落 `HOT_SCRIPTS_DIR/rules/<name>`，≤3s 热更）；输入为空/纯空白拒绝；重复模式（忽略注释与大小写）提示已存在不重复追加；整文保存为 last-write-wins，不做并发合并（单管理员场景接受，不做加锁/版本号机制）；
+  - **追加**：单行输入框 + 追加按钮 = 取当前生效文本 → 末尾插入新行 → `POST /admin/shield/rules/save` 整体保存（原子写，服务端落 `HOT_SCRIPTS_DIR/rules/<name>`，≤3s 热更）；输入为空/纯空白拒绝；重复模式（忽略注释与大小写）提示已存在不重复追加；**追加请求进行中禁用输入框与按钮**（防双击双追加）；整文保存为 last-write-wins，不做并发合并（单管理员场景接受，不做加锁/版本号机制）；
   - **入口提示**：卡片副标题固定文案"完整编辑请前往「文件编辑」页签"，链接点击仅切换到 `files` 主页签（**不做文件预选**：`ruleFiles.js` 的文件选中为模块局部状态、未导出钩子，预选须新造机制，不符合最简原则；用户落地后自行在文件列表点选目标文件）；
   - 服务端保存失败按体验红线弹 `Rock.ui.toast(msg,'error')`。
 - `main.js` 的视图存在性校验数组追加 `'ualist'`。
@@ -84,6 +89,7 @@ shield 组件的 WAF 检测链（`plugins/shield/shield.go` `runWAF`）末环是
 ### 3.4 明确不做（边界）
 
 - 不新增任何配置项（`default.env` 不变）、不建 DB 表、数据字典零变更；
+- UA 白名单不设开关（D9）：同 IP 白名单一样有数据即生效，仅在 UA 黑名单判定步被咨询；
 - 不改 IP 黑白名单任何行为（含既有的 env∪DB 双来源——历史问题，本期不扩大整改面）；
 - 不做 UA 白名单的删除/行级编辑 UI（走「文件编辑」页签整文编辑）；不做自动发现/验证搜索引擎爬虫（反解 DNS 等不在本期）；
 - 不动 `SHIELD_WAF_CRAWLER_UA` 默认值（仍 false）。
@@ -99,10 +105,12 @@ shield 组件的 WAF 检测链（`plugins/shield/shield.go` `runWAF`）末环是
 2. 规则加载测试：`ua_whitelist.txt` 解析（小写化、忽略整行注释与空行）；`ruleFileMetas` 含 7 个文件、`GET /admin/shield/rules` 清单可见新文件。
 3. 浏览器实操（`-tags dev` 构建、`bin/` 运行）：黑白名单页签四子页签渲染；UA 黑/白名单页查看与追加保存闭环（追加 → ≤3s 后该模式生效）；「文件编辑」页签可见并可编辑 `ua_whitelist.txt`；UA 页签跳转链接可达；保存失败弹统一 error toast。
 4. 端到端语义验证（可 curl 复现）：`SHIELD_WAF_CRAWLER_UA=true` 下，UA 含 `Mozilla/5.0 (compatible; Baiduspider/2.0; ...)` 的普通请求 200；UA 含 `sqlmap/1.8` 的请求 403；UA 含 `Baiduspider` 且查询串带 SQL 注入特征的请求 403（`sql_pattern` 事件）。
-5. 文档同步核对：`docs/webui.md`（WAF 页结构、功能表、子页签）、`plugins/shield/doc.go` 或组件 README（若提及规则文件清单则补 `ua_whitelist.txt`）、`README.md` 涉及段落；数据字典确认零变更（仅核对，不改）。
+5. 文档同步核对：`docs/webui.md`（WAF 页结构、功能表、子页签；**体验规范节新增「开关设置原则」条款**——开关不是越少越好、也不是越多越好，以用户体验与流程设计的具体场景为准：能替用户减负、降低误操作风险的开关保留，纯技术便利或把配置当数据收录的开关不设。数据类资产如 UA 白名单有数据即生效、无需开关，即"按场景定开关"的范例而非"开关最少"的范例）、`plugins/shield/doc.go` 或组件 README（若提及规则文件清单则补 `ua_whitelist.txt`）、`README.md` 涉及段落、Makefile 规则文件个数注释（5→7）；数据字典确认零变更（仅核对，不改）。
 
 ## 5. 变更记录
 
 - 2026-08-31：初稿定稿。决策 D1–D8 均经用户逐条确认；用户补充百度蜘蛛 UA 格式资料（PC/移动/渲染/图片变体共同特征为含 `Baiduspider` 子串），已由 D7 的 `baiduspider` 小写子串模式覆盖全部变体。
 - 2026-08-31：复核修订——§1 `matchIP` 更正为 `Handle` 内联判定（代码无 matchIP 函数）；§3.1 `loadAll`→`load`、`ruleSet`→`RuleSet`（以代码为准）。
 - 2026-08-31：质量评估修订（五维：最佳实践/UX/改动量/复杂度/架构统一性，评估通过）——落实三点：① 预选钩子问题定案：核实 `ruleFiles.js` 无可复用文件选中状态，入口链接**仅切页签、不做预选**（新造钩子不合最简原则，消除实施发散点）；② 并发语义定案：整文保存 last-write-wins、单管理员场景接受，不做加锁/版本号（多用户并发不在本期范围）；③ 黑名单宽泛模式（如 `slurp`）不做收紧：UA 是君子协议，本就防不住伪造 UA 的攻击者，白名单仅豁免爬虫拦截一环、无安全回归。
+- 2026-08-31：定稿前打磨——① D7 默认清单中 `slurp`（Yahoo Slurp 已退役多年）改为默认注释禁用、保留条目按需启用；② §3.3 追加操作补「请求进行中禁用输入防双击双追加」；③ §3.1/验收标准补 Makefile 规则文件个数注释同步（5→7）。
+- 2026-08-31：追加 D9（用户拍板）：UA 白名单不设开关，同 IP 白名单一样有数据即生效；`SHIELD_WAF_CRAWLER_UA` 正名为「UA(爬虫)黑名单开关」，代码注释统一称谓；体验规范新增「开关设置原则」条款（docs/webui.md）——开关取舍以用户体验与流程设计的具体场景为准，不多设也不少设。
