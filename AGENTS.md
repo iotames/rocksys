@@ -11,7 +11,7 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 - `webui/`：纯静态管理控制台，经 `go:embed` 内嵌进二进制。
 - `easyconf/`、`easyserver/`、`easydb/`：独立 git 仓库的地基库，经 `go.mod replace` 本地引用。
 - `docs/`：架构与接口文档（目录结构见 `docs/PROJECT_STRUCTURE.md`、数据流见 `docs/HTTP_DATAFLOW.md`），接口变更必须同步。`docs/DATA_DICT.md`：数据字典（数据层字段/枚举唯一可读视图，变动红线见下节）。
-- `docs/plan/`：进行中项目的执行看板与工作方法论（`docs/plan/README.md`）。**存在 `docs/plan/TODO.md` 时，任何会话开工前必读它并按其断点续传协议执行。**
+- `docs/plan/`：进行中项目的执行看板与工作方法论（`docs/plan/README.md`，即计划目录工作宪法）。**存在 `docs/plan/TODO.md` 时，任何会话开工前必读宪法 `docs/plan/README.md` 与总纲 `TODO.md`，并按其断点续传协议执行。**
 - `bin/`：构建产物（不入库）。
 
 ## Build, Test, and Development Commands
@@ -130,7 +130,8 @@ go vet ./...
 
 ## Agent-Specific Instructions
 
-- 提交须先经用户明确确认，绝不自行执行 git 写操作。
+- Git 提交和推送前必先经用户确认，禁止私自写入 Git。例外：docs/plan/README.md §3.9 的 git 破例授权（定稿关口明示授予并圈定范围）与用户明确提前授权的事项。
 - 任务有歧义时先提问澄清；复杂任务先出方案，认可后实施。
+- **强制请示点须人类对母文档明确确认（单关口）**：设计方案/母文档是唯一人类确认点，只有人类对文档本身明确表态（"确认/通过"）才算过；会话零散拍板只是设计输入，"继续干活"等模糊指令不得推定为已确认，未过关口禁止写子文档与实施。母文档一经确认即整体授权，子文档与后续执行无需逐个人类审核（细则见 docs/plan/README.md §2）。
 - 构建/测试一律用**原生命令行**（`go build` / `go test` / `go vet`），不要调用 make（Makefile 仅支持 Linux，且 make 是面向人类的封装；智能体直接用 go 命令保证跨平台可复现）。
 - 开发/修改 WebUI 前端时默认用 `-tags dev` 编译（`go build -tags dev -o bin/rocksys ./cmd/rocksys`），改 `webui/` 文件后无需重新编译即可验证；发布走无 tag 生产构建。
