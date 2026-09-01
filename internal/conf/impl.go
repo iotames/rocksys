@@ -65,6 +65,8 @@ type confManager struct {
 	logToFile       *bool   // 文件存档开关（E1）
 	logFile         *string // 日志文件路径
 	logMaxSize      *string // 文件大小上限（整数 MB，字符串存储便于校验；E2）
+	wwwroot         *string // 主引擎兜底静态目录
+	notFoundPage    *string // 自定义 404 页面文件路径
 }
 
 // defaultLoader Load 的默认实现
@@ -112,6 +114,8 @@ func (m *confManager) bindBaseVars() {
 	m.logToFile = new(bool)
 	m.logFile = new(string)
 	m.logMaxSize = new(string)
+	m.wwwroot = new(string)
+	m.notFoundPage = new(string)
 
 	m.ec.StringVar(m.listenAddr, "ROCKSYS_LISTEN", defaultListenAddr, "监听地址",
 		":8080 = 监听全部网卡；仅本机调试可改 127.0.0.1:8080")
@@ -128,6 +132,10 @@ func (m *confManager) bindBaseVars() {
 	m.ec.BoolVar(m.logToFile, "ROCKSYS_LOG_TO_FILE", false, "文件存档（E1）")
 	m.ec.StringVar(m.logFile, "ROCKSYS_LOG_FILE", defaultLogFile, "日志文件路径")
 	m.ec.StringVar(m.logMaxSize, "ROCKSYS_LOG_MAX_SIZE", "50", "文件大小上限（整数 MB，0=不限制；E2）")
+	m.ec.StringVar(m.wwwroot, "ROCKSYS_WWWROOT", defaultWWWRoot, "主引擎兜底静态目录",
+		"无路由命中且未配置 ROCKSYS_UPSTREAM 时，从该目录按请求路径直接返回文件（目录请求尝试 index.html；仅 GET/HEAD 应答文件）；空=关闭；修改后即刻生效无需重启")
+	m.ec.StringVar(m.notFoundPage, "ROCKSYS_404_PAGE", defaultNotFoundPage, "自定义 404 页面文件路径",
+		"兜底仍未命中时的最终响应；路径基于程序工作目录（相对/绝对均可，与 ROCKSYS_WWWROOT 无关）；Content-Type 按扩展名自动推断（.html→text/html、.json→application/json，可自定义 JSON 响应体）；HTTP 状态码固定 404；文件读取失败时 WARN 日志并回退默认 JSON 响应体；空=easyserver 默认 JSON 响应体")
 }
 
 // watchFiles 返回热更监听/重载顺序的文件列表（优先级从低到高，configFile 覆盖工作目录 .env）
@@ -196,6 +204,8 @@ func (m *confManager) rebuildConfig() *Config {
 		LogToFile:       *m.logToFile,
 		LogFile:         *m.logFile,
 		LogMaxSize:      logMaxSize,
+		WWWRoot:         *m.wwwroot,
+		NotFoundPage:    *m.notFoundPage,
 	}
 }
 

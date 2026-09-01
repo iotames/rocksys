@@ -480,3 +480,23 @@ func TestResponseHookPanicAfterWriteFinal(t *testing.T) {
 		t.Fatal("WriteFinal 后 panic 不应中断后续 hook，第二个 hook 仍应执行")
 	}
 }
+
+// TestAdapterNoUpstreamPassthrough 无路由命中且无默认上游时放行（return true 不写响应），
+// 交给 easyserver 链尾处理（WWWROOT 兜底 / 404）。
+func TestAdapterNoUpstreamPassthrough(t *testing.T) {
+	ch := New()
+	adapter := NewAdapter(ch, "", func(w http.ResponseWriter, r *http.Request, target string, df *dataflow.DataFlow) error {
+		t.Error("无上游时不应执行 forward")
+		return nil
+	})
+
+	rec := httptest.NewRecorder()
+	next := adapter.Handler(rec, httptest.NewRequest(http.MethodGet, "/", nil), httpsvr.NewDataFlow())
+
+	if !next {
+		t.Fatal("无上游时应 return true 放行")
+	}
+	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+		t.Fatalf("不应写任何响应，得到 %d %q", rec.Code, rec.Body.String())
+	}
+}

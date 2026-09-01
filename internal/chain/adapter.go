@@ -76,6 +76,12 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 	if target == "" {
 		target = a.defaultUpstreamValue()
 	}
+	if target == "" {
+		// 未命中路由且无默认上游：不写响应直接放行，交给 easyserver 链尾处理
+		// （SetWWWRoot 兜底目录返回文件 → 自定义/默认 404）。
+		// 注意：此路径下 Tail 响应钩子不执行（与"链被中间件中断"语义一致）。
+		return true
+	}
 
 	// 6. 转发前一刻取点（必须在 Forward 前，禁止 defer）
 	df.SetBeginBizAt(time.Now())

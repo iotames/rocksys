@@ -5,9 +5,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"rocksys/internal/chain"
@@ -16,6 +20,8 @@ import (
 	"rocksys/internal/netutil"
 
 	"github.com/iotames/easyserver"
+	"github.com/iotames/easyserver/httpsvr"
+	"github.com/iotames/easyserver/log"
 )
 
 // upstreamDialTimeout WebSocket 分支直连后端的建连/握手超时（握手后为长连接，不再设超时）。
@@ -45,10 +51,53 @@ func New(cfgMgr conf.Manager, c *chain.Chain) *Engine {
 		cfgMgr.Watch(func(newCfg *conf.Config) {
 			if newCfg != nil {
 				e.adapter.SetDefaultUpstream(newCfg.DefaultUpstream)
+				e.applyWWWRoot(newCfg)
 			}
 		})
 	}
+	e.applyWWWRoot(cfg)
 	return e
+}
+
+// applyWWWRoot 按 配置设置/更新 WWWROOT 兜底目录与自定义 404 页面。
+// SetWWWRoot/SetNotFoundHandler 即刻生效，配置热更回调与启动装配共用本函数。
+func (e *Engine) applyWWWRoot(cfg *conf.Config) {
+	// ★ 先无条件应用（TrimSpace 后为空才视为关闭），后做诊断性检查，顺序不可反：
+	// SetWWWRoot 只是赋值不产生 IO，真正的合规门禁在 tryServeWWWRoot 的每请求 stat
+	// （目录无效自然恒未命中走 404）。若"检查无效就拒绝应用"，则 ① 用户事后创建
+	// 目录无法自愈，须重 touch 配置；② 热更改目录失败时会静默沿用旧目录，配置与
+	// 运行态分裂。故配置始终是运行态唯一事实源，此处检查只负责 WARN 告知原因与出路。
+	dir := strings.TrimSpace(cfg.WWWRoot)
+	e.server.SetWWWRoot(dir)
+	// 生效点检查一次路径有效性；不逐请求检查告警，避免日志刷屏。
+	if dir != "" {
+		if fi, err := os.Stat(dir); err != nil {
+			if os.IsNotExist(err) {
+				log.Warn("engine: WWWROOT 兜底目录不存在，未命中请求将全部走 404，请检查配置或创建目录",
+					"dir", dir)
+			} else {
+				log.Warn("engine: WWWROOT 兜底目录不可访问，未命中请求将全部走 404，请检查权限",
+					"dir", dir, "err", err)
+			}
+		} else if !fi.IsDir() {
+			log.Warn("engine: WWWROOT 配置的不是目录而是文件，未命中请求将全部走 404，请检查配置",
+				"dir", dir)
+		}
+	}
+	page := cfg.NotFoundPage
+	e.server.SetNotFoundHandler(func(w http.ResponseWriter, r *http.Request) {
+		// 每次请求实时读文件：404 页面内容修改后无需重启（路径变更经配置热更回调切换）
+		if page != "" {
+			if b, err := os.ReadFile(page); err == nil {
+				w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(page)))
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write(b)
+				return
+			}
+			log.Warn("engine: 自定义 404 页面读取失败，回退默认 404 响应", "page", page)
+		}
+		httpsvr.ResponseNotFound(w, r)
+	})
 }
 
 // ActiveCount 返回当前活跃请求数（供 hotswap 排空轮询）。
