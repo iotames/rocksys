@@ -1,5 +1,5 @@
 // Package registry 见 doc.go。本文件实现 RockRegistry：服务注册与发现。
-// 依据 DEV_HANDBOOK.md 第 17 章实现 StaticTable/Server/Watcher + hotswap.Component。
+// 实现 StaticTable/Server/Watcher + hotswap.Component。
 // 与 dispatch 的联动经 conf 配置热更通道完成（写 DISPATCH_RULES），不直接依赖 dispatch。
 package registry
 

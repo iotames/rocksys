@@ -1,5 +1,5 @@
 // Package dispatch 单测：路由表解析、前缀匹配、节点组负载均衡与健康检查。
-// 覆盖 DEV_HANDBOOK.md §10.4 验收 + §10.5（批次10 增强）。
+// 覆盖选点语义验收与批次10 增强。
 package dispatch
 
 import (

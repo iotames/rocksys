@@ -119,6 +119,8 @@ OBJECT_BASE_DIR = ./data/object
 # 统一数据访问层（internal/db）：全项目业务表（shield_event/access_log/admin_users/outbox/ip_blacklist/ip_whitelist/attack_archive，共 7 张）字段与枚举见 docs/DATA_DICT.md
 DB_DRIVER = sqlite
 DB_DSN = rocksys.db               # 默认已含 ?_busy_timeout=5000&_journal_mode=WAL，可显式覆盖；mysql/postgres 示例见注释
+# sqlite DSN 补参（internal/db Open 层）：裸值自动补 busy_timeout/WAL；已含 `_` 前缀 pragma 参数则原样透传不覆盖；
+# 内存库跳过补参；WAL 依赖本地文件系统，网络盘/NFS 部署需评估或显式只留 busy_timeout
 # SQL 方言脚本外挂目录固定为 HOT_SCRIPTS_DIR/sql/（见上方脚本外挂统一入口）
 ```
 

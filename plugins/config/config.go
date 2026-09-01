@@ -1,5 +1,5 @@
 // Package config 见 doc.go。本文件实现 RockConfig：KV 配置服务。
-// 依据 DEV_HANDBOOK.md 第 13 章：KVStore SPI 用于替换后端，FileStore 为基于
+// KVStore SPI 用于替换后端，FileStore 为基于
 // easyconf 的本地文件默认实现，Config 为 hotswap 独立组件（不挂 chain）。
 package config
 

@@ -1,6 +1,6 @@
 // Package script RockScript：Lua 策略引擎（转发链中间件，chain.Middle 槽位）。
 //
-// 依据 DEV_HANDBOOK.md 第 15 章实现：脚本热发布/回滚、Lua 预编译缓存、VM 池、
+// 能力：脚本热发布/回滚、Lua 预编译缓存、VM 池、
 // 执行超时（默认 100ms）、Sandbox 白名单（禁止 os/io/file/net/ffi 模块）。
 package script
 

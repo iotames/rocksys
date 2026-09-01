@@ -1,4 +1,4 @@
-// Package script 单测：脚本发布/回滚/执行、沙箱拦截、Admin 端点（DEV_HANDBOOK.md §15）。
+// Package script 单测：脚本发布/回滚/执行、沙箱拦截、Admin 端点。
 package script
 
 import (

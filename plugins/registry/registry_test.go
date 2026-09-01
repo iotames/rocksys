@@ -1,5 +1,5 @@
 // Package registry 单测：StaticTable 加载、Server 注册/心跳/超时摘除、
-// 实例变更联动（Watcher 回调 + conf.Set DISPATCH_RULES）与组件生命周期（DEV_HANDBOOK.md §17）。
+// 实例变更联动（Watcher 回调 + conf.Set DISPATCH_RULES）与组件生命周期。
 package registry
 
 import (

@@ -135,6 +135,5 @@ curl "http://127.0.0.1:19527/admin/logs?from=2026-08-04&to=2026-08-04"
 | [docs/webui.md](docs/webui.md) | 产品 | 管理控制台产品设计（页面/交互/视觉规范） |
 | [docs/webui-api.md](docs/webui-api.md) | 前端 | 管理接口契约（WebUI 对接唯一权威，无需读源码） |
 | [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) | 开发者 | 目录结构、模块关系、热运维引擎 |
-| [docs/DEV_HANDBOOK.md](docs/DEV_HANDBOOK.md) | AI Agent | 详细技术规格，供对照实现 |
 
 ---

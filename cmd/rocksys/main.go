@@ -1,4 +1,4 @@
-// 依据 DEV_HANDBOOK.md 第 7 章实现：底座唯一入口，装配全部 internal + plugins 并启动。
+// 底座唯一入口：装配全部 internal + plugins 并启动。
 // 除装配外无任何业务代码。
 package main
 

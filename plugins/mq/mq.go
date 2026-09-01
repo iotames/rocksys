@@ -1,5 +1,5 @@
 // Package mq 见 doc.go。本文件实现 RockMQ：异步消息可靠投递（不依赖独立 MQ）。
-// 依据 DEV_HANDBOOK.md 第 18 章：OutboxStore（业务库内 outbox 表）、
+// 组成：OutboxStore（业务库内 outbox 表）、
 // PollingDeliverer（定时轮询 + HTTP POST 投递）、MQ（hotswap 独立组件，不挂 chain）。
 //
 // 表结构（业务库内，由 EnsureTable 幂等创建）：

@@ -1,4 +1,4 @@
-// Admin Handler：脚本发布/回滚管理端点（DEV_HANDBOOK.md §8.1 插件端点机制 + §15）。
+// Admin Handler：脚本发布/回滚管理端点。
 package script
 
 import (

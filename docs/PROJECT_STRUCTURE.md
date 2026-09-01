@@ -99,7 +99,6 @@ xxx/
 
 ## 4. ★ 生产热运维引擎（hotswap）
 
-- `easyserver/hotswap`：底层热加载工具（文件/脚本/embed 原子替换）。
 - `internal/hotswap`：生产运维引擎，统一承载三类热操作（组件热切）与文件逐级加载（ScriptDir）：
 
 | 操作 | 能力 | 命令 |

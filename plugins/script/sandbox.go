@@ -1,4 +1,4 @@
-// Sandbox：Lua VM 沙箱化 + 白名单 API + 编译期静态检查（DEV_HANDBOOK.md §15）。
+// Sandbox：Lua VM 沙箱化 + 白名单 API + 编译期静态检查。
 package script
 
 import (

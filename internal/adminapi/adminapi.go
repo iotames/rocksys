@@ -1,4 +1,4 @@
-// Copyright © rocksys 开发手册第 8 章 Admin API（管理接口服务器）。
+// Admin API（管理接口服务器）。
 //
 // 职责：暴露回环地址的管理 HTTP API，支持组件热开关与配置热改。
 // 通过 conf.Manager.Set 与 hotswap.Manager 的 Enable/Disable/List 与底座交互，

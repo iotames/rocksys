@@ -1,6 +1,6 @@
 // Package dispatch L2 路由分发（转发链中间件）。
 //
-// 依据 DEV_HANDBOOK.md 第 10 章实现：URI 前缀路由表 → 目标 upstream；
+// 职责：URI 前缀路由表 → 目标 upstream；
 // 未命中 → 不写入 Target（Adapter 回退默认 upstream）。
 // v2 增强（批次10）：前缀可指向【节点组】——多节点 + 平滑加权轮询 + 主动健康检查 + 高优节点优先。
 package dispatch

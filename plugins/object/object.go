@@ -1,5 +1,5 @@
 // Package object 见 doc.go。本文件实现 RockObject：本地对象存储。
-// 依据 DEV_HANDBOOK.md 第 19 章：LocalStore 为基于本地文件系统的对象存储，
+// LocalStore 为基于本地文件系统的对象存储，
 // 提供路径穿越防护；Object 为 hotswap 独立组件（不挂 chain）。
 package object
 
