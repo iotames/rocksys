@@ -282,6 +282,31 @@ func (wp *WorkerPool) WorkerCount() int {
 	return int(wp.targetWorkers.Load())
 }
 
+// ActiveWorkerCount 返回当前实际运行的 worker 数（activeWorkers）。
+// 与 WorkerCount（targetWorkers，期望值）不同——动态调小 worker 后，实际运行数
+// 会在任务间隙收敛到期望值，二者在过渡期短暂不一致；如需监控"真实负载承载"用本方法。
+func (wp *WorkerPool) ActiveWorkerCount() int {
+	return int(wp.activeWorkers.Load())
+}
+
+// MaxWorkerCount 返回 worker 扩展开放的最大容量（maxWorkers）。
+// <=0 表示不设上限（UpdateWorkers 不受 MaxWorkers 约束）。
+func (wp *WorkerPool) MaxWorkerCount() int {
+	return wp.maxWorkers
+}
+
+// QueueSize 与 QueueCapacity 的组合使用见包注释"动态调参建议"；capacity 为有界队列总容量。
+func (wp *WorkerPool) QueueCapacity() int {
+	wp.queueMutex.RLock()
+	defer wp.queueMutex.RUnlock()
+	return cap(wp.taskQueue)
+}
+
+// Running 返回工作池是否处于运行状态（未调用过 Stop）
+func (wp *WorkerPool) Running() bool {
+	return !wp.stopped.Load()
+}
+
 // Stop 停止工作池：停止接收新任务 → 等待 worker 退出 → 串行执行队列中剩余任务。
 // 幂等。剩余任务在 stateMutex 之外执行：stopped 已置位，回调内调用
 // Stop/UpdateWorkers/UpdateQueueSize 只会拿到错误返回，不会与 stateMutex 互等死锁。

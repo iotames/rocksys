@@ -14,6 +14,9 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 - `docs/plan/`：进行中项目的执行看板与工作方法论（`docs/plan/README.md`，即计划目录工作宪法）。**存在 `docs/plan/TODO.md` 时，任何会话开工前必读宪法 `docs/plan/README.md` 与总纲 `TODO.md`，并按其断点续传协议执行。**
 - `bin/`：构建产物（不入库）。
 
+> 层次关系：`RockSys（Security / Dispatch / Proxy）→ Traffic Processing → EasyServer`。
+> **不要把 RockSys 的业务逻辑倒灌回 EasyServer。**（Lifecycle、Backpressure、Metrics 的底层能力由 EasyServer 提供，RockSys 只做组件级消费，不重复建设。）
+
 ## Build, Test, and Development Commands
 
 - `make deps`：同步地基库（目录缺失时从 GitHub clone）。
@@ -136,3 +139,15 @@ go vet ./...
 - **强制请示点须人类对母文档明确确认（单关口）**：设计方案/母文档是唯一人类确认点，只有人类对文档本身明确表态（"确认/通过"）才算过；会话零散拍板只是设计输入，"继续干活"等模糊指令不得推定为已确认，未过关口禁止写子文档与实施。母文档一经确认即整体授权，子文档与后续执行无需逐个人类审核（细则见 docs/plan/README.md §2）。
 - 构建/测试一律用**原生命令行**（`go build` / `go test` / `go vet`），不要调用 make（Makefile 仅支持 Linux，且 make 是面向人类的封装；智能体直接用 go 命令保证跨平台可复现）。
 - 开发/修改 WebUI 前端时默认用 `-tags dev` 编译（`go build -tags dev -o bin/rocksys ./cmd/rocksys`），改 `webui/` 文件后无需重新编译即可验证；发布走无 tag 生产构建。
+
+
+## 核心原则
+
+- 基础 Proxy 永远是最后一道保障，单组件故障不能拖垮整个系统
+- 所有扩展能力组件化，可关闭、可降级、可摘除。
+- 配置尽可能热更新
+- 性能优化以真实流量和 benchmark 为依据
+- 组件依赖图（Component Graph）：启动、停止、Reload 按依赖关系执行。
+- EasyServer 与 RockSys 保持职责边界
+
+最终目标：**安全、转发、治理、热插拔、故障自愈**的 Gateway Runtime： EasyServer 提供稳定高性能底座，RockSys 在其上形成产品能力。
