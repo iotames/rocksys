@@ -181,6 +181,28 @@
   // 详情字段：核心字段 + 扩展维度（extra 平铺字段，非核心字段自动列出）
   const KNOWN = new Set(['time', 'trace_id', 'tenant_id', 'path', 'method', 'client_ip', 'status_code', 'upstream', 'shield_ms', 'biz_ms', 'total_ms', 'egress_ms', 'req_bytes', 'resp_bytes']);
 
+  // 耗时分段条：入网（蓝）→ 转发（业务）（绿）→ 出网（橙），段宽 = 段耗时/总耗时；
+  // 0ms 段不渲染，非零但不足 1px 的段由 CSS min-width:1px 保底；总耗时为 0 时整条置灰。
+  function timingBarHTML(r) {
+    const segs = [
+      { cls: 'timing-seg-ingress', label: '入网', ms: r.shield_ms },
+      { cls: 'timing-seg-biz', label: '转发（业务）', ms: r.biz_ms },
+      { cls: 'timing-seg-egress', label: '出网', ms: r.egress_ms },
+    ];
+    const total = r.total_ms;
+    const bar = total <= 0
+      ? ''
+      : segs.filter(s => s.ms > 0).map(s => {
+          const pct = (s.ms / total) * 100;
+          return '<div class="timing-seg ' + s.cls + '" style="width:' + pct + '%" data-tip="' +
+            esc(s.label + ' ' + s.ms + ' ms · ' + (pct >= 1 ? pct.toFixed(1) : '<1') + '%') + '"></div>';
+        }).join('');
+    const legend = segs.map(s =>
+      '<span><i class="timing-dot ' + s.cls + '"></i>' + esc(s.label) + ' ' + esc(s.ms) + ' ms</span>'
+    ).join('') + '<span>总计 ' + esc(total) + ' ms</span>';
+    return '<div class="timing-bar">' + bar + '</div><div class="timing-legend">' + legend + '</div>';
+  }
+
   function logDetailFields(r) {
     const core = [
       { key: 'id', label: '记录 ID' },
@@ -195,6 +217,7 @@
       { key: 'biz_ms', label: '转发（业务）耗时', render: row => esc(row.biz_ms) + ' ms' },
       { key: 'egress_ms', label: '出网耗时', render: row => esc(row.egress_ms) + ' ms' },
       { key: 'total_ms', label: '总耗时', render: row => esc(row.total_ms) + ' ms' },
+      { key: 'timing_bar', label: '耗时分布', render: row => timingBarHTML(row) },
       { key: 'upstream', label: '转发目标', pre: true },
       { key: 'req_bytes', label: '请求流量', render: row => esc(fmtBytes(row.req_bytes)) },
       { key: 'resp_bytes', label: '响应流量', render: row => esc(fmtBytes(row.resp_bytes)) },
