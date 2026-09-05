@@ -23,6 +23,7 @@
   const codeEditor = Rock.comp.codeEditor;
   const fmtDateTime = Rock.util.fmtDateTime;
   const truncate = Rock.util.truncate;
+  const fmtBytes = Rock.util.fmtBytes;
 
   // SQL 编辑器实例 id（codeEditor.html/wire/setValue 均按此 id 定位节点与状态）
   const EDITOR_ID = 'db-sql-editor';
@@ -38,10 +39,14 @@
     items: [],          // 差异列表（level A-F）
     sql: '',            // 后端按自动项生成的 SQL（预填编辑器）
     exec: null,         // 最近一次执行结果 { results, executed, failed }
-    tab: 'schema',      // 当前页签：'schema' 表结构 | 'history' 执行历史
+    tab: 'schema',      // 当前页签：'schema' 表结构 | 'history' 执行历史 | 'overview' 数据表概览
     hist: {             // 执行历史（服务端分页）
       loaded: false, loading: false,
       items: [], total: 0, offset: 0,
+    },
+    size: {             // 空间占用（公共状态区 + 数据表概览页签共用）
+      loaded: false, loading: false,
+      totalBytes: 0, tables: [],
     },
   };
 
@@ -113,12 +118,37 @@
     emptyText: '暂无执行记录（执行 SQL 后自动留痕）',
   });
 
+  // 数据表概览表（空间占用统计：表名/备注/条数/占用空间，含占比条）
+  const overviewTable = Rock.comp.dataTable.create({
+    ns: 'db-overview',
+    columns: [
+      { key: 'name', label: '表名', cls: 'mono', render: r => '<span class="log-path" title="' + esc(r.name) + '">' + esc(truncate(r.name, 40)) + '</span>' },
+      { key: 'comment', label: '表备注', render: r => esc(r.comment || '—') },
+      { key: 'rows', label: '数据条数', cls: 'mono', render: r => esc(fmtIntNA(r.rows)) },
+      { key: 'bytes', label: '占用空间', render: r => {
+          if (!r.bytes) return '<span class="muted">—</span>';
+          const pct = state.size.totalBytes > 0 ? Math.min(100, (r.bytes / state.size.totalBytes) * 100) : 0;
+          return '<span class="mono">' + esc(fmtBytes(r.bytes)) + '</span>' +
+            '<div class="db-size-bar" title="占库内总空间 ' + (pct >= 1 ? pct.toFixed(1) : '<1') + '%">' +
+            '<div class="db-size-bar-fill" style="width:' + pct + '%"></div></div>';
+        } },
+    ],
+    paging: { mode: 'client' },
+    emptyText: '库内暂无业务表',
+  });
+
+  // 条数千分位（0 显示 0；空值显示 —）
+  function fmtIntNA(n) {
+    n = Number(n) || 0;
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
   // 首次进入挂分页控件事件（页容器为持久元素）
   let bound = false;
   function ensureBind() {
     if (bound) return;
     const host = $('#page-database');
-    if (host) { diffTable.bind(host); execTable.bind(host); histTable.bind(host); bound = true; }
+    if (host) { diffTable.bind(host); execTable.bind(host); histTable.bind(host); overviewTable.bind(host); bound = true; }
   }
 
   // 页面加载：首次拉一次表结构检查，其余路由往返走缓存（手动刷新按钮 force 重拉）
@@ -127,6 +157,7 @@
     if (state.loaded && !opts.force) { render(); return; }
     const host = $('#page-database');
     if (!state.loaded && host && !host.innerHTML.trim()) host.innerHTML = skeletonHTML(5);
+    loadSize(); // 空间占用异步加载（不阻塞表结构检查主流程，失败静默走占位）
     try {
       const res = await api.get('/admin/db/schema');
       state.driver = String(res.driver || '');
@@ -201,12 +232,13 @@
         desc: '表结构比对：检查差异、生成 SQL 并执行同步；执行 SQL 全量留痕可审计',
         actions: '<button class="btn btn-sm" data-act="db-check"' + (state.checking ? ' disabled' : '') + '>⟳ 重新检查</button>',
       }) +
+      sizeBarHTML() +
       Rock.comp.tabs.tabsHTML(
-        [{ name: 'schema', label: '表结构' }, { name: 'history', label: '执行历史' }],
+        [{ name: 'schema', label: '表结构' }, { name: 'history', label: '执行历史' }, { name: 'overview', label: '数据表概览' }],
         state.tab,
         { act: 'db-tab', nameAttr: 'data-tab' }
       ) +
-      '<div class="tab-pane">' + (state.tab === 'history' ? histHTML() : schemaHTML()) + '</div>';
+      '<div class="tab-pane">' + (state.tab === 'history' ? histHTML() : (state.tab === 'overview' ? overviewHTML() : schemaHTML())) + '</div>';
     // 编辑器联动：内容变化即时同步「执行SQL」按钮可用态（不整页重绘，避免打断输入）
     if (state.tab === 'schema' && state.items.length) {
       codeEditor.wire(EDITOR_ID, {
@@ -219,7 +251,59 @@
     }
   }
 
-  // ── 执行历史页签：sql_exec_log 审计记录分页展示 ────────────────────────
+  // ── 空间占用：公共状态区（页签上方，总空间常驻）+ 数据表概览页签 ─────────┐
+
+  // 拉取空间占用统计（GET /admin/db/size，只读；页面加载与概览页签刷新共用）
+  async function loadSize(force) {
+    if (state.size.loading) return;
+    if (state.size.loaded && !force) { render(); return; }
+    state.size.loading = true;
+    render();
+    try {
+      const res = await api.get('/admin/db/size');
+      state.size.totalBytes = Number(res.total_bytes) || 0;
+      state.size.tables = Array.isArray(res.tables) ? res.tables : [];
+      state.size.loaded = true;
+    } catch (e) {
+      if (e.status !== 0) {
+        toast('空间统计查询失败：' + e.message + '。请确认数据连接正常后重试', 'error');
+      }
+    }
+    state.size.loading = false;
+    render();
+  }
+
+  // 公共状态区：页签上方常驻展示库级空间占用（与全局配置页搜索栏同层级的公共数据状态）
+  function sizeBarHTML() {
+    const sz = state.size;
+    let inner;
+    if (!sz.loaded && !sz.loading) {
+      inner = '<span class="muted">空间占用：未加载</span>' +
+        '<button class="btn btn-sm" data-act="db-size-refresh">加载</button>';
+    } else if (sz.loading) {
+      inner = '<span class="muted">空间统计中…</span>';
+    } else {
+      inner = '<span>数据库占用总空间：<b class="mono">' + esc(fmtBytes(sz.totalBytes)) + '</b></span>' +
+        '<span class="tag tag-blue">' + sz.tables.length + ' 张业务表</span>' +
+        (state.driver ? '<span class="tag tag-gray">' + esc(state.driver) + '</span>' : '') +
+        '<button class="btn btn-sm" data-act="db-size-refresh"' + (sz.loading ? ' disabled' : '') + '>⟳</button>';
+    }
+    return '<div class="db-statusbar">' + inner + '</div>';
+  }
+
+  function overviewHTML() {
+    const sz = state.size;
+    let html = '<div class="card"><div class="card-title">数据表概览' +
+      '<span class="comp-actions"><button class="btn btn-sm" data-act="db-size-refresh"' +
+      (sz.loading ? ' disabled' : '') + '>⟳ 刷新</button></span></div>' +
+      '<div class="form-hint" style="margin-bottom:8px">数据条数为精确统计（动态 COUNT(*)）；占用空间为数据+索引合计，' +
+      (state.driver === 'mysql' ? 'MySQL 下为 InnoDB 估算（以系统表为准）' : '取自数据库系统表') + '。</div>' +
+      overviewTable.html(sz.loaded || sz.tables.length ? sz.tables : []);
+    html += '</div>';
+    return html;
+  }
+
+  // ── 执行历史页签：sql_exec_log 审计记录分页展示 ────────────────────────┘
 
   // 拉取执行历史（服务端分页；切换页签或翻页/刷新按钮触发）
   async function loadHist(opts) {
@@ -333,7 +417,8 @@
       toast('SQL 执行请求失败：' + e.message + '。请确认服务可达后重试', 'error');
       return;
     }
-    state.hist.loaded = false; // 执行后失效缓存：下次进执行历史页签重拉（含本次留痕）
+    state.hist.loaded = false;  // 执行后失效缓存：下次进执行历史页签重拉（含本次留痕）
+    state.size.loaded = false; // 表结构可能已变（建表/加列）：空间统计一并失效
     render();
   }
 
@@ -361,11 +446,13 @@
         if (tab === state.tab) return;
         state.tab = tab;
         if (tab === 'history' && !state.hist.loaded) loadHist();
+        else if (tab === 'overview' && !state.size.loaded) loadSize();
         else render();
       },
       'db-check': function () { check(); },
       'db-exec': function () { execSQL(); },
       'db-copy-sql': function () { copySQL(); },
+      'db-size-refresh': function () { loadSize(true); },
       'db-hist-refresh': function () { state.hist.offset = 0; loadHist({ force: true }); },
       'db-hist-prev': function () {
         state.hist.offset = Math.max(0, state.hist.offset - HIST_PAGE_SIZE);

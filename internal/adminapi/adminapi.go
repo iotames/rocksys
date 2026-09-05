@@ -216,6 +216,7 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodGet, PathDBSchema, check(func(ctx httpsvr.Context) { s.handleDBSchema(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodPost, PathDBExec, check(func(ctx httpsvr.Context) { s.handleDBExec(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodGet, PathDBExecLog, check(func(ctx httpsvr.Context) { s.handleDBExecLog(ctx.Writer, ctx.Request) }))
+	s.srv.AddHandler(http.MethodGet, PathDBSize, check(func(ctx httpsvr.Context) { s.handleDBSize(ctx.Writer, ctx.Request) }))
 }
 
 // RegisterWebUI 注册 WebUI 静态资源（管理控制台）。

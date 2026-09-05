@@ -29,6 +29,7 @@ const (
 	PathDBSchema  = "/admin/db/schema"
 	PathDBExec    = "/admin/db/exec"
 	PathDBExecLog = "/admin/db/execlog"
+	PathDBSize    = "/admin/db/size"
 )
 
 // SetTableSpecs 注入数据连接与表清单（装配处单一事实来源，cmd/rocksys/main.go 调用）。

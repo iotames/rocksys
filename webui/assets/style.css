@@ -1383,6 +1383,20 @@ tr.dt-row-clickable.is-error td { background: var(--row-error); }
 .timing-legend { display: flex; gap: 14px; margin-top: 6px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
 .timing-legend .timing-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 
+/* ---------- 30b. 数据库页：空间占用公共状态区 + 概览占比条 ---------- */
+.db-statusbar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 14px; margin-bottom: 12px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px;
+}
+.db-statusbar .mono { font-size: 14px; }
+.db-size-bar {
+  width: 100%; max-width: 220px; height: 6px; margin-top: 4px;
+  background: var(--panel-2); border-radius: 3px; overflow: hidden;
+}
+.db-size-bar-fill { height: 100%; background: #4c8bf5; border-radius: 3px; }
+
 /* ---------- 31. 全局配置搜索工具栏 ---------- */
 .cfg-searchbar { padding: 10px 14px; }
 .cfg-search-wrap { position: relative; max-width: 560px; }

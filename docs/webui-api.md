@@ -67,6 +67,7 @@
 | 41 | GET | `/admin/db/schema` | 表结构检查（期望 = 运行期 SQL 源脚本，实际 = 当前数据连接 catalog；返回 A-F 分级差异与自动项生成 SQL） |
 | 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；每条语句落 `sql_exec_log` 审计留痕；danger 级危险操作，服务端不做语句白名单） |
 | 43 | GET | `/admin/db/execlog` | SQL 执行历史查询（`sql_exec_log` 表，时间倒序 + offset 服务端分页） |
+| 44 | GET | `/admin/db/size` | 数据库空间占用统计（表名/备注/精确条数/占用空间 + 总空间；三方言） |
 | 43 | POST | `/admin/shield/blacklist/sync_file` | 从外挂规则文件 `rules/ip_blacklist.txt` 同步 IP 入库（block_type=11，幂等） |
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
 | 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的限时封禁条目（首页页签数据源） |
@@ -600,6 +601,20 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 ```
 
 - `503`：数据连接未装配；`500`：查询或计数失败（响应文本含原因）。
+
+**`GET /admin/db/size` 响应 200**（只读统计，不落库）：
+
+```json
+{
+  "driver": "sqlite", "total_bytes": 27541504,
+  "tables": [{"name": "access_log", "comment": "", "rows": 49187, "bytes": 6807552}]
+}
+```
+
+口径：`rows` 为精确值（逐表动态 `COUNT(*)`；MySQL/PG 系统表行数为估算故不采用）；
+`bytes` 为数据+索引合计（MySQL `DATA_LENGTH+INDEX_LENGTH`、PG `pg_total_relation_size`；
+SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_bytes` 取 `page_count×page_size`
+（库级含空闲页，与逐表 SUM 可能不一致）。`503` 数据连接未装配；`500` 查询失败。
 
 ---
 
