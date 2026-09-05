@@ -99,6 +99,9 @@ type ipListStore interface {
 	GetByIP(ip string) (*BanEntry, error)
 	// repeatLimit 累计入狱转永久阈值（人工=banWarnTimesLimit；自动=SHIELD_AUTO_BAN_REPEAT_LIMIT，0=永不转永久）。
 	RestoreBan(ip string, expiresAt *time.Time, now time.Time, repeatLimit int) (toPermanent bool, err error)
+	// RestoreBanToPermanent 软删/过期条目恢复并直接转永久、title 改写为给定标题
+	// （自动拉黑攻击档续封路径：攻击类不蹭旧过期条目逃过永久封禁）。
+	RestoreBanToPermanent(ip, title string, now time.Time) (toPermanent bool, err error)
 	Jail(now time.Time, limit int) (rows []map[string]any, total int64, err error)
 }
 

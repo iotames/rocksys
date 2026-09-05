@@ -471,3 +471,40 @@ func TestAutoBanEngineStartStop(t *testing.T) {
 	e.Stop()
 	e.Stop() // 幂等
 }
+
+// 攻击档续封直永久：攻击类命中时若存在旧过期/软删条目，不得只拿 TTL×10 限时续封，
+// 应恢复即转永久（防真实攻击者蹭旧条目逃过永久封禁）。
+func TestAutoBanAttackTierRestorePermanent(t *testing.T) {
+	e, s, black, _, rec := newTestAutoBanEngine(t)
+	now := time.Now()
+	base := now.Add(-time.Minute)
+
+	// 预置：旧软删限时条目（历史爬虫档封禁）+ 窗口内攻击类（SQL注入）命中 1 次。
+	id, err := black.BanInsert("10.3.1.1", "旧爬虫封禁", BlockCrawlerUA, timePtr(now.Add(time.Hour)), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := black.SoftDelete(id, now); err != nil {
+		t.Fatal(err)
+	}
+	insertShieldEvent(t, rec, base, BlockSQLInjection, "10.3.1.1")
+
+	e.runOnce()
+
+	cur, err := black.GetByIP("10.3.1.1")
+	if err != nil {
+		t.Fatalf("条目应存在: %v", err)
+	}
+	if cur.ExpiresAt != "" || cur.Deleted {
+		t.Errorf("攻击档蹭旧条目续封应转永久: %+v", cur)
+	}
+	if want := "自动拉黑：高危攻击直接永久封禁"; cur.Title != want {
+		t.Errorf("title 应改写为攻击档定式, got %q", cur.Title)
+	}
+	if cur.WarnTimes != 2 {
+		t.Errorf("warn 应 1→2, got %d", cur.WarnTimes)
+	}
+	if !s.InBlacklist("10.3.1.1") {
+		t.Error("转永久后拦截快照应包含该 IP")
+	}
+}

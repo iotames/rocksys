@@ -342,9 +342,22 @@ func (e *AutoBanEngine) runOnce() {
 		case banEntryActive(cur, now):
 			// 态二：活跃条目（未删未过期）→ 跳过（已在封禁中，不重复计数）。
 		default:
-			// 态三/四：软删/已过期条目 → 恢复续封（warn_times+1），解封时间=TTL×10；
-			// 累计入狱达 SHIELD_AUTO_BAN_REPEAT_LIMIT 的限时封禁转永久（RestoreBan 内聚，
-			// TTL=0 恢复后仍永久）；攻击档新封本就直永久，不走此分支的转永久判定。
+			// 态三/四：软删/已过期条目 → 恢复续封（warn_times+1）。攻击档直永久策略
+			// 覆盖续封时长：恢复即转永久（expires_at 置 NULL、title 改攻击档定式），
+			// 防止真实攻击者蹭旧过期条目只拿到 TTL×10 限时续封逃过永久封禁；
+			// 其余档解封时间=TTL×10，累计入狱达 SHIELD_AUTO_BAN_REPEAT_LIMIT 的
+			// 限时封禁转永久（RestoreBan 内聚，TTL=0 恢复后仍永久）。
+			if c.Tier == banTierAttack {
+				toPerm, err := st.RestoreBanToPermanent(c.IP, attackTitle, now)
+				if err != nil {
+					log.Warn("shield: 自动拉黑攻击档转永久失败", "ip", c.IP, "err", err.Error())
+					continue
+				}
+				changed = true
+				log.Info("shield: 自动拉黑恢复续封（攻击档直永久）", "ip", c.IP,
+					"block_type", int(c.TopType), "tier", int(c.Tier), "warn_times", cur.WarnTimes+1, "to_permanent", toPerm)
+				continue
+			}
 			var expRestore *time.Time
 			if ttl > 0 {
 				t := now.Add(ttl * 10)

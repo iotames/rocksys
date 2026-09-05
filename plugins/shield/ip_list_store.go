@@ -515,6 +515,31 @@ func (s *IPListStore) RestoreBan(ip string, expiresAt *time.Time, now time.Time,
 	return toPermanent, nil
 }
 
+// RestoreBanToPermanent 软删/过期条目恢复并直接转永久（自动拉黑攻击档续封路径，
+// 见 auto_ban.go 风险分档策略）：清 deleted_at、expires_at 置 NULL、warn_times 原子
+// 自增、title 改写为调用方给定标题（攻击档定式）。条目本就永久（expires_at 为空，
+// 如人工永久封禁被软删）时同样恢复并改写标题，但不计"转永久"。
+// 返回 toPermanent=true 表示本次发生了"限时→永久"转换（供日志）；ip 无记录返回
+// ErrIPNotExists；白名单调用报错。
+func (s *IPListStore) RestoreBanToPermanent(ip, title string, now time.Time) (toPermanent bool, err error) {
+	if !s.isBlack {
+		return false, fmt.Errorf("shield: 白名单无封禁语义")
+	}
+	cur, err := s.GetByIP(ip)
+	if err != nil {
+		return false, err
+	}
+	toPermanent = cur.ExpiresAt != "" // 限时条目 → 本次转为永久
+	upd, err := s.sqlText(s.scriptName("restore_ban"))
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.edb.Exec(upd, nil, truncateTitle(title, 0), now.UTC(), cur.ID); err != nil {
+		return false, fmt.Errorf("shield: 封禁转永久 %s 失败（ip=%s）: %w", s.table, ip, err)
+	}
+	return toPermanent, nil
+}
+
 // Jail 小黑屋查询（IP_BLACKLIST_PLAN §3.7）：当前在押的限时封禁条目——
 // expires_at 非 NULL 且 > now、deleted_at 为 NULL；临近解封的在前（expires_at ASC）。
 // 返回归一化行与在押总数（总数与 limit 无关，供前端提示"共 N 条在押"）。

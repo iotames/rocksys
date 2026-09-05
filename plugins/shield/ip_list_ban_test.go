@@ -380,6 +380,57 @@ func TestRestoreBanTitleOverlong(t *testing.T) {
 	}
 }
 
+// TestIPListStore_RestoreBanToPermanent 攻击档"恢复即转永久"：限时条目转永久
+// （expires NULL、warn+1、title 改写）；本就永久的条目只恢复不报转永久。
+func TestIPListStore_RestoreBanToPermanent(t *testing.T) {
+	black, _ := newTestListStore(t, true)
+	now := time.Now()
+
+	// 限时条目（已过期）：恢复 → 永久。
+	if _, err := black.BanInsert("10.2.0.1", "旧限时", BlockCrawlerUA, timePtr(now.Add(-time.Hour)), now); err != nil {
+		t.Fatal(err)
+	}
+	perm, err := black.RestoreBanToPermanent("10.2.0.1", "自动拉黑：高危攻击直接永久封禁", now)
+	if err != nil {
+		t.Fatalf("RestoreBanToPermanent: %v", err)
+	}
+	if !perm {
+		t.Error("限时条目应报告转永久")
+	}
+	e, _ := black.GetByIP("10.2.0.1")
+	if e.ExpiresAt != "" || e.Deleted || e.WarnTimes != 2 {
+		t.Errorf("应转永久且 warn 1→2: %+v", e)
+	}
+	if e.Title != "自动拉黑：高危攻击直接永久封禁" {
+		t.Errorf("title 应改写为攻击档定式, got %q", e.Title)
+	}
+
+	// 本就永久的条目（人工永久封禁被软删）：恢复软删，不报转永久。
+	id, err := black.BanInsert("10.2.0.2", "人工永久", BlockManual, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := black.SoftDelete(id, now); err != nil {
+		t.Fatal(err)
+	}
+	perm, err = black.RestoreBanToPermanent("10.2.0.2", "自动拉黑：高危攻击直接永久封禁", now)
+	if err != nil || perm {
+		t.Errorf("本就永久不应报转永久: perm=%v err=%v", perm, err)
+	}
+	if e, _ = black.GetByIP("10.2.0.2"); e.Deleted {
+		t.Error("软删永久条目应被恢复")
+	}
+
+	// 无记录 / 白名单报错。
+	if _, err := black.RestoreBanToPermanent("10.2.9.9", "x", now); !errors.Is(err, ErrIPNotExists) {
+		t.Errorf("无记录 err=%v, want ErrIPNotExists", err)
+	}
+	ws, _ := newTestListStore(t, false)
+	if _, err := ws.RestoreBanToPermanent("10.2.0.1", "x", now); err == nil {
+		t.Error("白名单应报错")
+	}
+}
+
 // TestImportIPListInvalidLinesSkipped 导入逐行校验：非法 IP 不落库、计入 skipped
 // （管理面请求体是自由文本，后端不校验会把任意字符串写进 ip 列——浏览器验收发现）。
 func TestImportIPListInvalidLinesSkipped(t *testing.T) {
