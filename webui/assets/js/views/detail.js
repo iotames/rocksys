@@ -4,7 +4,9 @@
  *   - 状态页签（默认）：大卡片 = 左上 switch 直接启停 + 中文名/英文名 + 环节标签
  *     + 状态 + 描述 + 运行信息 + 数据流位置示意
  *   - 配置页签：该组件/服务独有配置项（复用 Rock.comp.configEditor），
- *     无配置项显示空态引导；script 组件附"去脚本页发布策略"链接
+ *     顶部局部搜索（Rock.comp.cfgSearch，风格同全局配置页，仅搜本组件配置项，
+ *     定位后滚动高亮并自动进入行内编辑）；无配置项显示空态引导；
+ *     script 组件附"去脚本页发布策略"链接
  * 启停经二次确认后调用 /admin/switch/on|off，失败透出 error 原文。
  * 页签状态与 URL 联动（#/components/<name>?tab=config，刷新不丢）。
  * 挂载到全局命名空间 window.Rock.views.detail。
@@ -112,7 +114,11 @@
         '</div>';
       return;
     }
-    Rock.comp.configEditor.render(container, items, {});
+    // 顶部局部搜索（风格同全局配置页，作用域仅本组件配置项）+ 配置行子容器
+    const rows = Rock.comp.cfgSearch.mount(container, items, function (key) {
+      Rock.comp.configEditor.locateAndEdit(key);
+    });
+    Rock.comp.configEditor.render(rows, items, {});
     // 全局配置页搜索跳转而来：定位并进入编辑（一次性消费，未命中静默忽略）
     if (store.pendingCfgLocate) {
       const k = store.pendingCfgLocate;
