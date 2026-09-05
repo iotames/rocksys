@@ -3,7 +3,9 @@
  * 页签「表结构」：期望结构（当前运行 SQL 源，外挂优先、内嵌兜底）与实际结构
  * （当前数据连接 catalog）比对 → 差异分级表 + 生成 SQL 预填编辑器 →
  * danger 强确认执行 → 逐条结果（失败标红、常驻 toast 引导复核）。
- * 后端契约：GET /admin/db/schema、POST /admin/db/exec。
+ * 页签「执行历史」：sql_exec_log 表审计记录（每条语句一行）分页展示，
+ * 谁在何时执行了什么、成败与耗时，刷新/换会话均可追溯。
+ * 后端契约：GET /admin/db/schema、POST /admin/db/exec、GET /admin/db/execlog。
  * 挂载到全局命名空间 window.Rock.views.database。
  * ========================================================================== */
 (function () {
@@ -19,9 +21,14 @@
   const confirmDialog = Rock.ui.confirmDialog;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const codeEditor = Rock.comp.codeEditor;
+  const fmtDateTime = Rock.util.fmtDateTime;
+  const truncate = Rock.util.truncate;
 
   // SQL 编辑器实例 id（codeEditor.html/wire/setValue 均按此 id 定位节点与状态）
   const EDITOR_ID = 'db-sql-editor';
+
+  // 执行历史分页页大小
+  const HIST_PAGE_SIZE = 20;
 
   // 页面内部状态
   const state = {
@@ -31,6 +38,11 @@
     items: [],          // 差异列表（level A-F）
     sql: '',            // 后端按自动项生成的 SQL（预填编辑器）
     exec: null,         // 最近一次执行结果 { results, executed, failed }
+    tab: 'schema',      // 当前页签：'schema' 表结构 | 'history' 执行历史
+    hist: {             // 执行历史（服务端分页）
+      loaded: false, loading: false,
+      items: [], total: 0, offset: 0,
+    },
   };
 
   // 差异分级展示配置：级别 → { label 差异类型, tag 分级标签（绿=自动/橙=需人工/灰=仅提示） }
@@ -77,12 +89,36 @@
     emptyText: '尚未执行',
   });
 
+  // 执行历史表（client 模式展示当前页；分页由页内上一页/下一页按钮驱动服务端 offset）
+  const histTable = Rock.comp.dataTable.create({
+    ns: 'db-hist',
+    columns: [
+      { key: 'time', label: '执行时间', cls: 'mono', render: r => esc(fmtDateTime(r.time)) },
+      { key: 'batch_id', label: '批次/#', cls: 'mono', render: r =>
+          '<span title="批次 ' + esc(r.batch_id) + '">' + esc(String(r.batch_id || '').slice(0, 8)) +
+          '</span> <span class="muted">#' + esc(r.seq) + '</span>' },
+      { key: 'sql_text', label: '语句', render: r =>
+          '<span class="mono" title="' + esc(r.sql_text) + '">' + esc(truncate(r.sql_text, 90)) + '</span>' },
+      { key: 'ok', label: '结果', width: '90px', render: r => r.ok
+          ? '<span class="tag tag-green">成功</span>'
+          : '<span class="tag tag-orange">失败</span>' },
+      { key: 'rows_affected', label: '行数', width: '70px', cls: 'mono' },
+      { key: 'duration_ms', label: '耗时', width: '80px', cls: 'mono', render: r => esc(r.duration_ms) + 'ms' },
+      { key: 'client_ip', label: '来源 IP', cls: 'mono', width: '130px' },
+      { key: 'error', label: '失败原因', render: r => r.error
+          ? '<span title="' + esc(r.error) + '">' + esc(truncate(r.error, 60)) + '</span>' : '' },
+    ],
+    paging: { mode: 'client' },
+    rowClass: r => (r.ok ? '' : 'is-error'),
+    emptyText: '暂无执行记录（执行 SQL 后自动留痕）',
+  });
+
   // 首次进入挂分页控件事件（页容器为持久元素）
   let bound = false;
   function ensureBind() {
     if (bound) return;
     const host = $('#page-database');
-    if (host) { diffTable.bind(host); execTable.bind(host); bound = true; }
+    if (host) { diffTable.bind(host); execTable.bind(host); histTable.bind(host); bound = true; }
   }
 
   // 页面加载：首次拉一次表结构检查，其余路由往返走缓存（手动刷新按钮 force 重拉）
@@ -162,13 +198,17 @@
     host.innerHTML =
       Rock.comp.head.headHTML({
         title: '数据库',
-        desc: '表结构比对：检查差异、生成 SQL 并执行同步',
+        desc: '表结构比对：检查差异、生成 SQL 并执行同步；执行 SQL 全量留痕可审计',
         actions: '<button class="btn btn-sm" data-act="db-check"' + (state.checking ? ' disabled' : '') + '>⟳ 重新检查</button>',
       }) +
-      Rock.comp.tabs.tabsHTML([{ name: 'schema', label: '表结构' }], 'schema', { act: 'db-tab' }) +
-      '<div class="tab-pane">' + schemaHTML() + '</div>';
+      Rock.comp.tabs.tabsHTML(
+        [{ name: 'schema', label: '表结构' }, { name: 'history', label: '执行历史' }],
+        state.tab,
+        { act: 'db-tab', nameAttr: 'data-tab' }
+      ) +
+      '<div class="tab-pane">' + (state.tab === 'history' ? histHTML() : schemaHTML()) + '</div>';
     // 编辑器联动：内容变化即时同步「执行SQL」按钮可用态（不整页重绘，避免打断输入）
-    if (state.items.length) {
+    if (state.tab === 'schema' && state.items.length) {
       codeEditor.wire(EDITOR_ID, {
         onChange: function (src) {
           state.sql = src;
@@ -177,6 +217,50 @@
         },
       });
     }
+  }
+
+  // ── 执行历史页签：sql_exec_log 审计记录分页展示 ────────────────────────
+
+  // 拉取执行历史（服务端分页；切换页签或翻页/刷新按钮触发）
+  async function loadHist(opts) {
+    const o = opts || {};
+    if (state.hist.loading) return;
+    if (state.hist.loaded && !o.force && !o.move) { render(); return; }
+    state.hist.loading = true;
+    if (o.move) render(); // 翻页时保留旧内容就地刷新（无骨架屏闪烁）
+    try {
+      const res = await api.get('/admin/db/execlog?limit=' + HIST_PAGE_SIZE + '&offset=' + state.hist.offset);
+      state.hist.items = Array.isArray(res.items) ? res.items : [];
+      state.hist.total = Number(res.total) || 0;
+      state.hist.loaded = true;
+    } catch (e) {
+      if (e.status !== 0) {
+        toast('执行历史查询失败：' + e.message + '。请确认数据连接正常后点「⟳ 刷新」重试', 'error');
+      }
+    }
+    state.hist.loading = false;
+    render();
+  }
+
+  function histHTML() {
+    const h = state.hist;
+    let html = '<div class="card"><div class="card-title">SQL 执行历史' +
+      '<span class="tag tag-gray">每条语句一行 · 完整留痕</span>' +
+      '<span class="comp-actions"><button class="btn btn-sm" data-act="db-hist-refresh"' +
+      (h.loading ? ' disabled' : '') + '>⟳ 刷新</button></span></div>' +
+      '<div class="form-hint" style="margin-bottom:8px">记录「执行SQL」的每条语句：时间、批次、原文、结果与耗时，永久保留，可审计追溯。</div>' +
+      histTable.html(h.loaded || h.items.length ? h.items : []);
+    if (h.total > HIST_PAGE_SIZE) {
+      const page = Math.floor(h.offset / HIST_PAGE_SIZE) + 1;
+      const pages = Math.ceil(h.total / HIST_PAGE_SIZE);
+      html += '<div class="comp-actions" style="margin-top:8px">' +
+        '<button class="btn btn-sm" data-act="db-hist-prev"' + (h.offset > 0 && !h.loading ? '' : ' disabled') + '>‹ 上一页</button>' +
+        '<span class="muted">第 ' + page + ' / ' + pages + ' 页 · 共 ' + h.total + ' 条</span>' +
+        '<button class="btn btn-sm" data-act="db-hist-next"' + (h.offset + HIST_PAGE_SIZE < h.total && !h.loading ? '' : ' disabled') + '>下一页 ›</button>' +
+        '</div>';
+    }
+    html += '</div>';
+    return html;
   }
 
   // 「表结构检查」：GET /admin/db/schema → 差异表 + SQL 预填；无差异成功 toast 自动消失
@@ -249,6 +333,7 @@
       toast('SQL 执行请求失败：' + e.message + '。请确认服务可达后重试', 'error');
       return;
     }
+    state.hist.loaded = false; // 执行后失效缓存：下次进执行历史页签重拉（含本次留痕）
     render();
   }
 
@@ -271,10 +356,25 @@
     execSQL,
     copySQL,
     actions: {
-      'db-tab': function () { render(); },                       // 本期仅「表结构」一个页签，预留扩展
+      'db-tab': function (el) {
+        const tab = el.getAttribute('data-tab') || 'schema';
+        if (tab === state.tab) return;
+        state.tab = tab;
+        if (tab === 'history' && !state.hist.loaded) loadHist();
+        else render();
+      },
       'db-check': function () { check(); },
       'db-exec': function () { execSQL(); },
       'db-copy-sql': function () { copySQL(); },
+      'db-hist-refresh': function () { state.hist.offset = 0; loadHist({ force: true }); },
+      'db-hist-prev': function () {
+        state.hist.offset = Math.max(0, state.hist.offset - HIST_PAGE_SIZE);
+        loadHist({ move: true });
+      },
+      'db-hist-next': function () {
+        state.hist.offset += HIST_PAGE_SIZE;
+        loadHist({ move: true });
+      },
     },
   };
 })();

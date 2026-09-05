@@ -69,6 +69,8 @@ type AdminServer struct {
 	sqls         db.SQLSource       // 用户存储 SQL 脚本源（dataDB，可 nil）
 	dataDB       *db.DB             // 表结构同步数据连接（SetTableSpecs 注入，可 nil = 功能不可用）
 	tableSpecs   []db.TableSpec     // 表结构同步表清单（装配处单一事实来源，SetTableSpecs 注入）
+	execLogOnce  sync.Once          // SQL 执行审计存储惰性构造（跟随 dataDB 生命周期）
+	execLog      *execLogStore      // SQL 执行审计存储（可 nil = 审计不可用）
 	execMu       sync.Mutex         // /admin/db/exec 执行互斥：防并发 DDL 交叉执行产生不可预期状态
 	users        *userStore         // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
 	auth         *adminAuth         // 管理接口鉴权器
@@ -213,6 +215,7 @@ func (s *AdminServer) registerBuiltin() {
 	// 数据库表结构同步端点（/admin/db/*）：检查走 GET，执行为危险操作走 POST。
 	s.srv.AddHandler(http.MethodGet, PathDBSchema, check(func(ctx httpsvr.Context) { s.handleDBSchema(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodPost, PathDBExec, check(func(ctx httpsvr.Context) { s.handleDBExec(ctx.Writer, ctx.Request) }))
+	s.srv.AddHandler(http.MethodGet, PathDBExecLog, check(func(ctx httpsvr.Context) { s.handleDBExecLog(ctx.Writer, ctx.Request) }))
 }
 
 // RegisterWebUI 注册 WebUI 静态资源（管理控制台）。

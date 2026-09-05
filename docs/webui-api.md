@@ -65,7 +65,8 @@
 | 39 | GET | `/admin/proxy/trusted/file` | 读可信代理文件当前生效内容 + 内嵌默认内容（`?name=`，仅允许装配的 `TRUSTED_PROXIES_FILE`） |
 | 40 | POST | `/admin/proxy/trusted/save` | 保存可信代理文件到 `HOT_SCRIPTS_DIR/trusted_proxies/`（原子写，保存前先解析校验非法 IP/CIDR 直接 400；ScriptHub ≤3s 自动热更生效；body `{name, content}`，上限 512KB） |
 | 41 | GET | `/admin/db/schema` | 表结构检查（期望 = 运行期 SQL 源脚本，实际 = 当前数据连接 catalog；返回 A-F 分级差异与自动项生成 SQL） |
-| 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；danger 级危险操作，服务端不做语句白名单） |
+| 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；每条语句落 `sql_exec_log` 审计留痕；danger 级危险操作，服务端不做语句白名单） |
+| 43 | GET | `/admin/db/execlog` | SQL 执行历史查询（`sql_exec_log` 表，时间倒序 + offset 服务端分页） |
 | 43 | POST | `/admin/shield/blacklist/sync_file` | 从外挂规则文件 `rules/ip_blacklist.txt` 同步 IP 入库（block_type=11，幂等） |
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
 | 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的限时封禁条目（首页页签数据源） |
@@ -578,6 +579,27 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 - 执行中途失败仍返回 200（结果在 `results`/`failed`/`message` 中）：前面已执行的语句**不可回滚**，前端据此引导仅重发剩余语句。
 
 > **安全提示**：执行端点为 danger 级危险操作，前端须做强确认（说明作用对象、DDL 不可回滚、建议先备份）；服务端**不做语句类型白名单**——编辑器内容可自由编辑（含手工救急语句），原样逐条执行。调用方（如脚本）务必自行确认 SQL 内容来源可信。
+
+**审计留痕**：`POST /admin/db/exec` 每条语句执行后同步落 `sql_exec_log` 表（每条语句一行；
+`batch_id` 归组一次提交、`seq` 批内序号；失败语句也落行，后续未执行语句不落表——无记录＝未执行；
+字段见 `docs/DATA_DICT.md` §2.8）。审计落库失败仅记服务端告警日志，不影响执行结果返回。
+
+**`GET /admin/db/execlog` 查询参数**：`limit`（默认/上限 50）、`offset`（默认 0）。
+
+**响应 200**：
+
+```json
+{
+  "items": [{
+    "id": 1, "time": "2026-09-05T15:00:00Z", "batch_id": "cc5b703beb69b01ec627c84c5d59635e",
+    "seq": 1, "sql_text": "ALTER TABLE ip_blacklist ADD COLUMN …", "ok": true,
+    "rows_affected": 0, "error": "", "duration_ms": 2, "client_ip": "127.0.0.1", "source": "webui"
+  }],
+  "total": 1
+}
+```
+
+- `503`：数据连接未装配；`500`：查询或计数失败（响应文本含原因）。
 
 ---
 

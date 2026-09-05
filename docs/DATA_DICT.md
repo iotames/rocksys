@@ -11,7 +11,7 @@
 - 统一数据访问层：`internal/db`（`DB_DRIVER`/`DB_DSN` 配置，见 `docs/CONFIGURATION.md`）；
 - SQL 脚本三方言齐平：`sql/sqlite/`、`sql/postgres/`、`sql/mysql/`（`internal/db/db_test.go` 的 `TestScriptParity` 强制校验文件集一致）；
 - 表名/库名等动态标识符用 `{table}` 占位符（运行时由组件替换，**禁止来自外部用户输入**）；
-- 全项目共 **7 张业务表**，分属 4 个组件：
+- 全项目共 **8 张业务表**，分属 5 个组件：
   | 表名 | 归属组件 | 条件装配 |
   |---|---|---|
   | `shield_event` | shield（WAF 防护） | 恒建（DB 就绪即建） |
@@ -21,6 +21,7 @@
   | `ip_blacklist` | shield（WAF 防护） | 恒建（DB 就绪即建） |
   | `ip_whitelist` | shield（WAF 防护） | 恒建（DB 就绪即建） |
   | `attack_archive` | shield（WAF 防护） | 恒建（DB 就绪即建） |
+  | `sql_exec_log` | adminapi（管理接口） | 恒建（DB 就绪即建，首次执行 SQL 时惰性建） |
 
 **通用约定**
 - 字段命名统一 `snake_case`；
@@ -41,6 +42,7 @@
 | `ip_blacklist` | 动态 IP 黑名单表 | shield | 管理面录入/批量导入的拉黑条目（与外挂 `rules/ip_blacklist.txt` 取并集；热路径只读内存快照） | `sql/{sqlite,postgres,mysql}/ip_blacklist_create_table.sql` |
 | `ip_whitelist` | 动态 IP 白名单表 | shield | 管理面录入的白名单条目（与 `.env` 配置 `SHIELD_IP_WHITELIST` 取并集；白名单优先于黑名单） | `sql/{sqlite,postgres,mysql}/ip_whitelist_create_table.sql` |
 | `attack_archive` | 攻击证据归档表 | shield | 攻击证据归档（本期仅建表，归档逻辑见 WAF 方案 §8） | `sql/{sqlite,postgres,mysql}/attack_archive_create_table.sql` |
+| `sql_exec_log` | SQL 执行审计表 | adminapi | 管理端「执行SQL」每条语句执行留痕（审计追溯，不清理） | `sql/{sqlite,postgres,mysql}/sql_exec_log_create_table.sql` |
 
 ---
 
@@ -181,6 +183,27 @@
 | `block_type` | 拦截类别 | 拦截类别（复用 §3.1 枚举） | `7`（SQL注入） | INTEGER / SMALLINT / SMALLINT | `1` |
 | `remark` | 归档备注 | 归档备注 | `2026-08-20 SQL 注入批量探测` | TEXT / TEXT / VARCHAR(64) | `''` |
 | `created_at` | 归档时间 | 归档时间（UTC） | `2026-08-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+### 2.8 sql_exec_log — SQL 执行审计表（11 列）
+
+**说明**：管理端「数据库同步 / 执行SQL」的审计留痕（`internal/adminapi/execlogstore.go`）。
+**每条语句一行**：一次提交拆出的多条语句按 `batch_id` 归组、`seq` 排序；遇错即停——失败语句也落行
+（`ok=0` + `error`），后续未执行语句不落表（无记录＝未执行）。数据**不自动清理**（审计永久保留）。
+`ok` 取值 `1` 成功 / `0` 失败。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `time` | 执行时刻 | 语句执行完成时刻（UTC） | `2026-09-05T15:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `batch_id` | 批次标识 | 同一次「执行SQL」提交归一组（16 字节随机 hex，32 字符） | `cc5b703beb69b01ec627...` | TEXT / TEXT / VARCHAR(32) | — |
+| `seq` | 批内序号 | 批内第几条（从 1 起，按拆句顺序） | `1`、`2` | INTEGER / INT / INT | — |
+| `sql_text` | 语句原文 | 执行的 SQL 语句原文（完整保留，单条） | `ALTER TABLE t ADD COLUMN ...` | TEXT / TEXT / TEXT | — |
+| `ok` | 执行结果 | 1 成功 / 0 失败 | `1`、`0` | INTEGER / SMALLINT / TINYINT | `0` |
+| `rows_affected` | 受影响行数 | 受影响行数（DDL 通常为 0） | `0` | INTEGER / INT / INT | `0` |
+| `error` | 失败原因 | 执行失败的错误信息（成功为空串；MySQL 方言无默认值为 NULL） | `table t1 already exists` | TEXT / TEXT / TEXT | `''` |
+| `duration_ms` | 执行耗时 | 单条语句执行耗时（ms） | `2`、`15` | INTEGER / INT / INT | `0` |
+| `client_ip` | 来源 IP | 发起执行的客户端 IP（审计归属） | `192.168.1.10` | TEXT / TEXT / VARCHAR(45) | `''` |
+| `source` | 触发来源 | 触发来源（预留扩展：webui/api/…，本期恒为 `webui`） | `webui` | TEXT / TEXT / VARCHAR(32) | `'webui'` |
 
 ---
 
