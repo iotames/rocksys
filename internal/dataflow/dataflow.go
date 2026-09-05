@@ -172,9 +172,10 @@ func (df *DataFlow) BizMs() int64 {
 }
 
 // EgressMs 出网耗时：DoneAt - DoneBizAt（毫秒），即响应写回客户端完成的时刻差；
-// 含客户端网络传输时间，慢客户端会撑大该值。DoneAt 未记录时返回 0。
+// 含客户端网络传输时间，慢客户端会撑大该值。DoneAt 或 DoneBizAt 任一未记录时返回 0
+//（防"只设了 DoneAt 未设 DoneBizAt"的路径算出距零值时间的天文数字脏数据）。
 func (df *DataFlow) EgressMs() int64 {
-	if df.DoneAt().IsZero() {
+	if df.DoneAt().IsZero() || df.DoneBizAt().IsZero() {
 		return 0
 	}
 	return ms(df.DoneAt().Sub(df.DoneBizAt()))

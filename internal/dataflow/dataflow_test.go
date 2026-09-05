@@ -90,6 +90,15 @@ func TestEgressMs(t *testing.T) {
 	}
 }
 
+// EgressMs 防御：DoneAt 已记录但 DoneBizAt 未记录时返回 0，不产生距零值时间的垃圾值。
+func TestEgressMsWithoutDoneBizAt(t *testing.T) {
+	df := newTestDF(t, nil)
+	df.SetDoneAt(df.BeginAt().Add(35 * time.Millisecond))
+	if got := df.EgressMs(); got != 0 {
+		t.Fatalf("DoneBizAt 零值时 EgressMs 应为 0: got=%d", got)
+	}
+}
+
 // TotalMs 新旧口径：DoneAt 已记录时 = DoneAt - BeginAt；零值回落 DoneBizAt - BeginAt。
 func TestTotalMsSemantics(t *testing.T) {
 	df := newTestDF(t, nil)
