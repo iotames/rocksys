@@ -198,7 +198,7 @@ func (s *Shield) BanIP(ip, title string, bt BlockType, exp *time.Time) (written,
 	case banEntryActive(cur, time.Now()):
 		return false, false, nil // 活跃条目：已在封禁中，跳过
 	default:
-		perm, err := st.RestoreBan(ip, exp, time.Now())
+		perm, err := st.RestoreBan(ip, exp, time.Now(), banWarnTimesLimit)
 		if err != nil {
 			return false, false, err
 		}

@@ -70,7 +70,7 @@ func TestIPListStore_RestoreBanBranches(t *testing.T) {
 	if err := s.SoftDelete(id1, now); err != nil {
 		t.Fatal(err)
 	}
-	perm, err := s.RestoreBan("10.2.0.1", timePtr(now.Add(2*time.Hour)), now)
+	perm, err := s.RestoreBan("10.2.0.1", timePtr(now.Add(2*time.Hour)), now, banWarnTimesLimit)
 	if err != nil || perm {
 		t.Fatalf("普通恢复 perm=%v err=%v, want false/nil", perm, err)
 	}
@@ -86,7 +86,7 @@ func TestIPListStore_RestoreBanBranches(t *testing.T) {
 	}
 
 	// 分支二：续封未满限（warn=2 → 3）
-	perm, err = s.RestoreBan("10.2.0.1", timePtr(now.Add(3*time.Hour)), now)
+	perm, err = s.RestoreBan("10.2.0.1", timePtr(now.Add(3*time.Hour)), now, banWarnTimesLimit)
 	if err != nil || perm {
 		t.Fatalf("续封 perm=%v err=%v, want false/nil", perm, err)
 	}
@@ -103,7 +103,7 @@ func TestIPListStore_RestoreBanBranches(t *testing.T) {
 	if _, err := s.edb.Exec("UPDATE ip_blacklist SET warn_times = 4 WHERE id = ?", id3); err != nil {
 		t.Fatal(err)
 	}
-	perm, err = s.RestoreBan("10.2.0.3", timePtr(now.Add(10*time.Hour)), now)
+	perm, err = s.RestoreBan("10.2.0.3", timePtr(now.Add(10*time.Hour)), now, banWarnTimesLimit)
 	if err != nil || !perm {
 		t.Fatalf("满限恢复 perm=%v err=%v, want true/nil", perm, err)
 	}
@@ -116,7 +116,7 @@ func TestIPListStore_RestoreBanBranches(t *testing.T) {
 	}
 
 	// 转永久后再续封（expiresAt=nil 永久续封）：warn 继续累加、不重复追加标记
-	perm, err = s.RestoreBan("10.2.0.3", nil, now)
+	perm, err = s.RestoreBan("10.2.0.3", nil, now, banWarnTimesLimit)
 	if err != nil || perm {
 		t.Fatalf("永久续封 perm=%v err=%v, want false/nil", perm, err)
 	}
@@ -128,11 +128,11 @@ func TestIPListStore_RestoreBanBranches(t *testing.T) {
 	}
 
 	// 无记录 → ErrIPNotExists；白名单 → 报错
-	if _, err := s.RestoreBan("10.2.9.9", nil, now); !errors.Is(err, ErrIPNotExists) {
+	if _, err := s.RestoreBan("10.2.9.9", nil, now, banWarnTimesLimit); !errors.Is(err, ErrIPNotExists) {
 		t.Fatalf("无记录 RestoreBan err=%v, want ErrIPNotExists", err)
 	}
 	ws, _ := newTestListStore(t, false)
-	if _, err := ws.RestoreBan("10.2.0.1", nil, now); err == nil {
+	if _, err := ws.RestoreBan("10.2.0.1", nil, now, banWarnTimesLimit); err == nil {
 		t.Fatal("白名单 RestoreBan 应报错")
 	}
 }
@@ -153,8 +153,8 @@ func TestIPListStore_SortWhitelist(t *testing.T) {
 		{"expires_at", "expires_at DESC"},
 		{"updated_at", "updated_at DESC"},
 		{"block_type", "block_type DESC"},
-		{"ip", "id DESC"},                  // 字符串字段不提供 → 回默认
-		{"title", "id DESC"},               // 同上
+		{"ip", "id DESC"},                          // 字符串字段不提供 → 回默认
+		{"title", "id DESC"},                       // 同上
 		{"id; DROP TABLE ip_blacklist", "id DESC"}, // 非法 → 回默认（注入面收敛）
 	}
 	for _, c := range cases {
@@ -340,7 +340,7 @@ func TestTruncateTitle(t *testing.T) {
 		t.Errorf("超长 title 应截断到 64 字符, got %d", len([]rune(got)))
 	}
 	// 预留转永久后缀空间：截断 + 后缀合计仍 ≤ 64
-	base := truncateTitle(long, len([]rune(banPermanentTitleSuffix))) + banPermanentTitleSuffix
+	base := truncateTitle(long, len([]rune(banPermanentTitleSuffix(banWarnTimesLimit)))) + banPermanentTitleSuffix(banWarnTimesLimit)
 	if len([]rune(base)) > 64 {
 		t.Errorf("截断 + 转永久后缀应 ≤ 64 字符, got %d", len([]rune(base)))
 	}
@@ -361,7 +361,7 @@ func TestRestoreBanTitleOverlong(t *testing.T) {
 	if _, err := black.edb.Exec("UPDATE ip_blacklist SET warn_times = 4, deleted_at = ? WHERE id = ?", now.UTC(), id); err != nil {
 		t.Fatal(err)
 	}
-	perm, err := black.RestoreBan("10.9.9.9", timePtr(now.Add(10*time.Hour)), now)
+	perm, err := black.RestoreBan("10.9.9.9", timePtr(now.Add(10*time.Hour)), now, banWarnTimesLimit)
 	if err != nil {
 		t.Fatalf("超长 title 续封不应报错: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestRestoreBanTitleOverlong(t *testing.T) {
 	if len([]rune(e.Title)) > 64 {
 		t.Errorf("title 应收敛到 64 字符内, got %d", len([]rune(e.Title)))
 	}
-	if !strings.Contains(e.Title, banPermanentTitleSuffix) {
+	if !strings.Contains(e.Title, banPermanentTitleSuffix(banWarnTimesLimit)) {
 		t.Errorf("转永久标记应保留: %q", e.Title)
 	}
 }

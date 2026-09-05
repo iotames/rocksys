@@ -68,3 +68,27 @@ func (b BlockType) String() string {
 
 // Valid 判断是否为合法枚举值。
 func (b BlockType) Valid() bool { return b >= 1 && int(b) <= blockTypeCount }
+
+// banTier 自动拉黑风险分档（类别→处置策略映射，见 auto_ban.go）。
+// 分档定死在代码不占配置：档位是安全策略判断而非运维参数，给配置口子只会调坏
+// （能替用户减负、按需取舍攻击面的开关才保留）。
+type banTier int
+
+const (
+	banTierAttack  banTier = iota + 1 // 攻击档：风险路径/遍历/SQL注入/XSS（真实攻击，命中 1 次直接永久封禁）
+	banTierCrawler                    // 爬虫档：爬虫/扫描器 UA（君子协议伪造成本低但按流量计费烧钱，独立低阈值限时封禁）
+	banTierGeneric                    // 通用档：限流（异常高并发判断）/方法白名单/体积超限/规则 deny（通用阈值限时封禁）
+)
+
+// banTierOf 返回拦截类别所属分档；非真实拦截类别（0/1/11 语境值）返回 0（不参与分档）。
+func banTierOf(bt BlockType) banTier {
+	switch bt {
+	case BlockRiskPath, BlockPathTraversal, BlockSQLInjection, BlockXSS:
+		return banTierAttack
+	case BlockCrawlerUA:
+		return banTierCrawler
+	case BlockRateLimit, BlockMethodNotAllowed, BlockBodyTooLarge, BlockPathRuleDeny:
+		return banTierGeneric
+	}
+	return 0
+}

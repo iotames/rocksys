@@ -444,11 +444,16 @@ func (s *IPListStore) GetByIP(ip string) (*BanEntry, error) {
 
 // 封禁续封语义常量（IP_BLACKLIST_PLAN §3.4 决策 8/10）。
 const (
-	// banWarnTimesLimit 封禁次数上限：限时封禁续封累计达 5 次转永久。
+	// banWarnTimesLimit 封禁次数上限默认值：限时封禁续封累计达 5 次转永久。
+	// 人工封禁路径固定取此值；自动拉黑经 SHIELD_AUTO_BAN_REPEAT_LIMIT 配置（默认 5，
+	// 0=永不自动转永久）注入，见 RestoreBan repeatLimit 参数。
 	banWarnTimesLimit = 5
-	// banPermanentTitleSuffix 转永久时追加到 title 的标记。
-	banPermanentTitleSuffix = "（累计封禁达 5 次转永久）"
 )
+
+// banPermanentTitleSuffix 转永久时追加到 title 的标记（含触发次数）。
+func banPermanentTitleSuffix(limit int) string {
+	return fmt.Sprintf("（累计封禁达 %d 次转永久）", limit)
+}
 
 // ipTitleMaxRunes title 列宽上限（三方言建表脚本均为 VARCHAR(64)，按字符计）。
 const ipTitleMaxRunes = 64
@@ -470,11 +475,13 @@ func truncateTitle(title string, reserve int) string {
 // RestoreBan 封禁恢复续封（软删/过期条目拉回小黑屋）：清 deleted_at、expires_at 按
 // 调用方时长重设（人工=所选时长 / 自动=TTL×10）、warn_times 原子自增（SQL 侧
 // warn_times = warn_times + 1，消除与并发写方的读-改-写竞态）。
-// +1 后 warn_times ≥ 5 且本次为限时封禁（expiresAt 非 nil）→ 转永久：expires_at 置 NULL
-// 且 title 追加转永久标记，返回 toPermanent=true 供端点提示（判定基于读取时刻的
-// warn_times 快照，极端并发下可能延后一轮追加标记，不影响封禁正确性）。
+// repeatLimit 累计入狱转永久阈值（人工路径传 banWarnTimesLimit；自动拉黑传配置值，
+// 0=永不自动转永久）：+1 后 warn_times ≥ repeatLimit 且本次为限时封禁（expiresAt 非
+// nil）→ 转永久：expires_at 置 NULL 且 title 追加转永久标记，返回 toPermanent=true
+// 供端点提示（判定基于读取时刻的 warn_times 快照，极端并发下可能延后一轮追加标记，
+// 不影响封禁正确性）。
 // ip 无记录返回 ErrIPNotExists；白名单调用报错。
-func (s *IPListStore) RestoreBan(ip string, expiresAt *time.Time, now time.Time) (toPermanent bool, err error) {
+func (s *IPListStore) RestoreBan(ip string, expiresAt *time.Time, now time.Time, repeatLimit int) (toPermanent bool, err error) {
 	if !s.isBlack {
 		return false, fmt.Errorf("shield: 白名单无封禁语义")
 	}
@@ -490,11 +497,12 @@ func (s *IPListStore) RestoreBan(ip string, expiresAt *time.Time, now time.Time)
 		exp = nil
 	}
 	// perm=true 仅表示「本次恢复把限时条目转成了永久」（端点据此提示）；本就永久的条目不报。
-	if warn >= banWarnTimesLimit && expiresAt != nil && cur.ExpiresAt != "" {
+	if repeatLimit > 0 && int64(warn) >= int64(repeatLimit) && expiresAt != nil && cur.ExpiresAt != "" {
 		toPermanent = true
 		exp = nil
-		if !strings.Contains(title, banPermanentTitleSuffix) {
-			title = truncateTitle(title, len([]rune(banPermanentTitleSuffix))) + banPermanentTitleSuffix
+		suffix := banPermanentTitleSuffix(repeatLimit)
+		if !strings.Contains(title, suffix) {
+			title = truncateTitle(title, len([]rune(suffix))) + suffix
 		}
 	}
 	upd, err := s.sqlText(s.scriptName("restore_ban"))

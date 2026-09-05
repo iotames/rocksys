@@ -97,7 +97,8 @@ type ipListStore interface {
 	// 封禁语义（黑名单专属；IP_BLACKLIST_PLAN §3.4/§3.7，白名单实现返回错误）。
 	BanInsert(ip, title string, blockType BlockType, expiresAt *time.Time, now time.Time) (int64, error)
 	GetByIP(ip string) (*BanEntry, error)
-	RestoreBan(ip string, expiresAt *time.Time, now time.Time) (toPermanent bool, err error)
+	// repeatLimit 累计入狱转永久阈值（人工=banWarnTimesLimit；自动=SHIELD_AUTO_BAN_REPEAT_LIMIT，0=永不转永久）。
+	RestoreBan(ip string, expiresAt *time.Time, now time.Time, repeatLimit int) (toPermanent bool, err error)
 	Jail(now time.Time, limit int) (rows []map[string]any, total int64, err error)
 }
 

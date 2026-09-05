@@ -59,12 +59,17 @@ SHIELD_WAF_XSS = true
 SHIELD_WAF_PATH_TRAVERSAL = true
 SHIELD_WAF_RISK_PATH = true
 SHIELD_WAF_CRAWLER_UA = true
-# 自动拉黑（风控规则引擎）：窗口内同一 IP 拦截次数（排除 block_type=1 黑名单自我拦截）
-# 达阈值即自动写入黑名单（仅精确 IP，按跨类别合计取最多类别为拉黑原因）
-SHIELD_AUTO_BAN_ENABLED = false  # 自动拉黑开关：false=不启动引擎（默认）；true=后台扫描自动拉黑（开启需重启；其余三项每轮读配置支持热更）
-SHIELD_AUTO_BAN_THRESHOLD = 50   # 统计窗口内拦截次数阈值（达到即触发拉黑）
-SHIELD_AUTO_BAN_WINDOW = 10m     # 统计窗口（Go duration，如 10m/1h）
-SHIELD_AUTO_BAN_TTL = 24h        # 拉黑时长（0=永久）；软删/过期条目被再次命中恢复续封时取本值 ×10
+# 自动拉黑（风控规则引擎）：按风险分档处置（排除 block_type=1 黑名单自我拦截，仅精确 IP）：
+#   攻击档（风险路径/路径遍历/SQL注入/XSS）：窗口内命中 1 次直接永久封禁（安全策略定死代码，不可配）；
+#   爬虫档（爬虫/扫描器 UA）：达爬虫阈值限时封禁（按流量计费场景爬虫烧钱，低于通用阈值）；
+#   通用档（限流/方法白名单/体积超限/规则 deny）：达通用阈值限时封禁；
+#   同一 IP 多档达标取最严档；限时封禁条目累计入狱达 REPEAT_LIMIT 转永久
+SHIELD_AUTO_BAN_ENABLED = false            # 自动拉黑开关：false=不启动引擎（默认）；true=后台扫描自动拉黑（开启需重启；其余项每轮读配置支持热更）
+SHIELD_AUTO_BAN_THRESHOLD = 50             # 通用档阈值：统计窗口内单 IP 通用类拦截次数达到即触发拉黑
+SHIELD_AUTO_BAN_CRAWLER_THRESHOLD = 20     # 爬虫档阈值：统计窗口内单 IP 爬虫/扫描器 UA 拦截次数达到即触发拉黑
+SHIELD_AUTO_BAN_REPEAT_LIMIT = 5           # 累犯转永久阈值：限时封禁条目累计入狱达该次数转永久（0=永不自动转永久）
+SHIELD_AUTO_BAN_WINDOW = 10m               # 统计窗口（Go duration，如 10m/1h），各档阈值均按本窗口计数
+SHIELD_AUTO_BAN_TTL = 24h                  # 限时拉黑时长（0=永久）；软删/过期条目被再次命中恢复续封时取本值 ×10
 
 # ===== 脚本外挂统一入口 =====
 # 各挂件外挂子目录固定：sql/（数据访问层 SQL）、rules/（WAF 规则）、trusted_proxies/（可信代理）

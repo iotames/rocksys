@@ -56,7 +56,7 @@ func runBanFlowTest(t *testing.T, driver, dsn, suffix string) {
 	if err := store.SoftDelete(id, now); err != nil {
 		t.Fatalf("SoftDelete: %v", err)
 	}
-	perm, err := store.RestoreBan("10.9.0.1", ptrTime(now.Add(48*time.Hour)), now)
+	perm, err := store.RestoreBan("10.9.0.1", ptrTime(now.Add(48*time.Hour)), now, banWarnTimesLimit)
 	if err != nil || perm {
 		t.Fatalf("RestoreBan 普通恢复应成功且不转永久: perm=%v err=%v", perm, err)
 	}
@@ -69,14 +69,14 @@ func runBanFlowTest(t *testing.T, driver, dsn, suffix string) {
 		if err := store.SoftDelete(id, now); err != nil {
 			t.Fatalf("SoftDelete: %v", err)
 		}
-		if perm, err = store.RestoreBan("10.9.0.1", ptrTime(now.Add(24*time.Hour)), now); err != nil || perm {
+		if perm, err = store.RestoreBan("10.9.0.1", ptrTime(now.Add(24*time.Hour)), now, banWarnTimesLimit); err != nil || perm {
 			t.Fatalf("第 %d 次恢复不应转永久: perm=%v err=%v", i+2, perm, err)
 		}
 	}
 	if err := store.SoftDelete(id, now); err != nil {
 		t.Fatalf("SoftDelete: %v", err)
 	}
-	perm, err = store.RestoreBan("10.9.0.1", ptrTime(now.Add(24*time.Hour)), now)
+	perm, err = store.RestoreBan("10.9.0.1", ptrTime(now.Add(24*time.Hour)), now, banWarnTimesLimit)
 	if err != nil || !perm {
 		t.Fatalf("第 5 次恢复应转永久: perm=%v err=%v", perm, err)
 	}
@@ -88,7 +88,7 @@ func runBanFlowTest(t *testing.T, driver, dsn, suffix string) {
 	if err := store.SoftDelete(id, now); err != nil {
 		t.Fatalf("SoftDelete: %v", err)
 	}
-	if perm, err = store.RestoreBan("10.9.0.1", ptrTime(now.Add(24*time.Hour)), now); err != nil || perm {
+	if perm, err = store.RestoreBan("10.9.0.1", ptrTime(now.Add(24*time.Hour)), now, banWarnTimesLimit); err != nil || perm {
 		t.Fatalf("永久条目恢复不报转永久: perm=%v err=%v", perm, err)
 	}
 	if e, _ = store.GetByIP("10.9.0.1"); e.ExpiresAt != "" || e.WarnTimes != 6 {
@@ -169,4 +169,3 @@ func TestRealDBBanMySQL(t *testing.T) {
 	}
 	runBanFlowTest(t, "mysql", dsn, "_mytest")
 }
-

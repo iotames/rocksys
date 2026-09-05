@@ -376,7 +376,7 @@ RockSys 控制台
 
 **攻击源 TOP 批量加黑**：改为一次 `POST /admin/shield/blacklist/import`（`block_type=11` 人工收录，幂等跳过重复），toast 展示"已导入 X 条，跳过 Y 条"；消除逐条循环与"已存在"报错。
 
-**自动拉黑说明**（WAF 页说明文案与配置页呼应）：后台风控引擎按配置窗口统计各 IP 拦截次数（**排除 block_type=1 黑名单自我拦截**，避免封禁惩罚自我生产续封证据），跨类别合计达阈值即自动写入黑名单——仅精确 IP，拉黑原因取该 IP 窗口内次数最多的类别；软删/过期条目被再次命中自动恢复且解封时间延长为默认 TTL ×10。四个配置项：`SHIELD_AUTO_BAN_ENABLED`（默认 false，开启需重启）/ `SHIELD_AUTO_BAN_THRESHOLD`（默认 50）/ `SHIELD_AUTO_BAN_WINDOW`（默认 10m）/ `SHIELD_AUTO_BAN_TTL`（默认 24h，0=永久），阈值/窗口/TTL 每轮读配置支持热更（详见 `docs/CONFIGURATION.md`）。
+**自动拉黑说明**（WAF 页说明文案与配置页呼应）：后台风控引擎按配置窗口统计各 IP 拦截次数（**排除 block_type=1 黑名单自我拦截**，避免封禁惩罚自我生产续封证据），**按风险分档**自动写入黑名单——仅精确 IP，拉黑原因取该 IP 达标档内次数最多的类别；软删/过期条目被再次命中自动恢复且解封时间延长为默认 TTL ×10。分档策略：**攻击档**（风险路径/路径遍历/SQL注入/XSS）窗口内命中 1 次直接永久封禁（策略定死代码不可配）；**爬虫档**（爬虫/扫描器 UA）达爬虫阈值限时封禁；**通用档**（限流/方法白名单/体积超限/规则 deny）达通用阈值限时封禁；多档达标取最严档。限时封禁累计入狱达 `SHIELD_AUTO_BAN_REPEAT_LIMIT`（默认 5，0=永不自动转永久）转永久。配置项：`SHIELD_AUTO_BAN_ENABLED`（默认 false，开启需重启）/ `SHIELD_AUTO_BAN_THRESHOLD`（默认 50）/ `SHIELD_AUTO_BAN_CRAWLER_THRESHOLD`（默认 20）/ `SHIELD_AUTO_BAN_REPEAT_LIMIT`（默认 5）/ `SHIELD_AUTO_BAN_WINDOW`（默认 10m）/ `SHIELD_AUTO_BAN_TTL`（默认 24h，0=永久），阈值/窗口/TTL 每轮读配置支持热更（详见 `docs/CONFIGURATION.md`）。
 
 ### 4.13 WAF安全 · UA黑名单/UA白名单（规则文件行级管理）
 
@@ -437,7 +437,7 @@ RockSys 控制台
 | UA黑名单/UA白名单行级管理（规则文件：生效模式表格/单条删除/追加/恢复默认，≤3s 热更） | WAF安全·黑白名单 Tab·UA 子页签（`views/ualist.js`，读写 `/admin/shield/rules*` 三端点；UA白名单无开关有数据即生效、仅豁免爬虫 UA 拦截一步；见 §4.13） |
 | 拦截明细行内封禁（操作列「IP封禁」+ 行详情弹层入口，24h/永久单选，封禁次数累计满 5 转永久） | WAF安全·攻击拦截（`POST /admin/shield/blacklist/ban` 专用封禁端点；弹窗与置灰逻辑见 §4.12） |
 | 首页小黑屋预览（当前在押限时封禁条目，临近解封在前） | 概览·小黑屋页签（`GET /admin/shield/jail`，见 §4.2） |
-| 自动拉黑（窗口内拦截达阈值自动入黑名单，可配置开关/阈值/窗口/时长） | 配置 `SHIELD_AUTO_BAN_*` 四项（`docs/CONFIGURATION.md`）；命中结果在概览·小黑屋与黑白名单列表可见 |
+| 自动拉黑（按风险分档：攻击类命中 1 次直接永久；爬虫 UA/通用类窗口内达各自阈值自动入黑名单，累犯转永久） | 配置 `SHIELD_AUTO_BAN_*` 六项（`docs/CONFIGURATION.md`）；命中结果在概览·小黑屋与黑白名单列表可见 |
 | WAF 规则文件在线编辑（risk_paths.txt / crawler_ua.txt / ua_whitelist.txt 等 7 个规则文件，含外挂/内置生效状态与生效行数） | WAF安全·文件编辑 Tab（`/admin/shield/rules*` 三端点；保存落点 `HOT_SCRIPTS_DIR/rules/`，ScriptHub ≤3s 自动热更生效，无需重启；编辑器复用 codeEditor 公共组件；UA 两个名单文件另在黑白名单 Tab 有行级管理入口，见 §4.13） |
 | 可信代理列表在线编辑（IP/CIDR 白名单，保存前服务端解析校验非法内容拒绝） | 全局配置·可信代理页签（`/admin/proxy/trusted*` 三端点；保存落点 `HOT_SCRIPTS_DIR/trusted_proxies/`，ScriptHub ≤3s 自动热更生效；页面骨架与规则文件编辑共用 fileEditor 公共视图工厂） |
 | 数据库表结构同步（检查 A-F 分级差异、编辑生成 SQL、danger 强确认执行、复核闭环；存量升级不再手工 ALTER） | 服务→数据库·表结构页签（`/admin/db/schema` 与 `/admin/db/exec` 两端点；执行为 danger 级操作，服务端不做语句白名单） |
