@@ -73,14 +73,17 @@
 
 > ⚠ 方言差异备注：`path`、`extra` 在 sqlite/postgres 有默认值（`''`/`'{}'`），MySQL 无默认值（NOT NULL，写入必须显式给值）。
 
-### 2.2 access_log — 访问日志表（15 列）
+### 2.2 access_log — 访问日志表（16 列）
 
-**说明**：放行请求的访问明细（拦截请求不经过 obs，见 §2.1 说明）。耗时列单位均为毫秒（ms）。
+**说明**：放行请求的访问明细（拦截请求不经过 obs，见 §2.1 说明）。耗时列单位均为毫秒（ms），
+四段拆解：入网 + 转发（业务） + 出网 = 总耗时（±1ms 取整误差）。
+**历史行注记**：`egress_ms` 列上线前的旧行恒为 `0`，且 `total_ms` 为旧口径（到转发完成，不含出网段）——
+排序解读：降序时旧行沉底、升序时旧行置顶，均属预期。
 
 | 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
 |---|---|---|---|---|---|
 | `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
-| `time` | 完成时刻 | 请求完成时刻（UTC） | `2026-08-20T12:17:11Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `time` | 完成时刻 | 请求完成时刻（UTC）＝出网时刻（响应写回客户端完成，与代码 DoneAt 埋点同点取值） | `2026-08-20T12:17:11Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
 | `trace_id` | 链路 ID | 链路 ID（贯穿整条转发链） | `a1b2c3d4` | TEXT / TEXT / VARCHAR(64) | — |
 | `tenant_id` | 租户 ID | 租户 ID（多租户预留，默认空） | `tenant-a` | TEXT / TEXT / VARCHAR(64) | `''` |
 | `path` | 请求路径 | 请求 URL 路径 | `/api/order` | TEXT / TEXT / VARCHAR(2048) | — |
@@ -88,9 +91,10 @@
 | `client_ip` | 客户端 IP | 客户端 IP（已按 X-Forwarded-For 取真实地址） | `192.168.1.10` | TEXT / TEXT / VARCHAR(64) | `''` |
 | `status_code` | 响应码 | 上游返回的响应状态码（与 shield_event 的拦截码语义不同） | `200`、`502` | INTEGER / INT / INT | — |
 | `upstream` | 上游地址 | 实际转发的上游地址 | `http://10.0.0.5:9000` | TEXT / TEXT / VARCHAR(255) | `''` |
-| `shield_ms` | 防护耗时 | L1 防护（shield）环节耗时（ms） | `1`、`35` | INTEGER / BIGINT / BIGINT | `0` |
-| `biz_ms` | 业务耗时 | 业务（上游处理）耗时（ms） | `120` | INTEGER / BIGINT / BIGINT | `0` |
-| `total_ms` | 总耗时 | 请求总耗时（ms） | `135` | INTEGER / BIGINT / BIGINT | `0` |
+| `shield_ms` | 入网耗时 | 请求到达→转发前（全部前置中间件）耗时（ms）；仅中间链只挂 shield 时等价防护耗时 | `1`、`35` | INTEGER / BIGINT / BIGINT | `0` |
+| `biz_ms` | 转发（业务）耗时 | 转发耗时（ms），含网关↔上游网络往返；内网部署、网络稳定时约等于业务真实处理耗时 | `120` | INTEGER / BIGINT / BIGINT | `0` |
+| `total_ms` | 总耗时 | 到达→出网总耗时（ms）＝入网+转发（业务）+出网；历史行为旧口径：到转发完成 | `135` | INTEGER / BIGINT / BIGINT | `0` |
+| `egress_ms` | 出网耗时 | 出网耗时（ms）＝响应写回客户端完成−转发完成；含客户端网络传输时间，慢客户端会撑大该值；历史行为 `0` | `2`、`15` | INTEGER / BIGINT / BIGINT | `0` |
 | `req_bytes` | 请求字节 | 请求体字节数 | `512` | INTEGER / BIGINT / BIGINT | `0` |
 | `resp_bytes` | 响应字节 | 响应体字节数 | `2048` | INTEGER / BIGINT / BIGINT | `0` |
 | `extra` | 扩展字段 | 扩展字段（JSON，向前兼容） | `{}` | TEXT / TEXT / TEXT | `'{}'` |

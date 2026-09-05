@@ -1,4 +1,4 @@
-// Package dataflow 请求级数据流：trace_id/三时间戳/租户（串联）。
+// Package dataflow 请求级数据流：trace_id/四时间戳/租户（串联）。
 package dataflow
 
 import (
@@ -15,6 +15,7 @@ const (
 	keyTraceID   = "rocksys:trace_id"
 	keyBeginBiz  = "rocksys:begin_biz"
 	keyDoneBiz   = "rocksys:done_biz"
+	keyDoneAt    = "rocksys:done_at"
 	keyTenantID  = "rocksys:tenant_id"
 	keyTarget    = "rocksys:target"
 	traceIDHdr   = "X-Trace-Id"
@@ -30,6 +31,7 @@ type DataFlow struct {
 	// key: "rocksys:trace_id"  → TraceID
 	// key: "rocksys:begin_biz" → BeginBizAt
 	// key: "rocksys:done_biz"  → DoneBizAt
+	// key: "rocksys:done_at"   → DoneAt（出网时刻：响应写回客户端完成）
 	// key: "rocksys:tenant_id" → TenantID
 	// key: "rocksys:target"    → Target
 }
@@ -78,6 +80,23 @@ func (df *DataFlow) SetDoneBizAt(t time.Time) {
 // DoneBizAt 返回业务结束时间；未记录时返回零值。
 func (df *DataFlow) DoneBizAt() time.Time {
 	v, ok := df.Get(keyDoneBiz)
+	if !ok {
+		return time.Time{}
+	}
+	if t, ok := v.(time.Time); ok {
+		return t
+	}
+	return time.Time{}
+}
+
+// SetDoneAt 记录出网时刻（响应写回客户端完成），仅写一次，重复调用忽略。
+func (df *DataFlow) SetDoneAt(t time.Time) {
+	df.setOnce(keyDoneAt, t)
+}
+
+// DoneAt 返回出网时刻；未记录时返回零值。
+func (df *DataFlow) DoneAt() time.Time {
+	v, ok := df.Get(keyDoneAt)
 	if !ok {
 		return time.Time{}
 	}
@@ -140,18 +159,33 @@ func (df *DataFlow) Get(key string) (any, bool) {
 	return gd.Value, gd.Value != nil
 }
 
-// ShieldMs 防护耗时：BeginBizAt - BeginAt（毫秒）。
+// ShieldMs 入网耗时：BeginBizAt - BeginAt（毫秒），即全部前置中间件执行耗时；
+// 仅当中间链只挂 shield 时等价于防护耗时（存储列名 shield_ms 保持稳定）。
 func (df *DataFlow) ShieldMs() int64 {
 	return ms(df.BeginBizAt().Sub(df.BeginAt()))
 }
 
-// BizMs 业务耗时：DoneBizAt - BeginBizAt（毫秒）。
+// BizMs 转发（业务）耗时：DoneBizAt - BeginBizAt（毫秒）；
+// 含网关↔上游网络往返，内网部署、网络稳定时约等于业务真实处理耗时。
 func (df *DataFlow) BizMs() int64 {
 	return ms(df.DoneBizAt().Sub(df.BeginBizAt()))
 }
 
-// TotalMs 总耗时：DoneBizAt - BeginAt（毫秒）。
+// EgressMs 出网耗时：DoneAt - DoneBizAt（毫秒），即响应写回客户端完成的时刻差；
+// 含客户端网络传输时间，慢客户端会撑大该值。DoneAt 未记录时返回 0。
+func (df *DataFlow) EgressMs() int64 {
+	if df.DoneAt().IsZero() {
+		return 0
+	}
+	return ms(df.DoneAt().Sub(df.DoneBizAt()))
+}
+
+// TotalMs 总耗时（毫秒）。DoneAt 已记录时 = DoneAt - BeginAt（到达→出网，真·总耗时）；
+// 未记录（如未埋点路径、单元测试构造的 DF）时回落旧口径 DoneBizAt - BeginAt，行为不变。
 func (df *DataFlow) TotalMs() int64 {
+	if !df.DoneAt().IsZero() {
+		return ms(df.DoneAt().Sub(df.BeginAt()))
+	}
 	return ms(df.DoneBizAt().Sub(df.BeginAt()))
 }
 

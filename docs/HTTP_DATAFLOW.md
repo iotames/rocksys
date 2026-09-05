@@ -63,7 +63,7 @@ flowchart LR
 > **名词速查**
 > - **DataFlow**：请求级数据载体（"车厢"），贯穿整条转发链，中间件通过它读写共享字段（`internal/dataflow/`）。
 > - **trace_id**：全链路唯一请求 ID（32 位 hex），入口生成，透传上游并回写响应头 `X-Trace-Id`。
-> - **三时间戳**：`begin_at`（请求进入底座）→ `begin_biz_at`（转发前取点）→ `done_biz_at`（收到响应后取点），用于耗时分解（见 2.4）。
+> - **四时间戳**：`begin_at`（请求进入底座）→ `begin_biz_at`（转发前取点）→ `done_biz_at`（收到响应后取点）→ `done_at`（响应写回客户端完成后取点），用于耗时分解（见 2.4）。
 > - **tenant_id**：租户标识，auth 验签 JWT 后写入，obs 按此维度统计。
 > - **Target**：转发目标，dispatch 按路由规则选出的目标后端节点（URL / 权重 / 健康状态）；未命中路由时回退默认 upstream。
 > - **upstream**：默认上游地址（`--upstream` 启动参数），未命中任何路由规则时的兜底转发目标。
@@ -84,6 +84,7 @@ flowchart LR
 | **入口 Adapter.Handler** | `easyserver` 收包后进入的唯一入口；activeCount+1；把 httpsvr.DataFlow 包装为 rocksys DataFlow；**trace_id**：优先读 `X-Trace-Id` 请求头，无则生成 32 位 hex（幂等，全链路唯一） |
 | **Chain.Execute（转发前链）** | 按 **Head → Middle** 顺序逐个调用 `Handle`；任一返回 `false` 即中断（该中间件已写响应），不再转发 |
 | **响应阶段 ResponseHooks** | 仅对 **Tail** 槽位：取注册顺序的**逆序**执行 `OnResponse`（即 result → copy → obs）；实现 `ResponseHook` 的中间件才有此回调 |
+| **写回后 DoneHooks** | 响应写回客户端完成后：Adapter 取 `done_at`（出网时刻），再调用实现 `DoneHook` 的 Tail 钩子 `OnDone`（仅 obs，panic recover 语义同 ResponseHook） |
 | **响应缓冲** | 存在 Tail 响应中间件时，上游响应先写入 `respBufferWriter`（**≤4MB**，超出直写客户端并截断标记），供 Tail 读取/改写；无则流式直写 |
 
 ### 2.2 各挂件对「链」与「数据」的时序影响
@@ -98,7 +99,7 @@ flowchart LR
 | ⑥ | **script**（Lua 策略） | Middle | 逐脚本执行（沙箱 VM 池，超时 100ms）；API 可读请求、写 Target、respond | 脚本 `respond` → 写响应并中断链 | 可**改写 Target / 请求 / 响应**（限网关策略，禁止业务语义） |
 | ⑦ | **result**（L3 结果） | Tail（ResponseHook，逆序第一） | JSON 响应 → 可选脱敏（掩码规则）→ 可选 Envelope 封装 → `WriteFinal` 写回 | 改写响应后置 done，后续 hook 与 Adapter 不再写回 | **改写响应体/头**；非 JSON 原样透传 |
 | ⑧ | **copy**（抄送） | Tail（ResponseHook，逆序第二） | 从请求快照复制 method/URL/Header，异步发送至全部 shadow 后端 | 放行（发送失败仅告警） | 不阻塞主链；**不复制 body**（转发时已被上游消费） |
-| ⑨ | **obs**（观测） | Tail（ResponseHook，逆序最后） | 构造 AccessRecord（含三时间戳/租户/状态码/耗时）→ 异步落盘（file/db）+ 1 分钟滑动窗口指标聚合 | 放行（只读） | 不修改数据；记录 `ShieldMs/BizMs/TotalMs` 等 |
+| ⑨ | **obs**（观测） | Tail（ResponseHook + DoneHook，逆序最后） | OnResponse 保持缓冲注册；OnDone 在写回客户端完成后构造 AccessRecord（含四时间戳/租户/状态码/耗时）→ 异步落盘（file/db）+ 1 分钟滑动窗口指标聚合 | 放行（只读） | 不修改数据；记录 `ShieldMs/BizMs/EgressMs/TotalMs` 等 |
 
 ### 2.3 数据载体 DataFlow 字段
 
@@ -108,21 +109,24 @@ flowchart LR
 | `begin_at` | easyserver 自动记录 | 请求进入底座的时刻 |
 | `begin_biz_at` | Adapter（转发前取点，`SetBeginBizAt`） | 业务开始时刻 |
 | `done_biz_at` | Engine.Forward（收到响应/失败后取点，`SetDoneBizAt`） | 业务结束时刻 |
+| `done_at` | Adapter（响应写回客户端完成后取点，`SetDoneAt`；链中断路径在步骤 4 取点） | 出网时刻（流式转发＝整条流写毕时刻） |
 | `tenant_id` | auth | 租户识别，obs 记录维度 |
 | `target` | dispatch | 转发目标；未写入则由 Adapter 回退默认 upstream |
 | 通用 KV | 任意中间件（`Set/Get`） | 中间结果传递（如 `rocksys:path_params`） |
 
-### 2.4 三时间戳与耗时分解
+### 2.4 四时间戳与耗时分解
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"fontSize": "18px", "fontFamily": "\"Microsoft YaHei\", \"PingFang SC\", \"Noto Sans CJK SC\", sans-serif"}}}%%
 flowchart LR
-    A["begin_at<br/>请求进入底座<br/>（easyserver 自动记录）"] -->|防护阶段 · Head/Middle| B["begin_biz_at<br/>转发前取点<br/>（Adapter.SetBeginBizAt）"]
+    A["begin_at<br/>请求进入底座<br/>（easyserver 自动记录）"] -->|入网阶段 · Head/Middle| B["begin_biz_at<br/>转发前取点<br/>（Adapter.SetBeginBizAt）"]
     B -->|业务阶段 · 上游往返| C["done_biz_at<br/>收到响应后取点<br/>（Engine.SetDoneBizAt）"]
+    C -->|出网阶段 · 写回客户端| D["done_at<br/>写回完成后取点<br/>（Adapter.SetDoneAt）"]
 ```
-- 防护耗时 = `begin_biz_at − begin_at`（Head/Middle 阶段）
-- 业务耗时 = `done_biz_at − begin_biz_at`（上游往返）
-- 总耗时 = `done_biz_at − begin_at`
+- 入网耗时（`shield_ms`）= `begin_biz_at − begin_at`（全部前置中间件；仅中间链只挂 shield 时等价防护耗时）
+- 转发（业务）耗时（`biz_ms`）= `done_biz_at − begin_biz_at`（含网关↔上游网络往返，内网部署、网络稳定时约等于业务真实处理耗时）
+- 出网耗时（`egress_ms`）= `done_at − done_biz_at`（响应写回客户端完成的时刻差；含客户端网络传输时间，慢客户端会撑大该值）
+- 总耗时（`total_ms`）= `done_at − begin_at`（= 三段之和；历史行为旧口径：到转发完成）
 - 精度要求：同进程内单调时钟相减，禁止跨进程绝对时间戳相减。
 
 ### 2.5 转发引擎与降级语义

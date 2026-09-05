@@ -32,8 +32,10 @@
 
   const SORT_OPTIONS = [
     ['time_desc', '时间：最新在前'],
-    ['total_desc', '耗时：从高到低'],
-    ['total_asc', '耗时：从低到高'],
+    ['total_desc', '总耗时：从高到低'],
+    ['total_asc', '总耗时：从低到高'],
+    ['egress_desc', '出网耗时：从高到低'],
+    ['egress_asc', '出网耗时：从低到高'],
   ];
 
   // 双筛选栏（页内私有状态在组件内）：查询条件栏（提交后端）+ 本地筛选排序栏
@@ -92,6 +94,7 @@
       shield_ms: Number(r.shield_ms) || 0,
       biz_ms: Number(r.biz_ms) || 0,
       total_ms: Number(r.total_ms) || 0,
+      egress_ms: Number(r.egress_ms) || 0,
       req_bytes: Number(r.req_bytes) || 0,
       resp_bytes: Number(r.resp_bytes) || 0,
       extras: r, // 保留扩展维度（负载字段如 request_body），详情展开时平铺展示
@@ -176,7 +179,7 @@
   }
 
   // 详情字段：核心字段 + 扩展维度（extra 平铺字段，非核心字段自动列出）
-  const KNOWN = new Set(['time', 'trace_id', 'tenant_id', 'path', 'method', 'client_ip', 'status_code', 'upstream', 'shield_ms', 'biz_ms', 'total_ms', 'req_bytes', 'resp_bytes']);
+  const KNOWN = new Set(['time', 'trace_id', 'tenant_id', 'path', 'method', 'client_ip', 'status_code', 'upstream', 'shield_ms', 'biz_ms', 'total_ms', 'egress_ms', 'req_bytes', 'resp_bytes']);
 
   function logDetailFields(r) {
     const core = [
@@ -188,8 +191,9 @@
       { key: 'method', label: '方法' },
       { key: 'path', label: '路径', pre: true, copy: true },
       { key: 'status_code', label: '状态码' },
-      { key: 'shield_ms', label: '防护耗时', render: row => esc(row.shield_ms) + ' ms' },
-      { key: 'biz_ms', label: '业务/转发耗时', render: row => esc(row.biz_ms) + ' ms' },
+      { key: 'shield_ms', label: '入网耗时', render: row => esc(row.shield_ms) + ' ms' },
+      { key: 'biz_ms', label: '转发（业务）耗时', render: row => esc(row.biz_ms) + ' ms' },
+      { key: 'egress_ms', label: '出网耗时', render: row => esc(row.egress_ms) + ' ms' },
       { key: 'total_ms', label: '总耗时', render: row => esc(row.total_ms) + ' ms' },
       { key: 'upstream', label: '转发目标', pre: true },
       { key: 'req_bytes', label: '请求流量', render: row => esc(fmtBytes(row.req_bytes)) },

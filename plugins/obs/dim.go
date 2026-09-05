@@ -52,6 +52,7 @@ const (
 	DimShieldMs   = "shield_ms"
 	DimBizMs      = "biz_ms"
 	DimTotalMs    = "total_ms"
+	DimEgressMs   = "egress_ms"
 	DimReqBytes   = "req_bytes"
 	DimRespBytes  = "resp_bytes"
 	// 预留负载维度（仅注册，本次不采集，后期启用）：
@@ -69,9 +70,10 @@ var Dims = []DimSpec{
 	{DimClientIP, DimString, DimIndexed, "客户端地址"},
 	{DimStatusCode, DimInt, DimIndexed, "响应状态码"},
 	{DimUpstream, DimString, DimIndexed, "最终转发目标"},
-	{DimShieldMs, DimInt, DimIndexed, "防护耗时（毫秒）"},
-	{DimBizMs, DimInt, DimIndexed, "业务/转发耗时（毫秒）"},
+	{DimShieldMs, DimInt, DimIndexed, "入网耗时（毫秒）"},
+	{DimBizMs, DimInt, DimIndexed, "转发（业务）耗时（毫秒）"},
 	{DimTotalMs, DimInt, DimIndexed, "总耗时（毫秒）"},
+	{DimEgressMs, DimInt, DimIndexed, "出网耗时（毫秒）"},
 	{DimReqBytes, DimInt, DimIndexed, "请求流量（字节）"},
 	{DimRespBytes, DimInt, DimIndexed, "响应流量（字节）"},
 }
@@ -102,9 +104,10 @@ type AccessRecord struct {
 	ClientIP   string    // DimClientIP
 	StatusCode int       // DimStatusCode
 	Upstream   string    // DimUpstream
-	ShieldMs   int64     // DimShieldMs
-	BizMs      int64     // DimBizMs
+	ShieldMs   int64     // DimShieldMs（入网耗时）
+	BizMs      int64     // DimBizMs（转发（业务）耗时）
 	TotalMs    int64     // DimTotalMs
+	EgressMs   int64     // DimEgressMs（出网耗时）
 	ReqBytes   int64     // DimReqBytes
 	RespBytes  int64     // DimRespBytes
 	// Extras 负载维度集合（key 必须先在 Dims 注册为 payload 维度）。
@@ -127,6 +130,7 @@ func (r *AccessRecord) ToFlatMap() map[string]any {
 	m[DimShieldMs] = r.ShieldMs
 	m[DimBizMs] = r.BizMs
 	m[DimTotalMs] = r.TotalMs
+	m[DimEgressMs] = r.EgressMs
 	m[DimReqBytes] = r.ReqBytes
 	m[DimRespBytes] = r.RespBytes
 	for k, v := range r.Extras {

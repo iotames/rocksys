@@ -37,24 +37,9 @@
 //     与 Stop 并发时同样可能互等。最稳妥约定：回调内只做业务；
 //     QueueSize()/WorkerCount() 等只读方法在回调内可安全调用；
 //   - 参数参考：CPU 密集取 CPU 核数×1-2，I/O 密集取 ×2-4，混合型从 ×2 起步并基准测试；
-//     经验公式：最佳 worker 数 ≈ CPU 核数×2 + 阻塞 I/O 操作数；队列容量一般取 worker 数的 10 倍
-//     （原版实测：8 核服务器 24 worker + 240 队列，可支撑超 100 万 QPS、P99 < 10ms，
-//     并比无限 goroutine 堆叠节省约 85% 内存、吞吐提升约 40 倍。参考：
-//     https://mp.weixin.qq.com/s/7WKOxgOzU329a-PoaVmojQ）；
+//     经验公式：最佳 worker 数 ≈ CPU 核数×2 + 阻塞 I/O 操作数；队列容量一般取 worker 数的 10 倍；
 //   - 动态调参建议（结合 QueueSize 与提交失败率监控）：内存占用飙升 → 降低 QueueSize/MinWorkers；
 //     队列经常爆满 / TrySubmit、SubmitWithTimeout 失败率高 → 增加 QueueSize 或 MinWorkers。
-//
-// 本包参考 todo/hotswap/workpool.go 示例改造，修复并加固了原实现的并发缺陷：
-//  1. 队列引用（taskQueue）读写用 RWMutex 保护，杜绝 Submit 与队列切换的竞态；
-//  2. Stop/UpdateWorkers/UpdateQueueSize 用 stateMutex 串行化，防止并发重建；
-//  3. worker 不随重建停止：队列调整仅切换 channel，worker 继续消费，天然规避
-//     "停 worker 窗口 Submit 阻塞持锁 → 重建等待锁" 的死锁；
-//  4. 减少 worker 采用"超员认领退出"：活跃数超过目标数的 worker 处理完手头任务后
-//     经 CAS 认领退出名额（防 over-shrink），目标回弹时回滚名额留下，无需重启、不欠员；
-//     极端交错下可能出现瞬态超员（≤并发预扣数），worker 下一轮自愈收敛；
-//  5. Submit 系列经 stopped 原子标志 + quit 信号双重解除，杜绝向已关闭队列发送（panic）；
-//  6. Submit 系列"瞬时尝试 + 释放锁等待重试"，绝不在持锁期间阻塞等待空位，
-//     规避"队列满 → 写锁等读锁 → worker 读锁被写者阻塞 → 无人消费"的死锁循环。
 package workpool
 
 import (
@@ -68,9 +53,9 @@ import (
 // workerCheckInterval 减少 worker 时，空闲 worker 定期醒来检查目标数的间隔。
 const workerCheckInterval = 100 * time.Millisecond
 
-// submitRetryInterval Submit 系列在队列满时释放锁后重试入队的间隔。
-// 提交者绝不在持锁期间阻塞等待空位：否则与 UpdateQueueSize 的写锁（写者优先，
-// 阻塞 worker 的 RLock 快照）+ worker 不消费队列，会构成死锁循环。
+// submitRetryInterval Submit 系列在队列满时重试入队的间隔。
+// 提交者不在持锁期间阻塞等待空位（瞬时尝试后释放锁再等待重试），
+// 与队列切换的写锁、worker 的读锁互不形成等待环。
 const submitRetryInterval = 500 * time.Microsecond
 
 // Task 任务接口。
@@ -174,9 +159,8 @@ func (wp *WorkerPool) Submit(task Task) {
 		}
 	}()
 	for {
-		// 瞬时尝试：RLock 内先确认未停止再发送。持有 RLock 期间 Stop 无法关闭
-		// taskQueue（其 close 需写锁），故"检查后发送"绝不会向已关闭队列发送
-		// （stop 的初始检查与 RLock 获取之间 Stop 可能已完成 close，必须在此复查）。
+		// 瞬时尝试：持 RLock 期间 Stop 无法关闭 taskQueue（close 需写锁），
+		// 故 RLock 内复查未停止后发送，绝不会向已关闭队列发送。
 		wp.queueMutex.RLock()
 		if wp.stopped.Load() {
 			wp.queueMutex.RUnlock()
@@ -189,8 +173,7 @@ func (wp *WorkerPool) Submit(task Task) {
 		default:
 			wp.queueMutex.RUnlock()
 		}
-		// 队列满：等待后重试。ticker 懒创建：正常路径（一次入队即成功）
-		// 零额外分配，与原版单语句发送的开销相当。
+		// 队列满：等待后重试。ticker 懒创建：正常路径（一次入队即成功）零额外分配。
 		if ticker == nil {
 			ticker = time.NewTicker(submitRetryInterval)
 		}
@@ -222,8 +205,8 @@ func (wp *WorkerPool) TrySubmit(task Task) bool {
 }
 
 // SubmitWithTimeout 带超时提交：timeout 内队列有空位则成功，否则返回 false
-// （timeout<=0 时默认 3 秒）。同样采用"瞬时尝试 + 释放锁等待"模式，不持锁阻塞。
-// 超时失败说明队列持续满载，已影响体验，建议计入监控统计的失败池以便后续优化
+// （timeout<=0 时默认 3 秒）。同样采用"瞬时尝试 + 释放锁等待重试"模式，不持锁阻塞。
+// 超时失败说明队列持续满载，建议计入监控统计以便后续调参
 // （调参建议见包注释"动态调参建议"）。
 func (wp *WorkerPool) SubmitWithTimeout(task Task, timeout time.Duration) bool {
 	if task == nil || wp.stopped.Load() {
@@ -295,7 +278,8 @@ func (wp *WorkerPool) MaxWorkerCount() int {
 	return wp.maxWorkers
 }
 
-// QueueSize 与 QueueCapacity 的组合使用见包注释"动态调参建议"；capacity 为有界队列总容量。
+// QueueCapacity 返回有界队列的总容量（动态调整队列后随之变化）。
+// 与 QueueSize（当前积压长度）组合用于监控队列水位与调参，见包注释"动态调参建议"。
 func (wp *WorkerPool) QueueCapacity() int {
 	wp.queueMutex.RLock()
 	defer wp.queueMutex.RUnlock()

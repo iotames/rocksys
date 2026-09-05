@@ -28,18 +28,23 @@ type Query struct {
 	TraceID     string    // trace_id 模糊匹配
 	StatusGroup string    // 状态分组：状态码首字符 '2'-'5'（如 '4' = 4xx），空串不过滤
 	OnlyError   bool      // 仅异常（status_code >= 400）
-	Sort        string    // 排序："time_desc"（缺省，最新在前）/ "total_desc" / "total_asc"
+	Sort        string    // 排序："time_desc"（缺省，最新在前）/ "total_desc" / "total_asc" / "egress_desc" / "egress_asc"
 	Limit       int       // 返回上限，<=0 用 defaultQueryLimit
 	Offset      int       // 分页偏移，<0 视为 0（服务端分页）
 }
 
-// sortCode 排序参数 → SQL 排序分支码（0=时间倒序 1=耗时降序 2=耗时升序）。
+// sortCode 排序参数 → SQL 排序分支码
+// （0=时间倒序 1=总耗时降序 2=总耗时升序 3=出网耗时降序 4=出网耗时升序）。
 func (q Query) sortCode() int {
 	switch q.Sort {
 	case "total_desc":
 		return 1
 	case "total_asc":
 		return 2
+	case "egress_desc":
+		return 3
+	case "egress_asc":
+		return 4
 	default:
 		return 0
 	}

@@ -1,8 +1,9 @@
 // Package obs L3 可观测性（RockObs）：访问日志 + 指标聚合 + 查询 API。
 //
-// 挂 chain.Tail 槽位并实现 chain.ResponseHook——OnResponse 是获得"请求完成事件"
-// 的唯一通道：Forward 完成后 Adapter 回调，此时 ctx.RespCode/RespHeader/RespBody
-// 与 ctx.DF 三时间戳均已就绪，据此构造 AccessRecord 异步落盘并聚合到 Metrics。
+// 挂 chain.Tail 槽位，实现 chain.ResponseHook 与 chain.DoneHook：
+// OnResponse 保持注册（obs 在 Tail 槽位是缓冲路径的前提，RespBody/RespBytes 依赖缓冲）；
+// OnDone 在响应写回客户端完成后被 Adapter 回调，此时 ctx.DF 四时间戳（含 DoneAt 出网时刻）
+// 均已就绪，据此构造 AccessRecord 异步落盘并聚合到 Metrics。
 //
 // 访问日志统一写数据库（复用统一数据访问层 internal/db 写 access_log 表，
 // 依赖 DB_DRIVER/DB_DSN）；数据访问层未就绪时降级丢弃（不阻断转发）。
@@ -141,10 +142,11 @@ type Obs struct {
 	metrics *Metrics
 }
 
-// 编译期断言：Obs 实现 hotswap.MiddlewareLifecycle 与 chain.ResponseHook。
+// 编译期断言：Obs 实现 hotswap.MiddlewareLifecycle、chain.ResponseHook 与 chain.DoneHook。
 var (
 	_ hotswap.MiddlewareLifecycle = (*Obs)(nil)
 	_ chain.ResponseHook          = (*Obs)(nil)
+	_ chain.DoneHook              = (*Obs)(nil)
 )
 
 // New 创建 obs 挂件并注册自身配置项（§14）。
@@ -179,7 +181,7 @@ func (o *Obs) Name() string { return "obs" }
 // Slot 挂载位置：Tail（响应阶段，配合 ResponseHook）。
 func (o *Obs) Slot() chain.Slot { return chain.Tail }
 
-// Handle 占位：响应处理全在 OnResponse，不参与转发前逻辑（§14）。
+// Handle 占位：响应处理全在 OnDone，不参与转发前逻辑（§14）。
 func (o *Obs) Handle(ctx *chain.Context) (next bool) { return false }
 
 // Start 重建存储后端并确保 access_log 自动清理循环在运行
@@ -231,10 +233,20 @@ func (o *Obs) StorageSize() int64 {
 	return v
 }
 
-// OnResponse 实现 chain.ResponseHook：构造 AccessRecord → 异步落盘 → 聚合指标。
-func (o *Obs) OnResponse(ctx *chain.Context) error {
+// OnResponse 实现 chain.ResponseHook：保持 no-op。
+// obs 必须留在 Tail 响应钩子链上（HasResponseHook(Tail) 为真是缓冲路径 7b 的前提，
+// RespBody/RespBytes 依赖缓冲）；记录落盘迁移至 OnDone（"完成时刻"语义取点）。
+func (o *Obs) OnResponse(ctx *chain.Context) error { return nil }
+
+// OnDone 实现 chain.DoneHook：响应写回客户端完成后构造 AccessRecord → 异步落盘 → 聚合指标。
+// 此时 ctx.DF.DoneAt 已由 Adapter 取点，time 列复用其取值（D7：单一数据源）。
+func (o *Obs) OnDone(ctx *chain.Context) {
+	doneAt := ctx.DF.DoneAt()
+	if doneAt.IsZero() {
+		doneAt = time.Now()
+	}
 	al := &AccessRecord{
-		Time:       time.Now(),
+		Time:       doneAt,
 		TraceID:    ctx.DF.TraceID(),
 		TenantID:   ctx.DF.TenantID(),
 		Path:       ctx.R.URL.Path,
@@ -245,14 +257,15 @@ func (o *Obs) OnResponse(ctx *chain.Context) error {
 		ShieldMs:   ctx.DF.ShieldMs(),
 		BizMs:      ctx.DF.BizMs(),
 		TotalMs:    ctx.DF.TotalMs(),
+		EgressMs:   ctx.DF.EgressMs(),
 		ReqBytes:   ctx.R.ContentLength,
 		RespBytes:  int64(len(ctx.RespBody)),
 	}
 	// 负载维度预留点：后期采集纯文本 POST 请求体等扩展字段时，
 	// 先在 dim.go Dims 注册 payload 维度，再在此写 Extras（存储零改动）。
 	o.sink.Load().(*AsyncStore).Write(al)
-	o.metrics.Add(time.Now(), al.TotalMs, al.StatusCode)
-	return nil
+	// 指标时间源与落库 Time 同源（DoneAt），口径为真·总耗时（含客户端写回时间）。
+	o.metrics.Add(doneAt, al.TotalMs, al.StatusCode)
 }
 
 // buildStore 构造底层存储后端：复用统一数据访问层写 access_log 表；

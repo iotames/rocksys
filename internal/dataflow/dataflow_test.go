@@ -59,6 +59,67 @@ func TestSetDoneBizAtWriteOnce(t *testing.T) {
 	}
 }
 
+// SetDoneAt 仅写一次，重复调用忽略。
+func TestSetDoneAtWriteOnce(t *testing.T) {
+	df := newTestDF(t, nil)
+	if !df.DoneAt().IsZero() {
+		t.Fatalf("未记录时 DoneAt 应为零值: %v", df.DoneAt())
+	}
+	first := time.Now()
+	df.SetDoneAt(first)
+	df.SetDoneAt(first.Add(10 * time.Millisecond))
+
+	if got := df.DoneAt(); !got.Equal(first) {
+		t.Fatalf("DoneAt 被重复调用覆盖: got=%v want=%v", got, first)
+	}
+}
+
+// EgressMs：DoneAt 已记录时 = DoneAt - DoneBizAt；未记录（零值）时返回 0。
+func TestEgressMs(t *testing.T) {
+	df := newTestDF(t, nil)
+	begin := df.BeginAt()
+	df.SetBeginBizAt(begin.Add(5 * time.Millisecond))
+	df.SetDoneBizAt(begin.Add(20 * time.Millisecond))
+
+	if got := df.EgressMs(); got != 0 {
+		t.Fatalf("DoneAt 未记录时 EgressMs 应为 0: got=%d", got)
+	}
+	df.SetDoneAt(begin.Add(35 * time.Millisecond))
+	if got := df.EgressMs(); got != 15 {
+		t.Fatalf("EgressMs = DoneAt-DoneBizAt: got=%d want=15", got)
+	}
+}
+
+// TotalMs 新旧口径：DoneAt 已记录时 = DoneAt - BeginAt；零值回落 DoneBizAt - BeginAt。
+func TestTotalMsSemantics(t *testing.T) {
+	df := newTestDF(t, nil)
+	begin := df.BeginAt()
+	df.SetBeginBizAt(begin.Add(5 * time.Millisecond))
+	df.SetDoneBizAt(begin.Add(20 * time.Millisecond))
+
+	if got := df.TotalMs(); got != 20 {
+		t.Fatalf("DoneAt 零值应回落旧口径: got=%d want=20", got)
+	}
+	df.SetDoneAt(begin.Add(35 * time.Millisecond))
+	if got := df.TotalMs(); got != 35 {
+		t.Fatalf("DoneAt 已记录应为新口径: got=%d want=35", got)
+	}
+}
+
+// 四段拆解守恒：入网 + 转发（业务） + 出网 ≈ 总耗时（取整误差 < 1ms）。
+func TestFourSegmentConservation(t *testing.T) {
+	df := newTestDF(t, nil)
+	begin := df.BeginAt()
+	df.SetBeginBizAt(begin.Add(5 * time.Millisecond))
+	df.SetDoneBizAt(begin.Add(20 * time.Millisecond))
+	df.SetDoneAt(begin.Add(33 * time.Millisecond))
+
+	sum := df.ShieldMs() + df.BizMs() + df.EgressMs()
+	if diff := df.TotalMs() - sum; diff > 1 || diff < -1 {
+		t.Fatalf("入网+业务+出网(%d) 与 TotalMs(%d) 误差过大: %dms", sum, df.TotalMs(), diff)
+	}
+}
+
 // TraceID 为空时自动生成 32 位 hex。
 func TestTraceIDAutoGenerate(t *testing.T) {
 	df := newTestDF(t, nil)

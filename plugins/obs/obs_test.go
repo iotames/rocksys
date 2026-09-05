@@ -75,13 +75,14 @@ func newTestObsDB(t *testing.T) (*Obs, *db.DB) {
 	return o, d
 }
 
-// newCtx 构造携带指定三时间戳的 chain.Context。
+// newCtx 构造携带指定四时间戳的 chain.Context（出网段固定 10ms）。
 func newCtx(r *http.Request, status int, body []byte, shieldMs, bizMs int64) *chain.Context {
 	inner := httpsvr.NewDataFlow()
 	df := dataflow.New(inner, r)
 	begin := df.BeginAt()
 	df.SetBeginBizAt(begin.Add(time.Duration(shieldMs) * time.Millisecond))
 	df.SetDoneBizAt(begin.Add(time.Duration(shieldMs+bizMs) * time.Millisecond))
+	df.SetDoneAt(begin.Add(time.Duration(shieldMs+bizMs+10) * time.Millisecond))
 	df.SetTraceID("trace-001")
 	df.SetTenantID("tenant-1")
 	df.SetTarget("http://upstream:8080")
@@ -112,16 +113,14 @@ func TestNewRegistersConfig(t *testing.T) {
 	}
 }
 
-// OnResponse 后日志写入 access_log 表，平铺维度字段正确。
+// OnDone 后日志写入 access_log 表，平铺维度字段正确（含出网耗时）。
 func TestOnResponseWritesLog(t *testing.T) {
 	o, _ := newTestObs(t)
 
 	r := httptest.NewRequest(http.MethodPost, "/api/test", strings.NewReader("hello"))
 	r.RemoteAddr = "127.0.0.1:1234"
 	ctx := newCtx(r, 200, []byte("ok"), 5, 20)
-	if err := o.OnResponse(ctx); err != nil {
-		t.Fatalf("OnResponse: %v", err)
-	}
+	o.OnDone(ctx)
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
@@ -143,23 +142,21 @@ func TestOnResponseWritesLog(t *testing.T) {
 	if m[DimStatusCode] != int64(200) || m[DimUpstream] != "http://upstream:8080" {
 		t.Errorf("status/upstream = %v/%q", m[DimStatusCode], m[DimUpstream])
 	}
-	if m[DimShieldMs] != int64(5) || m[DimBizMs] != int64(20) || m[DimTotalMs] != int64(25) {
-		t.Errorf("耗时 = %v/%v/%v，期望 5/20/25", m[DimShieldMs], m[DimBizMs], m[DimTotalMs])
+	if m[DimShieldMs] != int64(5) || m[DimBizMs] != int64(20) || m[DimEgressMs] != int64(10) || m[DimTotalMs] != int64(35) {
+		t.Errorf("耗时 = %v/%v/%v/%v，期望 入网5/业务20/出网10/总35", m[DimShieldMs], m[DimBizMs], m[DimEgressMs], m[DimTotalMs])
 	}
 	if m[DimReqBytes] != int64(5) || m[DimRespBytes] != int64(2) {
 		t.Errorf("字节 = %v/%v，期望 5/2", m[DimReqBytes], m[DimRespBytes])
 	}
 }
 
-// 多条请求各写一行记录。
+// 多条请求各写一行记录（OnDone）。
 func TestOnResponseMultipleLines(t *testing.T) {
 	o, _ := newTestObs(t)
 	for i := 0; i < 5; i++ {
 		r := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 		ctx := newCtx(r, 200, []byte("ok"), 1, 2)
-		if err := o.OnResponse(ctx); err != nil {
-			t.Fatal(err)
-		}
+		o.OnDone(ctx)
 	}
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
@@ -220,13 +217,53 @@ func TestMetricsWindowSlides(t *testing.T) {
 }
 
 // Shutdown flush 内存缓冲 → 日志全部落库；重复调用幂等。
+// 出网耗时排序：真库（sqlite）验证 sort_code 3/4（egress_desc/egress_asc）。
+func TestQuerySortByEgress(t *testing.T) {
+	o, _ := newTestObsDB(t)
+	mkReq := func(path string) *http.Request {
+		return httptest.NewRequest(http.MethodGet, path, nil)
+	}
+	// 两条记录出网耗时 5ms / 30ms。
+	writeAt := func(r *http.Request, egress time.Duration) {
+		inner := httpsvr.NewDataFlow()
+		df := dataflow.New(inner, r)
+		begin := df.BeginAt()
+		df.SetBeginBizAt(begin)
+		df.SetDoneBizAt(begin.Add(10 * time.Millisecond))
+		df.SetDoneAt(begin.Add(10*time.Millisecond + egress))
+		o.OnDone(&chain.Context{R: r, DF: df, RespCode: 200, RespBody: []byte("ok")})
+	}
+	writeAt(mkReq("/a"), 5*time.Millisecond)
+	writeAt(mkReq("/b"), 30*time.Millisecond)
+	if err := o.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	base := Query{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour)}
+	desc := base
+	desc.Sort = "egress_desc"
+	rows, err := o.Query(desc)
+	if err != nil {
+		t.Fatalf("Query egress_desc: %v", err)
+	}
+	if len(rows) != 2 || rows[0][DimPath] != "/b" || rows[1][DimPath] != "/a" {
+		t.Fatalf("egress_desc 应 /b(30ms) 在前: %v/%v", rows[0][DimPath], rows[1][DimPath])
+	}
+	asc := base
+	asc.Sort = "egress_asc"
+	rows, err = o.Query(asc)
+	if err != nil {
+		t.Fatalf("Query egress_asc: %v", err)
+	}
+	if len(rows) != 2 || rows[0][DimPath] != "/a" || rows[1][DimPath] != "/b" {
+		t.Fatalf("egress_asc 应 /a(5ms) 在前: %v/%v", rows[0][DimPath], rows[1][DimPath])
+	}
+}
+
 func TestShutdownFlush(t *testing.T) {
 	o, _ := newTestObs(t)
 	for i := 0; i < 3; i++ {
 		r := httptest.NewRequest(http.MethodGet, "/api/test", nil)
-		if err := o.OnResponse(newCtx(r, 200, []byte("ok"), 1, 1)); err != nil {
-			t.Fatal(err)
-		}
+		o.OnDone(newCtx(r, 200, []byte("ok"), 1, 1))
 	}
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
@@ -247,9 +284,7 @@ func TestShutdownFlush(t *testing.T) {
 func TestStopBridgesShutdown(t *testing.T) {
 	o, _ := newTestObs(t)
 	r := httptest.NewRequest(http.MethodGet, "/api/test", nil)
-	if err := o.OnResponse(newCtx(r, 200, []byte("ok"), 1, 1)); err != nil {
-		t.Fatal(err)
-	}
+	o.OnDone(newCtx(r, 200, []byte("ok"), 1, 1))
 	if err := o.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -305,9 +340,7 @@ func TestAdminLogs(t *testing.T) {
 	o, _ := newTestObs(t)
 	r := httptest.NewRequest(http.MethodPost, "/api/test", strings.NewReader("hi"))
 	ctx := newCtx(r, 200, []byte("ok"), 5, 5)
-	if err := o.OnResponse(ctx); err != nil {
-		t.Fatal(err)
-	}
+	o.OnDone(ctx)
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -363,9 +396,7 @@ func TestAdminLogsFilters(t *testing.T) {
 	// 两条不同路径的请求
 	for _, p := range []string{"/api/order/1", "/api/user/list"} {
 		r := httptest.NewRequest(http.MethodGet, p, nil)
-		if err := o.OnResponse(newCtx(r, 200, []byte("ok"), 1, 1)); err != nil {
-			t.Fatal(err)
-		}
+		o.OnDone(newCtx(r, 200, []byte("ok"), 1, 1))
 	}
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
@@ -537,9 +568,7 @@ func TestDiscardStoreWhenDBNil(t *testing.T) {
 		t.Fatalf("dataDB=nil 应降级 discard 后端，实际 %s", got)
 	}
 	r := httptest.NewRequest(http.MethodGet, "/api/one", nil)
-	if err := o.OnResponse(newCtx(r, 200, []byte("ok"), 1, 1)); err != nil {
-		t.Fatalf("OnResponse 不应报错: %v", err)
-	}
+	o.OnDone(newCtx(r, 200, []byte("ok"), 1, 1))
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
@@ -557,9 +586,7 @@ func TestAdminStorage(t *testing.T) {
 	o, _ := newTestObs(t)
 	// 写一条日志
 	r := httptest.NewRequest(http.MethodGet, "/api/test", nil)
-	if err := o.OnResponse(newCtx(r, 200, []byte("ok"), 1, 1)); err != nil {
-		t.Fatal(err)
-	}
+	o.OnDone(newCtx(r, 200, []byte("ok"), 1, 1))
 	if err := o.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}

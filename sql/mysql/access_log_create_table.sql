@@ -11,9 +11,10 @@ CREATE TABLE IF NOT EXISTS {table} (
     client_ip   VARCHAR(64) NOT NULL DEFAULT '' COMMENT '客户端 IP（已按 X-Forwarded-For 取真实地址）',
     status_code INT NOT NULL COMMENT '上游返回的响应状态码',
     upstream    VARCHAR(255) NOT NULL DEFAULT '' COMMENT '实际转发的上游地址',
-    shield_ms   BIGINT NOT NULL DEFAULT 0 COMMENT 'L1 防护（shield）环节耗时（ms）',
-    biz_ms      BIGINT NOT NULL DEFAULT 0 COMMENT '业务（上游处理）耗时（ms）',
-    total_ms    BIGINT NOT NULL DEFAULT 0 COMMENT '请求总耗时（ms）',
+    shield_ms   BIGINT NOT NULL DEFAULT 0 COMMENT '入网耗时＝请求到达→转发前（全部前置中间件）耗时（ms）；仅中间链只挂 shield 时等价防护耗时',
+    biz_ms      BIGINT NOT NULL DEFAULT 0 COMMENT '转发（业务）耗时（ms；含网关↔上游网络往返，内网部署、网络稳定时约等于业务真实处理耗时）',
+    total_ms    BIGINT NOT NULL DEFAULT 0 COMMENT '到达→出网总耗时（ms；历史行为旧口径：到转发完成）',
+    egress_ms   BIGINT NOT NULL DEFAULT 0 COMMENT '出网耗时（ms）＝响应写回客户端完成 − 转发完成；历史行为 0',
     req_bytes   BIGINT NOT NULL DEFAULT 0 COMMENT '请求体字节数',
     resp_bytes  BIGINT NOT NULL DEFAULT 0 COMMENT '响应体字节数',
     extra       TEXT NOT NULL COMMENT '扩展字段（JSON，向前兼容）'

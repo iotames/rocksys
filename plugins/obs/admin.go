@@ -58,7 +58,7 @@ func (h *AdminHandler) Metrics(w http.ResponseWriter, r *http.Request) {
 //   - trace_id：链路标识模糊匹配（API 层保留，WebUI 已移除该输入框）；
 //   - status_group：状态分组，状态码首字符 '2'-'5'（如 '4' = 4xx）；
 //   - only_error：'1' = 仅异常（status_code >= 400）；
-//   - sort：排序，"time_desc"（缺省，最新在前）/ "total_desc" / "total_asc"；
+//   - sort：排序，"time_desc"（缺省，最新在前）/ "total_desc" / "total_asc" / "egress_desc" / "egress_asc"；
 //   - limit：单页条数（缺省 2000，最大 50000）；
 //   - offset：分页偏移（缺省 0）。
 //
@@ -101,9 +101,9 @@ func (h *AdminHandler) Logs(w http.ResponseWriter, r *http.Request) {
 	onlyError := q.Get("only_error") == "1"
 	sort := q.Get("sort")
 	switch sort {
-	case "", "time_desc", "total_desc", "total_asc":
+	case "", "time_desc", "total_desc", "total_asc", "egress_desc", "egress_asc":
 	default:
-		http.Error(w, "sort 应为 time_desc / total_desc / total_asc", http.StatusBadRequest)
+		http.Error(w, "sort 应为 time_desc / total_desc / total_asc / egress_desc / egress_asc", http.StatusBadRequest)
 		return
 	}
 	lq := Query{

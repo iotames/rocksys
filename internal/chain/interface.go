@@ -48,3 +48,11 @@ type ResponseHook interface {
 	// 返回 err 仅记录告警，不中断后续 hook。
 	OnResponse(ctx *Context) error
 }
+
+// DoneHook 可选接口：响应写回客户端完成后的回调（此时 ctx.DF.DoneAt 已取点）。
+// 实现者必须同时实现 ResponseHook 且挂 Tail 槽位；Adapter 在写回完成后仅调用一次。
+// panic recover 语义与 ResponseHook 相同（log.Error + 继续后续 hook）。
+type DoneHook interface {
+	// OnDone 响应写回客户端之后执行（仅一次）；适合"完成时刻"语义的收尾动作（如访问日志落盘）。
+	OnDone(ctx *Context)
+}

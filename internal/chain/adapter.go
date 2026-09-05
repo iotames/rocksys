@@ -66,8 +66,9 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 	// 3. 执行转发前链（Head → Middle；Tail 不在本阶段执行）
 	shouldForward := a.chain.Execute(ctx)
 
-	// 4. 链中断 → 中间件已自行写入响应，直接返回
+	// 4. 链中断 → 中间件已自行写入响应，取 DoneAt（出网时刻）后返回
 	if !shouldForward {
+		df.SetDoneAt(time.Now())
 		return false
 	}
 
@@ -126,6 +127,25 @@ func (a *Adapter) Handler(w http.ResponseWriter, r *http.Request, innerDF *https
 		copyHeader(w.Header(), ctx.RespHeader)
 		w.WriteHeader(ctx.RespCode)
 		w.Write(ctx.RespBody)
+	}
+
+	// 9b. 写回客户端完成 → 取 DoneAt（出网时刻），再调用实现 DoneHook 的 Tail 钩子。
+	//     语义注记：7a/7c 路径写回可横跨长时段（流式转发 DoneAt＝整条流写毕时刻），
+	//     被拦截路径不产生 access_log，链中断路径已在步骤 4 取点。
+	df.SetDoneAt(time.Now())
+	for _, h := range a.chain.ResponseHooks(Tail) {
+		dh, ok := h.(DoneHook)
+		if !ok {
+			continue
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("chain: done hook panic recovered", "name", hookName(h), "panic", r, "stack", string(debug.Stack()))
+				}
+			}()
+			dh.OnDone(ctx)
+		}()
 	}
 
 	// 10. 始终返回 false — 转发已完成，easyserver 后续链不再执行
