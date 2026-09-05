@@ -537,8 +537,8 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 | 级别 | 差异类型 | 处理 |
 |------|----------|------|
 | A | 缺表 | 自动：生成建表脚本原文 + 配套索引脚本（`{table}` 替换后） |
-| B | 缺普通列 | 自动：生成 `ALTER TABLE … ADD COLUMN`（列定义取脚本原文，天然方言正确） |
-| C | 缺 PK/UNIQUE/自增列 | 需人工：不生成（SQLite 不支持 ADD 带 PK/UNIQUE 的列），`note` 说明原因与建议 |
+| B | 缺普通列 | 自动：生成 `ALTER TABLE … ADD COLUMN`（列定义取脚本原文，天然方言正确）；NOT NULL 且无 DEFAULT 的列按类型补安全默认值（数值列 `DEFAULT 0`、字符串列 `DEFAULT ''`——裸 ADD 在有数据的表上 SQLite 报错、PG 回填 NULL 违反非空） |
+| C | 缺 PK/UNIQUE/自增列，或 NOT NULL 无默认值的时间列 | 需人工：不生成（SQLite 不支持 ADD 带 PK/UNIQUE 的列；时间列无跨方言安全字面量），`note` 说明原因与建议 |
 | D | 缺索引 | 自动：仅生成缺失索引的单条 CREATE INDEX（不整份重放） |
 | E | 类型/非空/默认值不一致 | 仅提示：不生成（SQLite 改列需重建表，跨方言不可靠），展示期望 vs 实际值 |
 | F | 库中多余列/表 | 仅提示：不生成 DROP（危险，可能是历史遗留或有数据） |

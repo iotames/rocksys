@@ -118,10 +118,14 @@ func DiffTable(in DiffInput) []DiffItem {
 				items = append(items, DiffItem{Level: "C", Auto: false, Table: in.Table, Object: e.Name,
 					Expected: e.Raw, Actual: "列不存在",
 					Note: "缺主键/唯一/自增列（含表级约束列）：SQLite 不支持 ADD 相关约束、跨方言不可靠，需人工处理（建议重建表迁移数据）"})
-			} else {
+			} else if raw, ok := bAddableRaw(e); ok {
 				items = append(items, DiffItem{Level: "B", Auto: true, Table: in.Table, Object: e.Name,
-					Expected: e.Raw, Actual: "列不存在",
+					Expected: raw, Actual: "列不存在",
 					Note: "缺普通列：可自动 ADD COLUMN（取脚本列定义原文，方言天然正确）"})
+			} else {
+				items = append(items, DiffItem{Level: "C", Auto: false, Table: in.Table, Object: e.Name,
+					Expected: e.Raw, Actual: "列不存在",
+					Note: "缺 NOT NULL 无默认值的时间列：ADD COLUMN 在有数据的表上不可靠（SQLite 报错、PG 回填 NULL 违反非空、MySQL 隐式回填零值），且时间列无跨方言安全字面量，需人工迁移（建议重建表）"})
 			}
 			continue
 		}
@@ -176,6 +180,28 @@ func DiffTable(in DiffInput) []DiffItem {
 		}
 	}
 	return items
+}
+
+// bAddableRaw B 级补列的 ADD COLUMN 列定义：对 NOT NULL 且无 DEFAULT 的列，
+// 裸 ADD COLUMN 在有数据的表上不可靠（SQLite 直接报错、PG 回填 NULL 违反非空、
+// MySQL 隐式回填零值），须按列类型补安全默认值：数值列 0、字符串列 ''；
+// 时间列无跨方言安全字面量 → 返回 false（降 C 级人工处理）。其余列原样返回。
+func bAddableRaw(c ColumnDef) (string, bool) {
+	if !c.NotNull || c.Default != nil {
+		return c.Raw, true
+	}
+	t := normType(c.Type)
+	if strings.Contains(t, "date") || strings.Contains(t, "time") {
+		return "", false
+	}
+	switch {
+	case strings.Contains(t, "int"), strings.Contains(t, "real"), strings.Contains(t, "double"),
+		strings.Contains(t, "decimal"), strings.Contains(t, "numeric"):
+		return c.Raw + " DEFAULT 0", true
+	case t == "text" || strings.HasPrefix(t, "varchar") || strings.HasPrefix(t, "char"):
+		return c.Raw + " DEFAULT ''", true
+	}
+	return "", false
 }
 
 // colSummary 期望列摘要（E 级展示）。

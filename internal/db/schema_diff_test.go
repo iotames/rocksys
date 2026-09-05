@@ -228,6 +228,43 @@ func TestDiffTableTableLevelKeyColumns(t *testing.T) {
 	}
 }
 
+// TestDiffTableBLevelNotNullDefaults B 级补列默认值矩阵：NOT NULL 无 DEFAULT 的列
+// 裸 ADD COLUMN 在有数据的表上不可靠（SQLite 报错/PG 违反非空），须按类型补默认值；
+// 时间列无跨方言安全字面量 → 降 C 级人工。
+func TestDiffTableBLevelNotNullDefaults(t *testing.T) {
+	ddl := `CREATE TABLE {table} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  n INTEGER NOT NULL,
+  s TEXT NOT NULL,
+  t DATETIME NOT NULL,
+  opt TEXT
+)`
+	cols := []CatalogColumn{{Name: "id", TypeFull: "INTEGER", Nullable: "NO", Extra: "auto_increment"}}
+	items := DiffTable(DiffInput{Table: "t", ExpectedDDL: ddl, ActualCols: cols})
+
+	byObj := map[string]DiffItem{}
+	for _, it := range items {
+		byObj[it.Object] = it
+	}
+
+	// 数值列：B 级自动补 DEFAULT 0
+	if it, ok := byObj["n"]; !ok || it.Level != "B" || !it.Auto || !strings.Contains(it.Expected, "DEFAULT 0") {
+		t.Errorf("NOT NULL 无默认值数值列应 B 级补 DEFAULT 0，got: %+v", byObj["n"])
+	}
+	// 字符串列：B 级自动补 DEFAULT ''
+	if it, ok := byObj["s"]; !ok || it.Level != "B" || !it.Auto || !strings.Contains(it.Expected, `DEFAULT ''`) {
+		t.Errorf("NOT NULL 无默认值字符串列应 B 级补 DEFAULT ''，got: %+v", byObj["s"])
+	}
+	// 时间列：降 C 级人工
+	if it, ok := byObj["t"]; !ok || it.Level != "C" || it.Auto {
+		t.Errorf("NOT NULL 无默认值时间列应降 C 级人工，got: %+v", byObj["t"])
+	}
+	// 可空列：不受影响，仍 B 级原文
+	if it, ok := byObj["opt"]; !ok || it.Level != "B" || !it.Auto || strings.Contains(it.Expected, "DEFAULT") {
+		t.Errorf("可空列应 B 级列定义原文（不加 DEFAULT），got: %+v", byObj["opt"])
+	}
+}
+
 // TestCatalogSQLite SQLite 内存库实测 catalog 读取与真实脚本比对（零差异闭环）。
 func TestCatalogSQLite(t *testing.T) {
 	d, err := Open("sqlite", ":memory:")
