@@ -175,7 +175,7 @@
     host.innerHTML =
       Rock.comp.head.headHTML({
         title: 'WAF 防护',
-        desc: '动态 IP 黑白名单：黑名单 = DB 表 ∪ 外挂 rules/ip_blacklist.txt；白名单 = DB 表 ∪ .env SHIELD_IP_WHITELIST；白名单优先、变更即时生效',
+        desc: '动态 IP 黑白名单：黑名单 = DB 表 ∪ 外挂 rules/ip_blacklist.txt；白名单 = DB 表；白名单优先、变更即时生效',
         actions: '<button class="btn btn-sm" data-act="waf-iplist-reload">⟳ 刷新</button>',
       }) +
       pageCtx.tabsHTML() +
@@ -189,7 +189,7 @@
       '<div class="card"><div class="card-title" data-tip="' + esc(isBlack()
         ? '数据来自数据库 ip_blacklist 表；外挂 rules/ip_blacklist.txt 仅参与拦截判定、不在此展示，可经「从文件同步」入库统一管理'
         : '数据来自数据库 ip_blacklist 表（白名单侧）') + '">' + (isBlack() ? '黑名单条目（DB表）' : '白名单条目（DB表）') +
-      ' <span class="card-sub">' + (isBlack() ? 'DB 表 ∪ 外挂 rules/ip_blacklist.txt（.env 已不再支持黑名单）' : 'DB 表 ∪ .env SHIELD_IP_WHITELIST') + '</span></div>' +
+      ' <span class="card-sub">' + (isBlack() ? 'DB 表 ∪ 外挂 rules/ip_blacklist.txt（.env 已不再支持黑名单）' : '仅 DB 表（.env 已不再支持白名单）') + '</span></div>' +
       ipBar.html() +
       '<div class="log-toolbar" style="margin-top:-6px">' +
       '<button class="btn btn-sm btn-primary" data-act="waf-iplist-query">查询</button>' +

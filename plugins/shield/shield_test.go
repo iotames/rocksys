@@ -75,7 +75,7 @@ func newCtx(path, remoteAddr, ua string) (*chain.Context, *httptest.ResponseReco
 func TestNewRegistersConfig(t *testing.T) {
 	s, f := newTestShield(t)
 	for _, n := range []string{
-		"SHIELD_ENABLED", "SHIELD_IP_WHITELIST",
+		"SHIELD_ENABLED",
 		"SHIELD_RATE_LIMIT_RPS", "SHIELD_RATE_LIMIT_BURST", "SHIELD_RATE_LIMIT_BY",
 		"SHIELD_WAF_SQL_INJECTION", "SHIELD_WAF_XSS", "SHIELD_WAF_PATH_TRAVERSAL",
 		"SHIELD_WAF_RISK_PATH", "SHIELD_WAF_CRAWLER_UA", "SHIELD_WAF_RISK_PATHS",
@@ -118,15 +118,21 @@ func TestBlacklistIP(t *testing.T) {
 	}
 }
 
-// 白名单 IP 放行，且放行时不写响应。
+// 白名单 IP 放行，且放行时不写响应（白名单仅来自 DB 表）。
 func TestWhitelistPasses(t *testing.T) {
 	s, _ := newTestShield(t)
 	writeExternalRule(t, ruleFileIPBlacklist, "192.168.1.100\n")
+	white, _ := newFileListStore(t, false)
+	now := testNow()
+	if _, err := white.Insert("127.0.0.1", "本机白名单", 0, nil, now); err != nil {
+		t.Fatal(err)
+	}
 	s.enabled = true
-	s.ipWhitelist = "127.0.0.1"
+	s.SetIPListStores(nil, white)
 	if err := s.Start(nil); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { s.Stop() })
 	ctx, w := newCtx("/api/test", "127.0.0.1:9999", "")
 	if next := s.Handle(ctx); !next {
 		t.Fatal("白名单 IP 应放行（Handle 返回 true）")

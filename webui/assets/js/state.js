@@ -131,7 +131,7 @@
   // 长文本配置项（编辑态渲染多行 textarea）：规则 / 目标列表 / DSN / 逗号分隔清单
   const TEXTAREA_KEYS = [
     'DISPATCH_RULES', 'REWRITE_RULES', 'COPY_TARGETS', 'DB_DSN',
-    'RESULT_MASK_FIELDS', 'SHIELD_IP_WHITELIST', 'SHIELD_WAF_RISK_PATHS', 'SHIELD_ALLOW_METHODS',
+    'RESULT_MASK_FIELDS', 'SHIELD_WAF_RISK_PATHS', 'SHIELD_ALLOW_METHODS',
   ];
   function isTextareaKey(k) { return TEXTAREA_KEYS.indexOf(k) >= 0; }
 

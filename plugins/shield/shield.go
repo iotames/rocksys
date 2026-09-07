@@ -39,9 +39,8 @@ type Shield struct {
 	// 配置项挂件字段（构造时由 cfgMgr.Register 注册，Start 时读取重建快照）。
 	// ★ conf.Manager.Register 仅支持 *string/*int/*bool，黑白名单用字符串逗号分隔承载。
 	// ★ SHIELD_ENABLED 是挂载开关（配置中心唯一真源）：挂载即拦截，内部不再读取本字段。
-	enabled     bool
-	ipWhitelist string // 逗号分隔，支持精确 IP 与 CIDR
-	rps         int    // 0 = 不限流
+	enabled bool
+	rps     int // 0 = 不限流
 	burst       int
 	limitBy     string // 限流维度，当前仅支持 "ip"
 
@@ -70,11 +69,11 @@ type Shield struct {
 	recorder *EventRecorder
 
 	// 动态 IP 黑白名单（DB 持久化，WAF 方案 §5.3）：
-	// ipBlackDB/ipWhiteDB 数据访问层（setter 注入，nil = DB 未配置，回落仅外挂/.env）；
+	// ipBlackDB/ipWhiteDB 数据访问层（setter 注入，nil = DB 未配置，黑名单回落仅外挂文件、白名单为空）；
 	// dbHits 黑名单命中计数攒批（id → 原子增量，TTL 循环定时 flush 落库，热路径零 DB 查询）；
 	// TTL 兜底刷新（默认 60s）：覆盖管理面变更通知缺失的异常场景，顺带 flush hit_count。
 	ipBlackDB ipListStore // DB 黑名单数据访问（nil = 未注入，回落仅外挂文件）
-	ipWhiteDB ipListStore // DB 白名单数据访问（nil = 未注入，回落仅 .env 配置）
+	ipWhiteDB ipListStore // DB 白名单数据访问（nil = 未注入，白名单为空）
 	dbHits    sync.Map    // int64 条目 id → *atomic.Int64 增量
 	ttlMu     sync.Mutex
 	ttlStopCh chan struct{}
@@ -275,7 +274,6 @@ func New(cfgMgr conf.Manager, hubs ...*hotswap.ScriptHub) (*Shield, error) {
 		title  string
 	}{
 		{&s.enabled, "SHIELD_ENABLED", "false", "是否启用 L1 防护（false=不挂载；true=挂载并拦截）"},
-		{&s.ipWhitelist, "SHIELD_IP_WHITELIST", "", "IP 白名单（逗号分隔，支持 CIDR）"},
 		{&s.rps, "SHIELD_RATE_LIMIT_RPS", "0", "限流速率（每秒请求数，0=不限流）"},
 		{&s.burst, "SHIELD_RATE_LIMIT_BURST", "0", "限流突发容量"},
 		{&s.limitBy, "SHIELD_RATE_LIMIT_BY", "ip", "限流维度（当前仅支持 ip）"},
@@ -383,10 +381,10 @@ func (s *Shield) Start(cfg any) error {
 			}
 		}
 	}
-	whiteList := splitList(s.ipWhitelist)
+	var whiteList []string
 	if s.ipWhiteDB != nil {
 		if actives, err := s.ipWhiteDB.QueryActive(time.Now()); err != nil {
-			log.Warn("shield: 加载 DB 白名单失败，仅 .env 配置生效", "err", err.Error())
+			log.Warn("shield: 加载 DB 白名单失败，本次快照白名单为空", "err", err.Error())
 		} else {
 			for _, a := range actives {
 				whiteList = append(whiteList, a.IP)
@@ -396,7 +394,7 @@ func (s *Shield) Start(cfg any) error {
 
 	snap := &shieldSnapshot{
 		ipBlacklist: newIPSet(blackList), // 外挂 rules/ip_blacklist.txt ∪ DB 表（精确 IP/CIDR）
-		ipWhitelist: newIPSet(whiteList), // .env SHIELD_IP_WHITELIST ∪ DB 表
+		ipWhitelist: newIPSet(whiteList), // DB 表白名单条目（精确 IP/CIDR）
 		dbBlackIDs:  dbBlackIDs,
 		pathRules:   rules,
 		limitBy:     limitBy,
@@ -584,8 +582,8 @@ func (s *Shield) InBlacklist(ip string) bool {
 	return snap != nil && snap.ipBlacklist.contains(ip)
 }
 
-// InWhitelist IP 是否命中当前生效白名单（.env SHIELD_IP_WHITELIST ∪ DB 活跃条目，
-// 支持精确 IP 与 CIDR 网段匹配，与 Handle 放行判定同源）。
+// InWhitelist IP 是否命中当前生效白名单（DB 活跃条目，支持精确 IP 与 CIDR 网段匹配，
+// 与 Handle 放行判定同源）。
 // 供自动拉黑引擎入库前过滤白名单 IP 用（IP_BLACKLIST_PLAN §3.4）。
 func (s *Shield) InWhitelist(ip string) bool {
 	snap := s.current()

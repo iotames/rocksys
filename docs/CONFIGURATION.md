@@ -49,7 +49,7 @@ TRUSTED_PROXIES_FILE = trusted_proxies.txt
 # ===== 防护 shield（L1）=====
 SHIELD_ENABLED = false           # 父开关：false=不挂载（默认）；true=挂载并拦截
 # IP 黑名单（动态）：DB 表 ip_blacklist（管理面录入/导入）∪ 外挂 HOT_SCRIPTS_DIR/rules/ip_blacklist.txt，取并集；热路径只读内存快照，TTL 60s 兑底刷新；不再走 .env 配置
-SHIELD_IP_WHITELIST =
+# IP 白名单（动态）：仅 DB 表 ip_whitelist（管理面录入/导入）；白名单优先于黑名单；不再走 .env 配置（历史 SHIELD_IP_WHITELIST 已移除，存量 .env 条目请迁入 DB 表）
 SHIELD_RATE_LIMIT_RPS = 100
 SHIELD_RATE_LIMIT_BURST = 50
 SHIELD_ALLOW_METHODS = GET,POST,PUT,DELETE

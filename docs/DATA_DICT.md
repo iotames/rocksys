@@ -40,7 +40,7 @@
 | `admin_users` | 管理接口超级管理员表 | adminapi | 管理后台登录鉴权用户存储（密码不存明文） | `sql/{sqlite,postgres,mysql}/admin_users_create_table.sql` |
 | `outbox` | mq 异步消息 outbox 表 | mq | 本地先落库、后台轮询投递（outbox 模式）；`MQ_ENABLED=true` 时装配 | `sql/{sqlite,postgres,mysql}/mq_create_table.sql` |
 | `ip_blacklist` | 动态 IP 黑名单表 | shield | 管理面录入/批量导入的拉黑条目（与外挂 `rules/ip_blacklist.txt` 取并集；热路径只读内存快照） | `sql/{sqlite,postgres,mysql}/ip_blacklist_create_table.sql` |
-| `ip_whitelist` | 动态 IP 白名单表 | shield | 管理面录入的白名单条目（与 `.env` 配置 `SHIELD_IP_WHITELIST` 取并集；白名单优先于黑名单） | `sql/{sqlite,postgres,mysql}/ip_whitelist_create_table.sql` |
+| `ip_whitelist` | 动态 IP 白名单表 | shield | 管理面录入的白名单条目（白名单唯一来源；白名单优先于黑名单） | `sql/{sqlite,postgres,mysql}/ip_whitelist_create_table.sql` |
 | `attack_archive` | 攻击证据归档表 | shield | 攻击证据归档（本期仅建表，归档逻辑见 WAF 方案 §8） | `sql/{sqlite,postgres,mysql}/attack_archive_create_table.sql` |
 | `sql_exec_log` | SQL 执行审计表 | adminapi | 管理端「执行SQL」每条语句执行留痕（审计追溯，不清理） | `sql/{sqlite,postgres,mysql}/sql_exec_log_create_table.sql` |
 
@@ -157,7 +157,7 @@
 
 ### 2.6 ip_whitelist — 动态 IP 白名单表（6 列）
 
-**说明**：管理面录入的动态白名单（持久化权威），与 `.env` 配置 `SHIELD_IP_WHITELIST` 取**并集**；
+**说明**：管理面录入的动态白名单（持久化权威，白名单唯一来源，不再与 `.env` 配置取并集）；
 请求热路径只读内存快照；**白名单优先于黑名单**（命中直接放行短路）。软删除语义同 2.5。
 
 | 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |

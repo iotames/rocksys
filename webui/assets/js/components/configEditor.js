@@ -68,12 +68,6 @@
       case 'ROCKSYS_UPSTREAM':
         if (!/^https?:\/\/\S+$/i.test(v)) return '需为 http(s):// 开头的后端地址（如 http://127.0.0.1:9000）';
         break;
-      case 'SHIELD_IP_WHITELIST': {
-        if (!v) break; // 空 = 不限，合法
-        const bad = v.split(',').map(s => s.trim()).filter(s => s && !Rock.util.validIPOrCIDR(s));
-        if (bad.length) return '存在非法 IP/CIDR：' + bad.slice(0, 3).join('、');
-        break;
-      }
       case 'DB_PORT':
         if (!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 65535) return '端口需为 1-65535 的整数';
         break;

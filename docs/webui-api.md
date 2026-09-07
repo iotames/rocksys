@@ -183,11 +183,11 @@
 ```json
 [
   {
-    "key": "SHIELD_IP_WHITELIST",
-    "title": "白名单 IP",
-    "defval": "",
-    "current": "10.0.0.5,192.168.1.0/24",
-    "example": "10.0.0.5,192.168.1.0/24"
+    "key": "SHIELD_RATE_LIMIT_RPS",
+    "title": "限流速率（每秒请求数）",
+    "defval": "0",
+    "current": "100",
+    "example": "100"
   }
 ]
 ```
