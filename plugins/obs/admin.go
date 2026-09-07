@@ -120,13 +120,15 @@ func (h *AdminHandler) Logs(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.obs.Query(lq)
 	if err != nil {
-		log.Error("obs: logs 查询失败", "err", err.Error())
+		log.Error("obs: logs 查询失败", "from", lq.From, "to", lq.To, "status_group", lq.StatusGroup,
+			"limit", lq.Limit, "offset", lq.Offset, "err", err.Error())
 		http.Error(w, "logs 查询失败", http.StatusInternalServerError)
 		return
 	}
 	total, err := h.obs.Count(lq)
 	if err != nil {
-		log.Error("obs: logs 计数失败", "err", err.Error())
+		log.Error("obs: logs 计数失败", "from", lq.From, "to", lq.To, "status_group", lq.StatusGroup,
+			"limit", lq.Limit, "offset", lq.Offset, "err", err.Error())
 		http.Error(w, "logs 查询失败", http.StatusInternalServerError)
 		return
 	}
@@ -175,7 +177,7 @@ func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := h.obs.PruneLog(body.Days)
 	if err != nil {
-		log.Error("obs: prune 失败", "err", err.Error())
+		log.Error("obs: prune 失败", "days", body.Days, "err", err.Error())
 		http.Error(w, "prune 失败", http.StatusInternalServerError)
 		return
 	}

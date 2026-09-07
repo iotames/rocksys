@@ -147,13 +147,15 @@ func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := rec.QueryEvents(eq)
 	if err != nil {
-		log.Error("shield: events 查询失败", "err", err.Error())
+		log.Error("shield: events 查询失败", "from", eq.From, "to", eq.To, "block_type", eq.BlockType,
+			"limit", eq.Limit, "offset", eq.Offset, "err", err.Error())
 		http.Error(w, "events 查询失败", http.StatusInternalServerError)
 		return
 	}
 	total, err := rec.CountEvents(eq)
 	if err != nil {
-		log.Error("shield: events 计数失败", "err", err.Error())
+		log.Error("shield: events 计数失败", "from", eq.From, "to", eq.To, "block_type", eq.BlockType,
+			"limit", eq.Limit, "offset", eq.Offset, "err", err.Error())
 		http.Error(w, "events 查询失败", http.StatusInternalServerError)
 		return
 	}
@@ -209,13 +211,13 @@ func (h *AdminHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	from := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	daily, err := rec.StatsDaily(from)
 	if err != nil {
-		log.Error("shield: stats 查询失败", "err", err.Error())
+		log.Error("shield: stats 查询失败", "stat", "daily", "days", days, "err", err.Error())
 		http.Error(w, "stats 查询失败", http.StatusInternalServerError)
 		return
 	}
 	topIPs, err := rec.StatsTopIP(from, top)
 	if err != nil {
-		log.Error("shield: stats 查询失败", "err", err.Error())
+		log.Error("shield: stats 查询失败", "stat", "top_ips", "days", days, "top", top, "err", err.Error())
 		http.Error(w, "stats 查询失败", http.StatusInternalServerError)
 		return
 	}
@@ -274,7 +276,7 @@ func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := rec.Prune(body.Days)
 	if err != nil {
-		log.Error("shield: prune 失败", "err", err.Error())
+		log.Error("shield: prune 失败", "days", body.Days, "err", err.Error())
 		http.Error(w, "prune 失败", http.StatusInternalServerError)
 		return
 	}
@@ -674,7 +676,7 @@ func (h *AdminHandler) Jail(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, total, err := h.shield.Jail(limit)
 	if err != nil {
-		log.Error("shield: 小黑屋查询失败", "err", err.Error())
+		log.Error("shield: 小黑屋查询失败", "limit", limit, "err", err.Error())
 		writeJSONErr(w, http.StatusInternalServerError, "小黑屋查询失败（数据库异常），请稍后重试；若持续出现请检查数据库状态或查看服务日志")
 		return
 	}

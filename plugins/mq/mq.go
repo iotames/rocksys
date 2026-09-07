@@ -322,7 +322,7 @@ func (d *PollingDeliverer) Stop() error {
 func (d *PollingDeliverer) pollOnce() {
 	msgs, err := d.store.FetchPending(defaultFetchLimit)
 	if err != nil {
-		log.Error("mq: 轮询获取待投递消息失败", "error", err.Error())
+		log.Error("mq: 轮询获取待投递消息失败", "err", err.Error())
 		return
 	}
 	for _, m := range msgs {

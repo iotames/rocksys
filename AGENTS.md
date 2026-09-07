@@ -75,7 +75,7 @@ go vet ./...
 
 ## 调试/测试必读
 - `bin/hotscripts/sql/` 是发布外挂脚本（外挂优先、内嵌兜底），改 `sql/` 后必须同步刷新（`cp -r sql/* bin/hotscripts/sql/`），否则服务端用的还是旧脚本。
-- easyconf 日志模板只渲染 msg 不输出 attr，排查错误细节时可临时用探针程序直查。
+- easyserver 日志默认模板渲染 time/level/msg 后，调用方全部 attr 以 ` key=value` 通用透传落盘（err 等错误细节必留痕）；排查线上错误看日志行尾 attr 即可。
 - API 断言通过 ≠ UI 可用；后续涉及前端页面改动必须开浏览器看渲染效果。
 
 ## Testing Guidelines

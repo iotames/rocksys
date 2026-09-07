@@ -56,16 +56,24 @@
     reconnectMs: 2000,
   });
 
-  // 日志行解析：默认模板 time={{.time}} level={{.level}} msg={{.msg}}
+  // 日志行解析：默认模板 time={{.time}} level={{.level}} msg={{.msg}} [k=v ...]
+  // 模板渲染后 attr 以 " key=value" 透传追加在行尾（如 err=...），拆分到独立灰字段展示；
   // 兼容自定义外挂模板：解析失败则整行作为消息展示（time/level 留空）。
   function parseLine(raw) {
     const line = String(raw || '').replace(/\n$/, '');
     const m = line.match(/time=(.+?)\s+level=(\S+)\s+msg=(.*)$/);
-    if (m) return { time: m[1], level: m[2].toUpperCase(), msg: m[3] };
+    if (m) {
+      // attr 键为标识符形态（支持 group 点号键）；首个 key= 起判定为 attr 段（值可含空格，展示原样）
+      const am = m[3].match(/\s[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*=\S/);
+      if (am && am.index != null) {
+        return { time: m[1], level: m[2].toUpperCase(), msg: m[3].slice(0, am.index), attrs: m[3].slice(am.index + 1) };
+      }
+      return { time: m[1], level: m[2].toUpperCase(), msg: m[3], attrs: '' };
+    }
     // 兼容 "time=... level=..." 但无 msg（模板缺省 msg 段）
     const m2 = line.match(/time=(.+?)\s+level=(\S+)\s*$/);
-    if (m2) return { time: m2[1], level: m2[2].toUpperCase(), msg: '' };
-    return { time: '', level: '', msg: line };
+    if (m2) return { time: m2[1], level: m2[2].toUpperCase(), msg: '', attrs: '' };
+    return { time: '', level: '', msg: line, attrs: '' };
   }
 
   function lvlBadge(level) {
@@ -88,6 +96,12 @@
       msg.className = 'syslog-msg';
       msg.textContent = p.msg;
       div.appendChild(msg);
+      if (p.attrs) {
+        const attrs = document.createElement('span');
+        attrs.className = 'syslog-attrs';
+        attrs.textContent = ' ' + p.attrs;
+        div.appendChild(attrs);
+      }
       frag.appendChild(div);
     });
     box.appendChild(frag);
