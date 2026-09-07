@@ -1,10 +1,10 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/database.js 数据库页（服务 → 数据库）
- * 页签「表结构」：期望结构（当前运行 SQL 源，外挂优先、内嵌兜底）与实际结构
+ * 页签「表同步」：期望结构（当前运行 SQL 源，外挂优先、内嵌兜底）与实际结构
  * （当前数据连接 catalog）比对 → 差异分级表 + 生成 SQL 预填编辑器 →
  * danger 强确认执行 → 逐条结果（失败标红、常驻 toast 引导复核）。
- * 页签「执行历史」：sql_exec_log 表审计记录（每条语句一行）分页展示，
- * 谁在何时执行了什么、成败与耗时，刷新/换会话均可追溯。
+ * 页签「SQL历史」：sql_exec_log 表审计记录（每条语句一行）分页展示，
+ * 谁在何时执行了什么、成败与耗时，刷新/换会话均可追溯；点行弹详情查看完整语句与执行快照。
  * 后端契约：GET /admin/db/schema、POST /admin/db/exec、GET /admin/db/execlog。
  * 挂载到全局命名空间 window.Rock.views.database。
  * ========================================================================== */
@@ -39,7 +39,7 @@
     items: [],          // 差异列表（level A-F）
     sql: '',            // 后端按自动项生成的 SQL（预填编辑器）
     exec: null,         // 最近一次执行结果 { results, executed, failed }
-    tab: 'schema',      // 当前页签：'schema' 表结构 | 'history' 执行历史 | 'overview' 数据表概览
+    tab: 'schema',      // 当前页签：'schema' 表同步 | 'overview' 表概览 | 'history' SQL历史
     hist: {             // 执行历史（服务端分页）
       loaded: false, loading: false,
       items: [], total: 0, offset: 0,
@@ -94,8 +94,10 @@
     emptyText: '尚未执行',
   });
 
-  // 执行历史表（client 模式展示当前页；分页由页内上一页/下一页按钮驱动服务端 offset）
+  // 执行历史表（client 模式展示当前页；分页由页内上一页/下一页按钮驱动服务端 offset；点行弹详情）
   const histTable = Rock.comp.dataTable.create({
+    ns: 'db-hist',
+    rowKey: r => String(r.id),
     ns: 'db-hist',
     columns: [
       { key: 'time', label: '执行时间', cls: 'mono', render: r => esc(fmtDateTime(r.time)) },
@@ -116,7 +118,31 @@
     paging: { mode: 'client' },
     rowClass: r => (r.ok ? '' : 'is-error'),
     emptyText: '暂无执行记录（执行 SQL 后自动留痕）',
+    detail: { title: 'SQL 执行详情' }, // fields 由 onDetail 动态给出
   });
+  // 行详情弹层：完整语句 + 执行快照（列表仅截断展示，详情给全量审计字段）
+  histTable.onDetail = function (row) {
+    Rock.comp.detailModal.show({
+      title: 'SQL 执行详情',
+      width: 720,
+      row: row,
+      fields: [
+        { key: 'time', label: '执行时间', render: r => '<span class="mono">' + esc(fmtDateTime(r.time)) + '</span>' },
+        { key: 'batch_id', label: '批次 / 序号', render: r =>
+            '<span class="mono">' + esc(r.batch_id) + '</span> <span class="muted">#' + esc(r.seq) + '</span>' },
+        { key: 'sql_text', label: '完整语句', pre: true, copy: true },
+        { key: 'ok', label: '结果', render: r => r.ok
+            ? '<span class="tag tag-green">成功</span>'
+            : '<span class="tag tag-orange">失败</span>' },
+        { key: 'rows_affected', label: '影响行数', render: r => '<span class="mono">' + esc(r.rows_affected) + '</span>' },
+        { key: 'duration_ms', label: '耗时', render: r => '<span class="mono">' + esc(r.duration_ms) + 'ms</span>' },
+        { key: 'client_ip', label: '来源 IP', render: r => '<span class="mono">' + esc(r.client_ip || '—') + '</span>' },
+        { key: 'source', label: '执行渠道', render: r => esc(r.source || '—') },
+        { key: 'error', label: '失败原因', render: r => r.error
+            ? '<span class="mono" style="color:var(--danger,#c0392b)">' + esc(r.error) + '</span>' : '<span class="muted">—</span>' },
+      ],
+    });
+  };
 
   // 数据表概览表（空间占用统计：表名/备注/条数/占用空间，含占比条）
   const overviewTable = Rock.comp.dataTable.create({
@@ -234,7 +260,7 @@
       }) +
       sizeBarHTML() +
       Rock.comp.tabs.tabsHTML(
-        [{ name: 'schema', label: '表结构' }, { name: 'history', label: '执行历史' }, { name: 'overview', label: '数据表概览' }],
+        [{ name: 'schema', label: '表同步' }, { name: 'overview', label: '表概览' }, { name: 'history', label: 'SQL历史' }],
         state.tab,
         { act: 'db-tab', nameAttr: 'data-tab' }
       ) +
@@ -422,9 +448,15 @@
     render();
   }
 
+  // 行详情：data-key = id 回查当前页行后弹详情（完整语句 + 执行快照）
+  function openHistDetail(el) {
+    const key = el.getAttribute('data-key') || '';
+    const row = state.hist.items.find(r => String(r.id) === key);
+    if (row) histTable.onDetail(row);
+  }
+
   // 复制编辑器 SQL 到剪贴板
-  async function copySQL() {
-    const sql = codeEditor.value(EDITOR_ID);
+  async function copySQL() {    const sql = codeEditor.value(EDITOR_ID);
     if (!sql.trim()) { toast('编辑器内容为空，无可复制内容', 'warning'); return; }
     try {
       await navigator.clipboard.writeText(sql);
@@ -462,6 +494,7 @@
         state.hist.offset += HIST_PAGE_SIZE;
         loadHist({ move: true });
       },
+      'db-hist-detail': function (el) { openHistDetail(el); },
     },
   };
 })();
