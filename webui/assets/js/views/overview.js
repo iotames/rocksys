@@ -40,8 +40,8 @@
       { key: 'hit_count', label: '命中次数', render: r => esc(Rock.util.fmtInt(r.hit_count)) },
       { key: 'warn_times', label: '封禁次数', render: r => esc(Rock.util.fmtInt(r.warn_times)) },
       { key: 'created_at', label: '封禁时间（首次）', render: r => esc(Rock.util.fmtDateTime(r.created_at)) },
-      // expires_at 理论上不会为 NULL（jail 只收限时封禁），判空兜底显示 —
-      { key: 'expires_at', label: '解封时间', render: r => esc(r.expires_at ? Rock.util.fmtDateTime(r.expires_at) : '—') },
+      // expires_at 为 NULL 即永久封禁，展示「永久」；限时封禁展示解封时间 —
+      { key: 'expires_at', label: '解封时间', render: r => esc(r.expires_at ? Rock.util.fmtDateTime(r.expires_at) : '永久') },
     ],
     paging: { mode: 'client', pageSize: 20 },
     emptyText: '小黑屋空空如也',
@@ -251,11 +251,12 @@
     renderJailBody();
   }
 
-  // 小黑屋页签主体：说明 + 表格/空态 + 计数与出口
+  // 小黑屋页签主体：说明 + 表格/空态 + 计数与出口（管理入口固定卡片右上角，主色可点击）
   function jailBodyHTML() {
     bindJailTable(); // 表格分页控件委托（#page-overview 持久，仅绑一次）
-    return '<div class="card"><div class="card-title">在押名单 ' +
-      '<span class="card-sub">当前在押的限时封禁（未过期、未软删）；封禁时间为首次封禁时间，临近解封的在前</span></div>' +
+    return '<div class="card"><div class="card-title"><span>在押名单 ' +
+      '<span class="card-sub">当前封禁IP（未过期、未软删）；封禁时间为首次封禁时间，临近解封的在前，永久殿后</span></span>' +
+      '<a class="link-like" data-act="goto-iplist">管理全部黑名单 →</a></div>' +
       '<div id="jail-body">' + jailInnerHTML() + '</div></div>';
   }
 
@@ -283,13 +284,12 @@
     return jailTable.html(jailRows) + jailFooterHTML();
   }
 
-  // 计数行：jail total + 超出预览条数提示 + 管理全部黑名单出口
+  // 计数行：jail total + 超出预览条数提示（管理出口在卡片右上角「管理全部黑名单 →」）
   function jailFooterHTML() {
     const more = jailTotal > jailRows.length
-      ? '，仅展示前 ' + jailRows.length + ' 条，其余请到黑白名单页查看'
+      ? '，仅展示前 ' + jailRows.length + ' 条'
       : '';
-    return '<div class="form-hint">共 ' + Rock.util.fmtInt(jailTotal) + ' 条在押' + more +
-      ' · <a data-act="goto-iplist" style="cursor:pointer">管理全部黑名单 →</a></div>';
+    return '<div class="form-hint">共 ' + Rock.util.fmtInt(jailTotal) + ' 条在押' + more + '</div>';
   }
 
   // loadJail 完成后局部刷新表格区（当前停在宿主页才执行）

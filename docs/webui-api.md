@@ -70,7 +70,7 @@
 | 44 | GET | `/admin/db/size` | 数据库空间占用统计（表名/备注/精确条数/占用空间 + 总空间；三方言） |
 | 43 | POST | `/admin/shield/blacklist/sync_file` | 从外挂规则文件 `rules/ip_blacklist.txt` 同步 IP 入库（block_type=11，幂等） |
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
-| 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的限时封禁条目（首页页签数据源） |
+| 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的全部封禁条目（含永久；首页页签数据源） |
 
 ---
 
@@ -492,7 +492,7 @@ WebUI「可信代理」页数据源（实现 `internal/netutil/proxies_admin.go`
 | `/admin/shield/blacklist/import` | POST 批量导入：**body 为纯文本**（每行一个精确 IP/CIDR，兼容外挂文件格式；兼容 JSON 字符串编码），query 可选 `title`/`block_type`；响应 `{"ok":true,"imported":N,"skipped":N}` |
 | `/admin/shield/blacklist/sync_file` | POST 从外挂规则文件 `HOT_SCRIPTS_DIR/rules/ip_blacklist.txt` 同步 IP 入库（外挂优先、内嵌兜底；`#` 注释/空行忽略），固定 `title="来自 ip_blacklist.txt 同步"`、`block_type=11` 人工收录；幂等（重复同步 skipped 递增）；响应 `{"ok":true,"imported":N,"skipped":N}`；文件缺失/为空/无有效行 → 400 文本（三要素文案：发生了什么 + 原因 + 检查 `hotscripts/rules/ip_blacklist.txt` 后重试） |
 | `/admin/shield/blacklist/ban` | POST 专用封禁端点：body `{"ip","title","block_type","duration"}`（`block_type` 1-11 缺省 11 人工收录；`duration`=`"24h"`（缺省，服务端换算 now+24h）\|`"permanent"`→expires_at=NULL；title 空 → `"人工封禁"`）。三态：① 无记录 → 新增入库 `warn_times=1`；② 活跃条目 → 400「已在黑名单」+ 前往黑名单列表管理指引；③ 软删/过期条目 → 恢复（清 deleted_at）+ 按所选时长落 expires_at + `warn_times`+1；**累计满 5 次的限时封禁自动转永久**（本就永久的条目恢复后仍永久）。成功 `{"ok":true,"to_permanent":bool}`（`to_permanent`=本次已由限时转永久）；写库成功即重建拦截快照 |
-| `/admin/shield/jail` | GET 小黑屋：当前在押的限时封禁条目（`expires_at` 非 NULL 且未过期、未软删），按解封时间升序（临近解封在前）；query `limit` 默认 20、上限 100（非法/越界回默认）；响应 `{"total":N,"rows":[{ip,block_type,hit_count,warn_times,created_at,expires_at}]}`；DB 未配置 503 |
+| `/admin/shield/jail` | GET 小黑屋：当前在押的全部封禁条目（未过期、未软删；永久封禁 `expires_at` 为 NULL 视为不过期一并收录），限时封禁按解封时间升序（临近解封在前）、永久封禁殿后；query `limit` 默认 20、上限 100（非法/越界回默认）；响应 `{"total":N,"rows":[{ip,block_type,hit_count,warn_times,created_at,expires_at}]}`；DB 未配置 503 |
 | `/admin/shield/whitelist` 及 update/delete/restore/import | 白名单同构（无 block_type/expires_at 字段） |
 
 > 全部变更写库后**即时重建拦截快照**（不等 TTL 兜底）；数据表见 `docs/DATA_DICT.md` §2.5-2.7；外挂 `rules/ip_blacklist.txt` 存量条目可直接粘贴本接口批量导入。

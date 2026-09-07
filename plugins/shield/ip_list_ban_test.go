@@ -204,7 +204,7 @@ func TestIPListStore_Jail(t *testing.T) {
 	s, _ := newTestListStore(t, true)
 	now := testNow()
 
-	// 在押：两条限时未过期（解封时间 2h/1h）+ 软删的限时 + 已过期 + 永久
+	// 在押：两条限时未过期（解封时间 2h/1h）+ 永久（殿后）+ 软删的限时 + 已过期
 	if _, err := s.BanInsert("10.4.0.1", "晚解封", BlockRateLimit, timePtr(now.Add(2*time.Hour)), now); err != nil {
 		t.Fatal(err)
 	}
@@ -229,21 +229,24 @@ func TestIPListStore_Jail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Jail: %v", err)
 	}
-	if total != 2 || len(rows) != 2 {
-		t.Fatalf("Jail total=%d rows=%d, want 2/2（仅限时未过期且未软删）", total, len(rows))
+	if total != 3 || len(rows) != 3 {
+		t.Fatalf("Jail total=%d rows=%d, want 3/3（限时未过期且未软删 + 永久）", total, len(rows))
 	}
-	// 升序：临近解封在前
-	if rows[0]["ip"] != "10.4.0.2" || rows[1]["ip"] != "10.4.0.1" {
-		t.Fatalf("Jail 排序 = %v, %v; want 10.4.0.2 在前", rows[0]["ip"], rows[1]["ip"])
+	// 升序：临近解封在前，永久（expires_at NULL）殿后
+	if rows[0]["ip"] != "10.4.0.2" || rows[1]["ip"] != "10.4.0.1" || rows[2]["ip"] != "10.4.0.5" {
+		t.Fatalf("Jail 排序 = %v, %v, %v; want 10.4.0.2 / 10.4.0.1 / 永久殿后", rows[0]["ip"], rows[1]["ip"], rows[2]["ip"])
+	}
+	if rows[2]["expires_at"] != "" {
+		t.Fatalf("永久封禁 expires_at 应归一化为空串, got %v", rows[2]["expires_at"])
 	}
 	if _, ok := rows[0]["warn_times"].(int64); !ok {
 		t.Fatalf("jail 行 warn_times 未归一化: %T", rows[0]["warn_times"])
 	}
 
-	// limit 生效：limit=1 只回 1 行但 total 仍为 2
+	// limit 生效：limit=1 只回 1 行但 total 仍为 3
 	rows, total, err = s.Jail(now, 1)
-	if err != nil || len(rows) != 1 || total != 2 {
-		t.Fatalf("Jail(limit=1) rows=%d total=%d err=%v, want 1/2/nil", len(rows), total, err)
+	if err != nil || len(rows) != 1 || total != 3 {
+		t.Fatalf("Jail(limit=1) rows=%d total=%d err=%v, want 1/3/nil", len(rows), total, err)
 	}
 
 	// 白名单无小黑屋语义

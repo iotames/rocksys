@@ -98,11 +98,12 @@ func NewAutoBanEngine(cfgMgr conf.Manager, s *Shield, rec *EventRecorder) *AutoB
 		title  string
 		usage  []string
 	}{
-		{&e.enabled, "SHIELD_AUTO_BAN_ENABLED", "false",
+		{&e.enabled, "SHIELD_AUTO_BAN_ENABLED", "true",
 			"是否开启自动拉黑引擎（周期扫描拦截事件，按风险分档：攻击类命中 1 次直接永久封禁；爬虫 UA/通用类窗口内达各自阈值封禁）",
 			[]string{"开启后按风险分档自动封禁：攻击档（风险路径/路径遍历/SQL注入/XSS）命中 1 次直接永久；爬虫档与通用档达阈值限时封禁",
+				"★ 随 SHIELD_ENABLED 热联动：L1 防护关闭时引擎自动空转（无拦截事件来源，拉黑无人执行），防护开启即恢复",
 				"适用场景：公网网关无人值守时的自动攻击防护与爬虫治理；误封兜底=白名单+人工解封",
-				"开关改动需重启服务生效"},
+				"每轮扫描读配置，热更"},
 		},
 		{&e.threshold, "SHIELD_AUTO_BAN_THRESHOLD", "50",
 			"自动拉黑通用阈值：统计窗口内单 IP 通用类（限流/方法/体积/规则deny）拦截次数≥该值触发封禁；攻击类不适用（命中 1 次即永久）",
@@ -144,6 +145,7 @@ func (e *AutoBanEngine) Enabled() bool { return e.readConfig().enabled }
 // autoBanCfg 一轮扫描的配置快照（readConfig 产出，runOnce 单轮内使用同一份）。
 type autoBanCfg struct {
 	enabled          bool
+	shieldEnabled    bool // SHIELD_ENABLED 快照：防护关闭时引擎联动空转（默认兜底 true，见 readConfig）
 	threshold        int
 	crawlerThreshold int
 	repeatLimit      int
@@ -157,6 +159,7 @@ type autoBanCfg struct {
 func (e *AutoBanEngine) readConfig() autoBanCfg {
 	c := autoBanCfg{
 		enabled:          e.enabled,
+		shieldEnabled:    true, // 兜底：配置中心未提供 SHIELD_ENABLED（如单测 fake）时视为开启，不静默失效
 		threshold:        e.threshold,
 		crawlerThreshold: e.crawlerThreshold,
 		repeatLimit:      e.repeatLimit,
@@ -170,6 +173,8 @@ func (e *AutoBanEngine) readConfig() autoBanCfg {
 		switch it.Key {
 		case "SHIELD_AUTO_BAN_ENABLED":
 			c.enabled = strings.EqualFold(strings.TrimSpace(it.Current), "true")
+		case "SHIELD_ENABLED": // 防护挂载开关（shield 注册，配置中心唯一真源）：随动热联动
+			c.shieldEnabled = strings.EqualFold(strings.TrimSpace(it.Current), "true")
 		case "SHIELD_AUTO_BAN_THRESHOLD":
 			if n, err := strconv.Atoi(strings.TrimSpace(it.Current)); err == nil && n > 0 {
 				c.threshold = n
@@ -259,11 +264,14 @@ type banCandidate struct {
 }
 
 // runOnce 执行一轮扫描：读配置 → 查候选 → 聚合 → 白名单过滤 → 四态处理 → 有变更重建快照。
-// 开关关闭直接返回（空转，零 DB 开销）；各环节失败仅告警，下轮重试。
+// 开关关闭或 L1 防护未挂载直接返回（空转，零 DB 开销）；各环节失败仅告警，下轮重试。
 func (e *AutoBanEngine) runOnce() {
 	cfg := e.readConfig()
 	if !cfg.enabled {
-		return // 开关关闭：空转（热更开启后下一轮自动生效）
+		return // 引擎开关关闭：空转（热更开启后下一轮自动生效）
+	}
+	if !cfg.shieldEnabled {
+		return // ★ 随 SHIELD_ENABLED 热联动：防护关闭即无拦截事件来源、拉黑也无人执行，联动空转
 	}
 	threshold := int64(cfg.threshold)
 	if threshold <= 0 {

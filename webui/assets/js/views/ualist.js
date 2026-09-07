@@ -183,7 +183,7 @@
       }) +
       pageCtx.tabsHTML() +
       pageCtx.iplistTabs(state.kind) +
-      '<div class="card"><div class="card-title">追加' + esc(meta().label) + '模式 <span class="card-sub">追加后 ≤3s 热更生效；改注释/排序等整文编辑请前往<a data-act="waf-tab" data-tab="files" style="cursor:pointer">「文件编辑」</a>页签</span></div>' +
+      '<div class="card"><div class="card-title">追加' + esc(meta().label) + '模式 <span class="card-sub">追加后 ≤3s 热更生效；改注释/排序等整文编辑请前往<a class="link-like" data-act="waf-tab" data-tab="files">「文件编辑」</a>页签</span></div>' +
       '<div class="log-toolbar">' +
       '<input class="input input-sm" id="ualist-append-input" placeholder="UA 子串模式（如 googlebot，追加时转小写）" style="width:280px"' + (state.saving ? ' disabled' : '') + '>' +
       '<button class="btn btn-sm btn-primary" id="ualist-append-btn" data-act="waf-ualist-append"' + (state.saving ? ' disabled' : '') + '>追加</button>' +

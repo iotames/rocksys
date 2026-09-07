@@ -20,8 +20,7 @@
     overview: 1, components: 'param', services: 'param',
     scripts: 1, config: 1, waf: 1, logs: 1, syslogs: 1, database: 1,
   };
-  // 侧边栏可折叠分组（路由 base → 分组 id；WAF/入网数据/系统日志为顶级菜单，不折叠）
-  const MENU_GROUPS = ['components', 'services'];
+  // （侧边栏分组展开已泛化为按激活项归属判断，见 activateNav；分组折叠由 .menu-parent 点击统一处理）
 
   // 视图/组件 action 注册表：新增交互无需修改本文件——
   // 各视图/组件导出 actions 映射（{ 'action-name': fn(el, e) }），boot 时统一注册
@@ -109,10 +108,9 @@
     $$('.menu-item[data-route]').forEach(a => {
       a.classList.toggle('active', a.getAttribute('data-route') === full);
     });
-    // 激活项所在分组自动展开；其余保持用户手动状态
-    MENU_GROUPS.forEach(g => {
-      const grp = $('#menu-group-' + g);
-      if (grp && route.base === g) grp.classList.add('open');
+    // 激活项所在分组自动展开；其余保持用户手动状态（泛化：按激活项实际归属分组判断）
+    $$('.menu-group').forEach(grp => {
+      if (grp.querySelector('.menu-item.active')) grp.classList.add('open');
     });
   }
 

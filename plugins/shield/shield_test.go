@@ -16,8 +16,10 @@ import (
 )
 
 // fakeConfMgr 测试用假配置管理器：仅记录注册项，不触发真实重载。
+// list 覆写 List() 返回值（nil=默认回 nil），供 readConfig 热联动等场景注入配置快照。
 type fakeConfMgr struct {
 	regs map[string]any
+	list []conf.ConfigItem
 }
 
 func newFakeConf() *fakeConfMgr { return &fakeConfMgr{regs: make(map[string]any)} }
@@ -31,7 +33,7 @@ func (f *fakeConfMgr) Register(pval any, name, defval, title string, usage ...st
 	return nil
 }
 func (f *fakeConfMgr) Set(name, value string) error { return nil }
-func (f *fakeConfMgr) List() []conf.ConfigItem      { return nil }
+func (f *fakeConfMgr) List() []conf.ConfigItem      { return f.list }
 func (f *fakeConfMgr) SyncDefaultFile() error       { return nil }
 
 func newTestShield(t *testing.T) (*Shield, *fakeConfMgr) {

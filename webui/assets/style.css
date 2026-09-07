@@ -555,7 +555,7 @@ b, strong { font-weight: 600; }
   margin-bottom: 16px;
 }
 
-.card.hoverable { transition: transform .15s, border-color .15s, box-shadow .15s; }
+.card.hoverable { transition: transform .15s, border-color .15s, box-shadow .15s; cursor: pointer; }
 .card.hoverable:hover { transform: translateY(-1px); border-color: var(--border-strong); box-shadow: var(--shadow); }
 
 /* 日志页存储占用统计条 */
@@ -1165,6 +1165,9 @@ b, strong { font-weight: 600; }
 /* ---------- 27. 其他小工具 ---------- */
 .link-like { color: var(--primary-light); cursor: pointer; text-decoration: none; }
 .link-like:hover { text-decoration: underline; }
+/* 跳转链接可点击性规范：灰字（form-hint / card-sub / card-title 说明）中的链接一律主色，禁止灰字当链接 */
+.form-hint a, .card-sub a, .card-title a { color: var(--primary-light); cursor: pointer; text-decoration: none; font-weight: 500; }
+.form-hint a:hover, .card-sub a:hover, .card-title a:hover { text-decoration: underline; }
 
 .updated-mark { font-size: 11px; color: var(--text-2); }
 
@@ -1298,6 +1301,7 @@ b, strong { font-weight: 600; }
   border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel);
   transition: border-color .15s, box-shadow .15s, opacity .15s;
   white-space: nowrap;
+  cursor: pointer;
 }
 .df-node b { font-size: 14px; font-weight: 600; }
 .df-node i { font-style: normal; font-size: 11px; color: var(--text-2); font-family: var(--font-mono); }

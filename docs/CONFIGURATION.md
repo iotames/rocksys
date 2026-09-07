@@ -64,7 +64,7 @@ SHIELD_WAF_CRAWLER_UA = true
 #   爬虫档（爬虫/扫描器 UA）：达爬虫阈值限时封禁（按流量计费场景爬虫烧钱，低于通用阈值）；
 #   通用档（限流/方法白名单/体积超限/规则 deny）：达通用阈值限时封禁；
 #   同一 IP 多档达标取最严档；限时封禁条目累计入狱达 REPEAT_LIMIT 转永久
-SHIELD_AUTO_BAN_ENABLED = false            # 自动拉黑开关：false=不启动引擎（默认）；true=后台扫描自动拉黑（开启需重启；其余项每轮读配置支持热更）
+SHIELD_AUTO_BAN_ENABLED = true             # 自动拉黑开关（默认开启）：★ 随 SHIELD_ENABLED 热联动——L1 防护关闭时引擎自动空转（无拦截事件来源、拉黑无人执行），防护开启即恢复；每轮读配置支持热更
 SHIELD_AUTO_BAN_THRESHOLD = 50             # 通用档阈值：统计窗口内单 IP 通用类拦截次数达到即触发拉黑
 SHIELD_AUTO_BAN_CRAWLER_THRESHOLD = 20     # 爬虫档阈值：统计窗口内单 IP 爬虫/扫描器 UA 拦截次数达到即触发拉黑
 SHIELD_AUTO_BAN_REPEAT_LIMIT = 5           # 累犯转永久阈值：限时封禁条目累计入狱达该次数转永久（0=永不自动转永久）

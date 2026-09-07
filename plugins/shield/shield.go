@@ -273,7 +273,7 @@ func New(cfgMgr conf.Manager, hubs ...*hotswap.ScriptHub) (*Shield, error) {
 		defval string
 		title  string
 	}{
-		{&s.enabled, "SHIELD_ENABLED", "false", "是否启用 L1 防护（false=不挂载；true=挂载并拦截）"},
+		{&s.enabled, "SHIELD_ENABLED", "false", "是否启用 L1 防护（false=不挂载；true=挂载并拦截）；自动拉黑引擎随本开关联动，关闭时引擎自动空转"},
 		{&s.rps, "SHIELD_RATE_LIMIT_RPS", "0", "限流速率（每秒请求数，0=不限流）"},
 		{&s.burst, "SHIELD_RATE_LIMIT_BURST", "0", "限流突发容量"},
 		{&s.limitBy, "SHIELD_RATE_LIMIT_BY", "ip", "限流维度（当前仅支持 ip）"},

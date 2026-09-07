@@ -1,6 +1,6 @@
 # IP 黑名单增强方案：语义化 block_type · 从文件同步 · 自动拉黑（计划文档）
 
-> 状态：**已实施并归档** · 全部 STEP（A1-A8）已完成并通过功能验收；设计决策与实现口径见 §2/§3，接口契约以 `docs/webui-api.md` §3.18 为准。
+> 状态：**已实施并归档** · 全部 STEP（A1-A8）已完成并通过功能验收；设计决策与实现口径见 §2/§3，接口契约以 `docs/webui-api.md` §3.18 为准。文中配置项默认值为立项时快照，后续有调整（如 `SHIELD_AUTO_BAN_ENABLED` 默认已翻转为 true），**现行默认值一律以 `docs/CONFIGURATION.md` 为准**。
 > 归档说明：2026-08-30 功能开发与验收全部完成后，本文档移入 `docs/done/`；分步执行文件（原 `docs/plan/ip_blacklist/STEP1..STEP8` 与 `docs/plan/TODO.md`）随验收完成删除（进度已由 §6 变更记录收口），实施方法论沉淀见 `docs/plan/README.md`。
 > 最后更新：2026-08-30
 

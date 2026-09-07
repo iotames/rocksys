@@ -209,7 +209,6 @@
             <a class="menu-item menu-sub-item" data-route="services/registry" href="#/services/registry"><span>注册</span><i>registry</i></a>
             <a class="menu-item menu-sub-item" data-route="services/object" href="#/services/object"><span>存储</span><i>object</i></a>
             <a class="menu-item menu-sub-item" data-route="services/mq" href="#/services/mq"><span>消息</span><i>mq</i></a>
-            <a class="menu-item menu-sub-item" data-route="database" href="#/database"><span>数据库</span><i>database</i></a>
           </div>
         </div>
 
@@ -220,22 +219,23 @@
           <span>脚本</span>
         </a>
 
-        <!-- 全局配置：基础设施配置，置底 -->
-        <a class="menu-item" data-route="config" href="#/config">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 6h5M13 6h7M4 12h9M17 12h3M4 18h7M15 18h5"/>
-            <circle cx="11" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="13" cy="18" r="2"/>
-          </svg>
-          <span>全局配置</span>
-        </a>
-
-        <!-- 系统日志：进程日志排障入口，置于全局配置之后 -->
-        <a class="menu-item" data-route="syslogs" href="#/syslogs">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 5h16M4 12h16M4 19h10"/><circle cx="18" cy="19" r="2.5"/>
-          </svg>
-          <span>系统日志</span>
-        </a>
+        <!-- 配置：全局配置 / 系统日志 / 数据库等运维配置入口，置底 -->
+        <div class="menu-group" id="menu-group-settings">
+          <div class="menu-item menu-parent" data-group="settings">
+            <span class="menu-parent-label">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/>
+              </svg>
+              <span>配置</span>
+            </span>
+            <span class="menu-arrow">▾</span>
+          </div>
+          <div class="menu-sub" id="menu-sub-settings">
+            <a class="menu-item menu-sub-item" data-route="config" href="#/config"><span>全局配置</span><i>config</i></a>
+            <a class="menu-item menu-sub-item" data-route="database" href="#/database"><span>数据库</span><i>database</i></a>
+            <a class="menu-item menu-sub-item" data-route="syslogs" href="#/syslogs"><span>系统日志</span><i>syslogs</i></a>
+          </div>
+        </div>
       </nav>
       <div class="sidebar-foot">关闭只是降级，转发永不中断</div>
     </aside>

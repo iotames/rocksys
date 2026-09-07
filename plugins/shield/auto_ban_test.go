@@ -10,6 +10,8 @@ package shield
 import (
 	"testing"
 	"time"
+
+	"rocksys/internal/conf"
 )
 
 // ── 配置注册 ─────────────────────────────────────────────────────────
@@ -447,6 +449,39 @@ func TestAutoBanRunOnceDisabled(t *testing.T) {
 	e.runOnce()
 	if _, err := black.GetByIP("10.3.1.1"); err == nil {
 		t.Error("开关关闭不应入库")
+	}
+}
+
+// SHIELD_ENABLED 热联动：防护关闭时引擎空转（配置中心 List 快照驱动，防护开启即恢复）。
+func TestAutoBanRunOnceShieldDisabledGate(t *testing.T) {
+	f := newFakeConf()
+	s, _ := newTestShield(t)
+	rec, _ := newTestRecorder(t)
+	e := NewAutoBanEngine(f, s, rec)
+	e.enabled = true // 引擎开关开启（新默认 true 语义）
+	e.threshold = 2
+	e.crawlerThreshold = 2
+	e.window = "10m"
+	e.ttl = "1h"
+	white, _ := newTestListStore(t, false)
+	black, _ := newTestListStore(t, true)
+	s.SetIPListStores(black, white)
+
+	insertShieldEvent(t, rec, time.Now().Add(-time.Minute), BlockSQLInjection, "10.5.1.1")
+	insertShieldEvent(t, rec, time.Now().Add(-time.Minute), BlockSQLInjection, "10.5.1.1")
+
+	// 防护关闭 → 空转不入库
+	f.list = []conf.ConfigItem{{Key: "SHIELD_ENABLED", Current: "false"}}
+	e.runOnce()
+	if _, err := black.GetByIP("10.5.1.1"); err == nil {
+		t.Fatal("SHIELD_ENABLED=false 时自动拉黑不应生效")
+	}
+
+	// 防护开启（热更）→ 下一轮恢复生效
+	f.list = []conf.ConfigItem{{Key: "SHIELD_ENABLED", Current: "true"}}
+	e.runOnce()
+	if _, err := black.GetByIP("10.5.1.1"); err != nil {
+		t.Fatalf("SHIELD_ENABLED=true 恢复后应正常拉黑: %v", err)
 	}
 }
 

@@ -540,8 +540,9 @@ func (s *IPListStore) RestoreBanToPermanent(ip, title string, now time.Time) (to
 	return toPermanent, nil
 }
 
-// Jail 小黑屋查询（IP_BLACKLIST_PLAN §3.7）：当前在押的限时封禁条目——
-// expires_at 非 NULL 且 > now、deleted_at 为 NULL；临近解封的在前（expires_at ASC）。
+// Jail 小黑屋查询（IP_BLACKLIST_PLAN §3.7）：当前在押的全部封禁条目——
+// 未软删、未过期（永久封禁 expires_at 为 NULL 视为不过期）；
+// 限时封禁临近解封的在前（expires_at ASC），永久封禁殿后（NULLS LAST 语义）。
 // 返回归一化行与在押总数（总数与 limit 无关，供前端提示"共 N 条在押"）。
 func (s *IPListStore) Jail(now time.Time, limit int) (rows []map[string]any, total int64, err error) {
 	if !s.isBlack {

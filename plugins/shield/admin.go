@@ -296,7 +296,7 @@ func (h *AdminHandler) Prune(w http.ResponseWriter, r *http.Request) {
 //	POST /admin/shield/blacklist/sync_file 从外挂规则文件 rules/ip_blacklist.txt 同步入库（幂等）
 //	POST /admin/shield/blacklist/ban     专用封禁端点（body: ip/title/block_type/duration="24h"|"permanent"；
 //	                                     无记录新增、软删/过期恢复续封 warn_times+1，活跃报"已在黑名单"）
-//	GET  /admin/shield/jail              小黑屋（当前在押的限时封禁条目；query: limit 默认 20 上限 100）
+//	GET  /admin/shield/jail              小黑屋（当前在押的全部封禁条目（含永久）；query: limit 默认 20 上限 100）
 //	/admin/shield/whitelist 同构（无 block_type/expires_at）
 //
 // 全部变更写库成功后主动重建快照（立即生效，不等 TTL 兜底）。
@@ -656,7 +656,7 @@ func banDurationToExpires(duration string, now time.Time) (*time.Time, error) {
 }
 
 // Jail GET /admin/shield/jail → 小黑屋（IP_BLACKLIST_PLAN §3.7）：当前在押的
-// 限时封禁条目（未软删、未过期、expires_at 非空），临近解封的在前。
+// 全部封禁条目（未软删、未过期；永久封禁视为不过期），限时封禁临近解封的在前、永久殿后。
 // query limit：默认 20、上限 100，非法/越界回默认（首页轻量预览，不报错）。
 // 响应 {total, rows}，rows 含 ip/block_type/hit_count/warn_times/created_at/expires_at。
 func (h *AdminHandler) Jail(w http.ResponseWriter, r *http.Request) {
