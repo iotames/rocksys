@@ -338,10 +338,12 @@ func (e *AutoBanEngine) runOnce() {
 		switch {
 		case errors.Is(err, ErrIPNotExists):
 			// 态一：无记录 → 新增入库（warn_times=1 起算，block_type=档内真实拦截类别）。
-			if _, err := st.BanInsert(c.IP, title, c.TopType, expInsert, now); err != nil {
+			id, err := st.BanInsert(c.IP, title, c.TopType, expInsert, now)
+			if err != nil {
 				log.Warn("shield: 自动拉黑入库失败", "ip", c.IP, "err", err.Error())
 				continue
 			}
+			seedHitCount(st, id, c.Total, c.IP)
 			changed = true
 			log.Info("shield: 自动拉黑新增封禁", "ip", c.IP,
 				"block_type", int(c.TopType), "tier", int(c.Tier), "hits", c.Total, "ttl", cfg.ttl)
@@ -361,6 +363,7 @@ func (e *AutoBanEngine) runOnce() {
 					log.Warn("shield: 自动拉黑攻击档转永久失败", "ip", c.IP, "err", err.Error())
 					continue
 				}
+				seedHitCount(st, cur.ID, c.Total, c.IP)
 				changed = true
 				log.Info("shield: 自动拉黑恢复续封（攻击档直永久）", "ip", c.IP,
 					"block_type", int(c.TopType), "tier", int(c.Tier), "warn_times", cur.WarnTimes+1, "to_permanent", toPerm)
@@ -376,6 +379,7 @@ func (e *AutoBanEngine) runOnce() {
 				log.Warn("shield: 自动拉黑续封失败", "ip", c.IP, "err", err.Error())
 				continue
 			}
+			seedHitCount(st, cur.ID, c.Total, c.IP)
 			changed = true
 			log.Info("shield: 自动拉黑恢复续封", "ip", c.IP,
 				"block_type", int(c.TopType), "tier", int(c.Tier), "warn_times", cur.WarnTimes+1, "to_permanent", perm)
@@ -384,6 +388,18 @@ func (e *AutoBanEngine) runOnce() {
 	// 有变更才重建拦截快照（一次整轮重建，与管理面 rebuildAfter 同语义）。
 	if changed {
 		e.shield.rebuildAfter("auto_ban")
+	}
+}
+
+// seedHitCount 封禁入库/续封后把本轮触发封禁的拦截次数补记进 hit_count（失败仅
+// 日志降级，不影响封禁本身）：hit_count 常规只在黑名单 IP 再次被拦截时异步累加，
+// 不补记的话触发封禁的那批命中会漏计，出现 warn_times≥1 而 hit_count=0 的观感。
+func seedHitCount(st ipListStore, id int64, total int64, ip string) {
+	if id == 0 || total <= 0 {
+		return
+	}
+	if err := st.AddHitCount(id, int(total)); err != nil {
+		log.Warn("shield: 自动拉黑命中计数补记失败", "ip", ip, "err", err.Error())
 	}
 }
 

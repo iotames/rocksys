@@ -265,6 +265,9 @@ func TestAutoBanRunOnceFourStates(t *testing.T) {
 	if e1.WarnTimes != 1 || e1.BlockType != BlockRateLimit || e1.Deleted {
 		t.Errorf("新增态不符: %+v", e1)
 	}
+	if e1.HitCount != 2 {
+		t.Errorf("新增态应补记触发命中 hit_count=2, got %d", e1.HitCount)
+	}
 	if want := "自动拉黑：10m内拦截≥2次"; e1.Title != want {
 		t.Errorf("title = %q, want %q", e1.Title, want)
 	}
@@ -284,6 +287,9 @@ func TestAutoBanRunOnceFourStates(t *testing.T) {
 	if e3.Deleted || e3.WarnTimes != 2 {
 		t.Errorf("软删恢复态不符: %+v", e3)
 	}
+	if e3.HitCount != 2 {
+		t.Errorf("续封态应补记触发命中 hit_count=2, got %d", e3.HitCount)
+	}
 	if exp, err := time.Parse(time.RFC3339, e3.ExpiresAt); err != nil ||
 		exp.Sub(now) > 10*time.Hour+time.Minute || exp.Sub(now) < 10*time.Hour-time.Minute {
 		t.Errorf("恢复解封应≈now+10h(TTL×10), got %q", e3.ExpiresAt)
@@ -293,6 +299,9 @@ func TestAutoBanRunOnceFourStates(t *testing.T) {
 	e4, _ := black.GetByIP("10.1.1.4")
 	if e4.WarnTimes != 2 || e4.Deleted {
 		t.Errorf("过期恢复态不符: %+v", e4)
+	}
+	if e4.HitCount != 2 {
+		t.Errorf("过期恢复态应补记触发命中 hit_count=2, got %d", e4.HitCount)
 	}
 	if exp, err := time.Parse(time.RFC3339, e4.ExpiresAt); err != nil || !exp.After(now.Add(9*time.Hour)) {
 		t.Errorf("过期条目解封应重设为≈now+10h, got %q", e4.ExpiresAt)

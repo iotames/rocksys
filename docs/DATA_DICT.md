@@ -148,7 +148,7 @@
 | `ip` | IP/CIDR | 精确 IP 或 CIDR（唯一约束，重复导入幂等拒绝） | `192.168.1.100`、`10.0.0.0/8` | TEXT / TEXT / VARCHAR(45) | — |
 | `title` | 标题 | 拉黑原因标题 | `Azure 云段扫描器` | TEXT / TEXT / VARCHAR(64) | `''` |
 | `block_type` | 拉黑类别 | 拉黑原因类别（复用 §3.1 枚举，仅管理面过滤统计） | `7`（SQL注入） | INTEGER / SMALLINT / SMALLINT | `1` |
-| `hit_count` | 命中计数 | 命中拦截计数（异步累加，观测/排序用） | `12` | INTEGER / INT / INT | `0` |
+| `hit_count` | 命中计数 | 命中拦截计数（异步累加，观测/排序用；自动拉黑入库/续封时补记本轮触发封禁的拦截次数） | `12` | INTEGER / INT / INT | `0` |
 | `warn_times` | 封禁次数 | 该 IP 被人工/风控封禁的累计次数（人工封禁与自动拉黑共用计数；限时封禁累计达 5 次自动转永久） | `3` | INTEGER / INT / INTEGER | `0` |
 | `expires_at` | 过期时间 | 过期时间（UTC）；NULL=永久，过期条目不参与匹配 | `2026-09-01T00:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
 | `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除，不参与匹配 | `2026-08-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
