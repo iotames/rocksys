@@ -85,7 +85,7 @@
     </div>
   </div>
 
-  <!-- ============ 顶部工具条 ============ -->
+  <!-- ============ 顶部公共横栏（全局常驻项，禁止按页面显隐，见 AGENTS.md 用户体验红线 7） ============ -->
   <header class="topbar">
     <div class="brand">
       <!-- 侧边栏收起/展开（偏好记忆于 localStorage，见 main.js bindSidebarToggle） -->
@@ -101,7 +101,7 @@
     <div class="topbar-mid">
       <span class="gw-status" title="网关连通状态">
         <span class="dot dot-ok" id="gw-status-dot"></span>
-        <span id="gw-status-text">网关在线</span>
+        <span id="gw-status-text">在线</span>
       </span>
       <span class="gw-addr" id="gw-addr">管理地址：—</span>
     </div>
@@ -113,18 +113,6 @@
           <option value="green">护眼绿</option>
         </select>
       </label>
-      <label class="topbar-label">自动刷新
-        <select id="auto-refresh" class="select select-sm">
-          <option value="0" selected>关</option>
-          <option value="5000">5 秒</option>
-          <option value="15000">15 秒</option>
-          <option value="30000">30 秒</option>
-        </select>
-      </label>
-      <button class="btn" id="btn-refresh" title="手动刷新当前页">
-        <span class="refresh-ico">⟳</span> 刷新
-      </button>
-      <span class="updated" id="last-updated">最近更新 --:--:--</span>
     </div>
   </header>
 

@@ -71,6 +71,7 @@
 | 43 | POST | `/admin/shield/blacklist/sync_file` | 从外挂规则文件 `rules/ip_blacklist.txt` 同步 IP 入库（block_type=11，幂等） |
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
 | 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的全部封禁条目（含永久；首页页签数据源） |
+| 46 | GET | `/admin/system` | 运行时长 + 机器资源概况（概览页运行时间瓦片与资源监控卡数据源） |
 
 ---
 
@@ -470,6 +471,35 @@ WebUI「可信代理」页数据源（实现 `internal/netutil/proxies_admin.go`
 
 ---
 
+### 3.17.1 GET /admin/system — 运行时长 + 机器资源概况（实现 `internal/adminapi/handlers_system.go`）
+
+概览页数据源：「运行指标」卡的**运行时间瓦片**与「资源监控」卡。标准库实现（不引第三方依赖）：
+无常驻采集协程，CPU% 走惰性采样（距上次真实采样 ≥3s 才重读一次 `/proc`，窗口内直接复用缓存
+结果、既不读 `/proc` 也不推进快照；无人访问零开销）；系统级 CPU 按 busy/total 口径计算
+（全机时间片总和扣除 idle+iowait 的占比，与 top 一致，天然归一化到 0-100）；系统级 CPU / 内存
+依赖 Linux `/proc`，非 Linux 平台或 `/proc` 读取失败（如加固容器）时对应字段为 `null`
+（前端按平台与成因降级提示）；首次采样前（尚无差值
+可比）`cpu_percent` / `proc_cpu_percent` 亦为 `null`（两者就绪相互独立：`/proc/stat` 不可得时
+进程值仍可单独得出）。
+
+**响应 `200`：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `uptime_seconds` | int | 进程启动至今秒数（运行时间瓦片展示，前端格式化为 `N 天 hh:mm:ss`） |
+| `started_at` | string | 进程启动时刻（RFC3339） |
+| `cpu_percent` | float/null | 全机 CPU 占用（busy/total 口径，0-100，一位小数；非 Linux、`/proc/stat` 不可得或首次采样前为 null） |
+| `proc_cpu_percent` | float/null | 本进程 CPU 占用（与 top 同口径，多线程可超 100；非 Linux 或首次采样前为 null，就绪与 `cpu_percent` 相互独立） |
+| `mem_total` | int/null | 系统内存总量字节（非 Linux 或 `/proc/meminfo` 读取失败为 null） |
+| `mem_used` | int/null | 系统内存已用量字节（total - available，available 优先 MemAvailable、老内核回退 MemFree+Buffers+Cached；非 Linux 或读取失败为 null） |
+| `proc_mem_bytes` | int | 进程从 OS 获取的内存总量（`runtime.MemStats.Sys`） |
+| `heap_bytes` | int | 进程在用堆内存（`HeapAlloc`） |
+| `goroutines` | int | 当前 Goroutine 数 |
+| `num_cpu` | int | 逻辑核心数 |
+| `os` / `arch` | string | 运行平台（如 `linux` / `amd64`） |
+
+---
+
 ### 3.18 shield 管理端点组 — WAF 监控统计 + 动态黑白名单
 
 **WAF 监控统计**（metrics/events/stats/prune，实现见 `plugins/shield/admin.go`）：
@@ -680,5 +710,6 @@ SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_byte
 | 1.5 | 2026-08-27 | 新增 `GET /admin/meta`（组件/服务元数据统一出口，前端不再硬编码说明文案；无状态不缓存） |
 | 1.6 | 2026-08-29 | 新增 §3.19 数据库表结构同步端点组：`GET /admin/db/schema`（A-F 分级差异检查 + 自动项生成 SQL）、`POST /admin/db/exec`（拆句逐条执行、遇错即停；danger 级，无语句白名单） |
 | 1.7 | 2026-08-29 | IP 黑名单增强：新增 `POST /admin/shield/blacklist/sync_file`（从文件同步）、`POST /admin/shield/blacklist/ban`（专用封禁，warn_times 累计满 5 转永久）、`GET /admin/shield/jail`（小黑屋在押预览）；黑名单列表 GET 新增 `sort` 排序参数（白名单映射固定倒序）；拦截明细 events 每行新增 `in_blacklist` 字段 |
+| 1.8 | 2026-09-08 | 新增 `GET /admin/system`（概览页运行时间瓦片 + 资源监控卡数据源，§3.17.1）：运行时长、机器/进程 CPU 与内存、Goroutines 等概况，字段不可得时为 null 前端降级 |
 
 > 契约原则：只增不改删；新增字段不影响旧字段语义。

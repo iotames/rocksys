@@ -1,6 +1,6 @@
 /* ==========================================================================
  * RockSys 管理控制台 - main.js 入口
- * 路由与视图切换、侧边栏高亮与分组折叠、顶部工具条（自动刷新 / 手动刷新）、
+ * 路由与视图切换、侧边栏高亮与分组折叠、顶部公共横栏（品牌/在线状态/管理地址/主题）、
  * 全局事件委托（click / change）、初始化。最后加载，依赖全部模块。
  * 路由支持参数化：#/components/<name>、#/services/<name>，可带 ?tab=config 查询。
  * 挂载到全局命名空间 window.Rock.main。
@@ -127,6 +127,9 @@
     database:   { fetch: o => views.database.load(o || {}), lazy: true },
   };
 
+  // 顶栏只保留全局常驻项（品牌/在线状态/管理地址/主题）；
+  // 刷新与自动刷新是页面局部能力，由各页面自带的页内按钮承载，不在顶栏放全局刷新控件。
+
   function refreshPage(route, opts) {
     const p = pageLoaders[route.base];
     if (!p) return Promise.resolve();
@@ -164,21 +167,8 @@
     }
   }
 
-  // 顶部工具条
-  function bindToolbar() {
-    $('#auto-refresh').addEventListener('change', restartAutoRefresh);
-    $('#btn-refresh').addEventListener('click', manualRefresh);
-  }
-
-  function setRefreshing(v) {
-    const b = $('#btn-refresh');
-    if (b) b.classList.toggle('is-loading', v);
-  }
-
-  function manualRefresh() {
-    setRefreshing(true);
-    refreshPage(currentRoute(), { manual: true }).then(() => setRefreshing(false), () => setRefreshing(false));
-  }
+  // 顶部公共横栏为纯静态全局区（品牌/在线/管理地址/主题），无任何按页面变化的元素；
+  // 主题切换在 boot 经 Rock.theme.bind 绑定，刷新等页面局部能力由各页面自带按钮承载。
 
   // 左上角品牌区版本号（GET /admin/version，与 rocksys --version 同源；失败静默不阻塞控制台）
   function fetchVersion() {
@@ -214,25 +204,6 @@
   function dismissPruneBanner() {
     store.loginWarnings = null;
     renderPruneBanner();
-  }
-
-  // 自动刷新（作用于概览 / 组件 / 服务 / WAF安全防护）
-  let autoTimer = null;
-  function restartAutoRefresh() {
-    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
-    const el = $('#auto-refresh');
-    const v = Number(el ? el.value : 0) || 0;
-    if (v > 0) {
-      autoTimer = setInterval(() => {
-        const r = currentRoute();
-        if (r.base === 'overview' || r.base === 'waf') {
-          refreshPage(r, { silent: true });
-        } else if (r.base === 'components' || r.base === 'services') {
-          // 配置页签正在编辑时不整页重绘，避免打断输入；状态页签强制拉取最新开关状态
-          if (r.query.tab !== 'config') refreshPage(r, { silent: true, force: true });
-        }
-      }, v);
-    }
   }
 
   // 侧边栏收起/展开：顶栏 ☰ 按钮切换，偏好记忆于 localStorage（rocksys.sidebar）
@@ -280,10 +251,8 @@
       Rock.auth.showPanel('login');
       Rock.auth.setError('访问凭证无效或已过期，请重新登录');
     });
-    bindToolbar();
     bindSidebarToggle();
     initRoute();
-    restartAutoRefresh();
     fetchVersion();
     loadPruneWarnings();
     // 主题切换：同步下拉框并绑定切换事件
@@ -398,8 +367,6 @@
     parseHash,
     renderPage,
     refreshPage,
-    restartAutoRefresh,
-    manualRefresh,
     loadPruneWarnings,
     renderPruneBanner,
     dismissPruneBanner,

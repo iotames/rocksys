@@ -35,6 +35,7 @@ const (
 	PathConfigList = "/admin/config/list"
 	PathVersion    = "/admin/version"
 	PathMeta       = "/admin/meta"
+	PathSystem     = "/admin/system"
 )
 
 // 认证端点路径（§8.4）：登录/注册/重置/状态，均免鉴权（前置条件由 handler 校验）。
@@ -211,6 +212,7 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodGet, "/admin/log/tail", check(s.handleLogTail))
 	s.srv.AddHandler(http.MethodGet, "/admin/log/stream", check(s.handleLogStream))
 	s.srv.AddHandler(http.MethodGet, PathVersion, check(s.handleVersion))
+	s.srv.AddHandler(http.MethodGet, PathSystem, check(s.handleSystem))
 	s.srv.AddHandler(http.MethodGet, PathWarnings, check(s.handleWarnings))
 	// 数据库表结构同步端点（/admin/db/*）：检查走 GET，执行为危险操作走 POST。
 	s.srv.AddHandler(http.MethodGet, PathDBSchema, check(func(ctx httpsvr.Context) { s.handleDBSchema(ctx.Writer, ctx.Request) }))

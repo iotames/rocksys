@@ -1,6 +1,6 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/overview.js 概览页
- * 页签「总览」：网关信息卡 + 运行指标卡（含趋势图） + HTTP 数据流图（组件节点带开关）
+ * 页签「总览」：网关信息横条 + 运行指标卡（含运行时间瓦片与趋势图） + 资源监控卡 + HTTP 数据流图（组件节点带开关）
  * + 服务状态总览；页签「小黑屋」：当前在押的限时封禁预览（IP_BLACKLIST_PLAN §3.7）。
  * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api
  * / Rock.comp.{tabs,metrics,componentState,dataflow,chart,dataTable,empty}。
@@ -26,7 +26,7 @@
   // ── 页签状态：总览 / 小黑屋 ─────────────────────────────────────────
   let ovActiveTab = 'overview'; // 'overview' | 'jail'
 
-  // 小黑屋数据缓存（切页签/自动刷新时刷新；拉取失败保留旧数据 + 行内提示）
+  // 小黑屋数据缓存（切页签/静默重载时刷新；拉取失败保留旧数据 + 行内提示）
   let jailRows = [];
   let jailTotal = 0;
   let jailErr = null;
@@ -63,18 +63,30 @@
       store.switchesLoaded = true;
       baseOk = true;
       noteUpdated();
-      // 顶部管理地址
-      const addr = $('#gw-addr');
-      if (addr) addr.textContent = '管理地址：' + (store.base.admin || '—');
+      // 顶栏管理地址经全局 UI 接口供数（页面不直接操作全局栏 DOM）
+      Rock.ui.setAdminAddr(store.base.admin);
     } catch (e) {
       store.overviewFailed = !store.baseLoaded && !store.switchesLoaded;
       if (!opts.silent && e.status !== 0 && !e.obsDisabled) {
         toast('概览加载失败：' + e.message, 'error');
       }
     }
+    // 系统资源信息（运行时长/CPU/内存）：与指标并行拉取；失败行内降级，且非静默加载时
+    // 弹统一 error toast（UX 红线：行内兜底只能与 toast 并存，不能替代；gate baseOk
+    // 避免与「概览加载失败」对同一根因双弹）。status=0（网络不可达）走全局横幅，不弹。
+    const systemP = api.get('/admin/system').then(
+      function (s) { store.system = s; },
+      function (e) {
+        store.system = null;
+        if (baseOk && !opts.silent && e.status !== 0) {
+          toast('系统资源信息加载失败：' + e.message + '，可点页内「刷新」重试', 'error');
+        }
+      }
+    );
     if (baseOk) {
       try {
-        const m = await api.get('/admin/metrics');
+        // system 与 metrics 无依赖，并行拉取缩短首屏（systemP 内部已容错，不会 reject）
+        const [m] = await Promise.all([api.get('/admin/metrics'), systemP]);
         store.metrics = normalizeMetrics(m);
         store.metricsError = null;
         if (store.metrics) {
@@ -95,7 +107,7 @@
       }
     }
     render();
-    // 小黑屋页签随首页刷新周期联动刷新（自动刷新由 main.js 驱动 load，总览页签不受影响）
+    // 小黑屋页签随首页静默重载联动刷新（手动刷新/开关操作触发，总览页签不受影响）
     if (ovActiveTab === 'jail') loadJail(opts);
   }
 
@@ -174,22 +186,68 @@
   }
 
   // ── 页签「总览」：原有内容（行为不变）──────────────────────────────
-  function overviewBodyHTML() {
-    // ---- 网关信息卡 ----
+  // 网关信息横条：一行排布关键信息（管理地址在顶栏全局展示，此处不再重复），最右侧「进入全局配置」跳转链接
+  function gatewayBarHTML() {
     const b = store.base || {};
-    const gwItems = [
+    const items = [
       ['监听端口', b.listen || '—'],
-      ['默认后端', b.upstream || '—'],
-      ['转发超时', (b.timeout != null ? b.timeout : '—') + ' 秒'],
-      ['管理地址', b.admin || '—'],
-      ['配置文件', b.config_file || '—'],
-      ['日志级别', b.log_level || '—'],
+      ['转发地址', b.upstream || '—'],
     ].map(it =>
-      '<div class="gw-item"><span class="k">' + esc(it[0]) + '</span><span class="v">' + esc(it[1]) + '</span></div>'
+      '<div class="gw-bar-item"><span class="k">' + esc(it[0]) + '</span><span class="v">' + esc(it[1]) + '</span></div>'
     ).join('');
+    return '<div class="card hoverable gw-bar" data-act="goto-config" title="点击进入全局配置">' +
+      items +
+      '<a class="link-like gw-bar-link">进入全局配置 →</a>' +
+      '</div>';
+  }
 
-    // ---- 运行指标卡（含趋势图，指标页合并至此）----
+  // 资源监控卡：机器 CPU / 内存进度条 + 进程级占用（数据来自 /admin/system；系统级仅 Linux 可得）
+  function resourceCardHTML() {
+    const sys = store.system;
+    let body;
+    if (!sys) {
+      body = Rock.comp.empty.message({ text: '系统资源信息不可用', padding: '24px 8px' });
+    } else {
+      const fmtMB = n => Rock.util.fmtInt(Math.round(Number(n) / 1048576));
+      const bar = (label, pct, sub) => {
+        const p = pct == null ? null : Math.max(0, Math.min(100, pct));
+        return '<div class="res-row"><span class="res-label">' + esc(label) + '</span>' +
+          '<div class="res-track"><div class="res-fill' + (p != null && p >= 80 ? ' res-hot' : '') + '"' +
+          (p != null ? ' style="width:' + p.toFixed(1) + '%"' : ' style="visibility:hidden"') + '></div></div>' +
+          '<span class="res-pct">' + (p != null ? p.toFixed(1) + '%' : '—') + '</span></div>' +
+          (sub ? '<div class="res-sub">' + sub + '</div>' : '');
+      };
+      const isLinux = sys.os === 'linux';
+      let cpuRow, memRow;
+      if (sys.cpu_percent != null) {
+        cpuRow = bar('CPU', sys.cpu_percent, '进程占用 ' + (sys.proc_cpu_percent != null ? sys.proc_cpu_percent.toFixed(1) + '%' : '—'));
+      } else {
+        // null 的两种成因分开说清（文案三要素）：Linux=首次采样未完成（数秒后刷新可见）；
+        // 其余平台=不支持系统级采集
+        cpuRow = bar('CPU', null, isLinux
+          ? '首次采样中（间隔约 3 秒），点「刷新」后显示'
+          : '当前平台不支持系统级 CPU 采集');
+      }
+      if (sys.mem_total != null) {
+        const usedPct = sys.mem_total > 0 ? (sys.mem_used / sys.mem_total) * 100 : null;
+        memRow = bar('内存', usedPct, esc(fmtMB(sys.mem_used)) + ' MB / ' + esc(fmtMB(sys.mem_total)) + ' MB');
+      } else {
+        memRow = bar('内存', null, isLinux
+          ? '系统级内存读取失败，请查看服务端日志'
+          : '当前平台不支持系统级内存采集');
+      }
+      body = cpuRow + memRow +
+        '<div class="form-hint" style="margin-top:10px">进程内存 ' + esc(fmtMB(sys.proc_mem_bytes)) +
+        ' MB · Goroutines ' + esc(Rock.util.fmtInt(sys.goroutines)) +
+        ' · 核心数 ' + esc(Rock.util.fmtInt(sys.num_cpu)) + '</div>';
+    }
+    return '<div class="card"><div class="card-title">资源监控 <span class="card-sub">机器 CPU / 内存 · 进程占用</span></div>' + body + '</div>';
+  }
+
+  function overviewBodyHTML() {
+    // ---- 运行指标卡（含趋势图，指标页合并至此；运行时间来自 /admin/system）----
     const metricsOff = store.metricsError === 'obs';
+    const uptime = store.system && store.system.uptime_seconds != null ? store.system.uptime_seconds : null;
     let metricsBody;
     if (metricsOff) {
       metricsBody =
@@ -201,31 +259,31 @@
       metricsBody = Rock.comp.empty.message({ text: '暂无指标数据', padding: '24px 8px' });
     } else {
       metricsBody = Rock.comp.metrics.metricTiles({
-        obsOff: false,
         metrics: store.metrics,
         history: store.metricsHistory,
+        uptime: uptime,
       });
     }
     const chartBody = metricsOff
       ? ''
       : '<div class="chart-box" style="height:150px;margin-top:12px"><canvas id="overview-chart"></canvas></div>' +
-        (store.metricsHistory.length < 2 ? '<div class="empty">等待采样数据…（开启自动刷新后趋势自动累积）</div>' : '');
+        (store.metricsHistory.length < 2 ? '<div class="empty">等待采样数据…（每次刷新自动累积趋势采样）</div>' : '');
 
     // ---- 独立服务 ----
     const services = store.switches.filter(s => s.kind === 'component');
 
-    return '<div class="grid grid-2">' +
-      '<div class="card hoverable" data-act="goto-config" style="cursor:pointer">' +
-      '<div class="card-title">网关信息 <span class="card-sub">点击进入全局配置</span></div>' + gwItems +
-      '</div>' +
+    return gatewayBarHTML() +
+
+      '<div class="grid grid-2" style="margin-top:16px">' +
       '<div class="card"><div class="card-title">运行指标 <span class="card-sub">实时 · 趋势</span></div>' + metricsBody + chartBody + '</div>' +
+      resourceCardHTML() +
       '</div>' +
 
-      '<div class="card"><div class="card-title">HTTP 数据流 <span class="card-sub">组件按链路顺序执行 · 开关即启停 · 点击名称进入详情（关闭即降级）</span></div>' +
+      '<div class="card" style="margin-top:16px"><div class="card-title">HTTP 数据流 <span class="card-sub">组件按链路顺序执行 · 开关即启停 · 点击名称进入详情（关闭即降级）</span></div>' +
       Rock.comp.dataflow.renderHTML(store.switches) +
       '</div>' +
 
-      '<div class="card"><div class="card-title">服务状态总览 <span class="card-sub">独立服务 · 点击名称进入详情</span></div>' +
+      '<div class="card" style="margin-top:16px"><div class="card-title">服务状态总览 <span class="card-sub">独立服务 · 点击名称进入详情</span></div>' +
       overviewGridHTML(services, SERVICE_ORDER, 'services') +
       (services.length ? '' : '<div class="form-hint">服务按配置装配，当前未装配独立服务。</div>') +
       '</div>';
@@ -234,7 +292,7 @@
   // ── 页签「小黑屋」：当前在押的限时封禁预览（IP_BLACKLIST_PLAN §3.7）──
 
   // 拉取小黑屋数据：失败统一弹 error toast（不自动消失），同时保留行内提示兜底；
-  // 仅自动刷新（silent）不弹 toast（避免周期性刷屏），只更新行内提示
+  // 仅静默重载（silent）不弹 toast（避免重复操作刷屏），只更新行内提示
   let jailFetched = false; // 是否成功拉取过一次（失败时决定是否显示行内错误）
   async function loadJail(opts) {
     opts = opts || {};

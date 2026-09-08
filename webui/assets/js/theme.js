@@ -44,7 +44,7 @@
     return name;
   }
 
-  // 绑定顶部工具条主题下拉框
+  // 绑定顶部公共横栏主题下拉框
   function bind() {
     const sel = document.getElementById('theme-select');
     if (!sel) return;

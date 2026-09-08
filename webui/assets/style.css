@@ -225,7 +225,7 @@ b, strong { font-weight: 600; }
 }
 .btn-block { width: 100%; margin-top: 6px; }
 
-/* ---------- 2. 顶部工具条 ---------- */
+/* ---------- 2. 顶部公共横栏 ---------- */
 .topbar {
   flex: 0 0 48px;
   display: flex;
@@ -306,14 +306,6 @@ b, strong { font-weight: 600; }
   gap: 6px;
   font-size: 12px;
   color: var(--text-2);
-}
-
-.updated {
-  font-size: 12px;
-  color: var(--text-2);
-  min-width: 96px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- 3. 全局横幅（管理接口不可达） ---------- */
@@ -477,7 +469,7 @@ b, strong { font-weight: 600; }
 
 .btn:active { transform: translateY(1px); }
 
-.btn:disabled, .btn.is-loading { opacity: .55; cursor: not-allowed; }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
 
 .btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: #fff; }
@@ -492,11 +484,6 @@ b, strong { font-weight: 600; }
 .btn-text:hover { background: rgba(47, 129, 247, .12); border-color: transparent; color: var(--text-btn-hover); }
 
 .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 4px; }
-
-.refresh-ico { display: inline-block; }
-.btn.is-loading .refresh-ico { animation: spin 1s linear infinite; }
-
-@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- 7. 输入框 / 下拉框 ---------- */
 .input {
@@ -945,10 +932,21 @@ b, strong { font-weight: 600; }
 
 /* ---------- 21. 概览页 ---------- */
 /* 网关信息项 */
-.gw-item { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-bottom: 1px dashed var(--border); }
-.gw-item:last-child { border-bottom: none; }
-.gw-item .k { font-size: 12.5px; color: var(--text-2); }
-.gw-item .v { font-size: 13px; font-family: var(--font-mono); word-break: break-all; text-align: right; }
+/* 网关信息横条：一行排布关键信息 + 右侧跳转链接（概览页顶部） */
+.gw-bar { display: flex; align-items: center; gap: 32px; flex-wrap: wrap; padding: 14px 18px; }
+.gw-bar-item { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.gw-bar-item .k { font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+.gw-bar-item .v { font-size: 13px; font-family: var(--font-mono); word-break: break-all; }
+.gw-bar-link { margin-left: auto; white-space: nowrap; font-size: 13px; }
+
+/* 资源监控卡：CPU / 内存占用进度条（≥80% 转警示色） */
+.res-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.res-label { width: 42px; font-size: 13px; font-weight: 600; flex: none; }
+.res-track { flex: 1; height: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.res-fill { height: 100%; background: var(--primary, #2f6fed); border-radius: 999px; transition: width .4s ease; }
+.res-fill.res-hot { background: var(--danger-light, #e5484d); }
+.res-pct { width: 56px; text-align: right; font-size: 12.5px; font-variant-numeric: tabular-nums; flex: none; }
+.res-sub { margin: 3px 0 0 54px; font-size: 12px; color: var(--text-2); }
 
 /* ---------- 22. 组件页 ---------- */
 .filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }

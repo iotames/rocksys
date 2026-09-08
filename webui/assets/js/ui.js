@@ -11,7 +11,6 @@
 
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
-  const fmtTime = Rock.util.fmtTime;
   const fmtDateTime = Rock.util.fmtDateTime;
 
   // 右上角消息提示（唯一提示组件，全站统一走这里，禁止再造轮子）：
@@ -153,16 +152,20 @@
       dot.classList.add(v ? 'dot-bad' : 'dot-ok');
     }
     const label = $('#gw-status-text');
-    if (label) label.textContent = v ? '网关不可达' : '网关在线';
+    if (label) label.textContent = v ? '不可达' : '在线';
   }
 
-  // 更新"最近更新"时间
+  // 更新"最后更新"时间（供不可达横幅展示断连前最后数据时刻）
   function noteUpdated() {
     Rock.state.store.lastUpdated = Date.now();
-    const el = $('#last-updated');
-    if (el) el.textContent = '最近更新 ' + fmtTime(new Date());
     const b = $('#banner-last-updated');
     if (b) b.textContent = fmtDateTime(new Date());
+  }
+
+  // 设置顶栏管理地址（全局栏 DOM 仅由全局模块 own；数据来源方经此接口供数，不直接碰顶栏）
+  function setAdminAddr(addr) {
+    const el = $('#gw-addr');
+    if (el) el.textContent = '管理地址：' + (addr || '—');
   }
 
   // 401：凭证失效 → 跳转登录视图（已在认证页则不重复弹）。
@@ -186,6 +189,7 @@
     skeletonHTML,
     markUnreachable,
     noteUpdated,
+    setAdminAddr,
     setUnauthorizedHandler,
     onUnauthorized,
   };

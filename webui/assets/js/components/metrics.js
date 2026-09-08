@@ -35,13 +35,20 @@
     return qps.toFixed(2);
   }
 
-  function metricTiles({ obsOff, metrics, history }) {
-    if (obsOff) {
-      const labels = ['每秒请求', '延迟 50%', '延迟 95%', '延迟 99%', '错误率'];
-      return labels.map(l =>
-        '<div class="metric-tile"><div class="metric-label">' + esc(l) + '</div><div class="metric-value">—</div></div>'
-      ).join('');
-    }
+  // 运行时间格式化：≥1 天 → "211 天 12:47:40"（value=天数，unit=时分秒）；不足 1 天 → "12:47:40"
+  function fmtUptime(sec) {
+    sec = Math.max(0, Math.floor(Number(sec) || 0));
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor(sec % 86400 / 3600);
+    const m = Math.floor(sec % 3600 / 60);
+    const s = sec % 60;
+    const pad = n => (n < 10 ? '0' : '') + n;
+    const hms = pad(h) + ':' + pad(m) + ':' + pad(s);
+    return d > 0 ? { value: String(d), unit: '天 ' + hms } : { value: hms, unit: '' };
+  }
+
+  // 运行时间瓦片：数据来自 /admin/system，不可得（uptime 为 null）时不占位
+  function metricTiles({ metrics, history, uptime }) {
     const m = metrics;
     if (!m) return '<div class="empty" style="padding:24px 8px">暂无指标数据</div>';
     const d = delta(history);
@@ -51,14 +58,19 @@
       { label: '延迟 95%', value: fmtInt(m.p95_ms), unit: '毫秒', delta: null },
       { label: '延迟 99%', value: fmtInt(m.p99_ms), unit: '毫秒', delta: null },
       { label: '错误率', value: fmtRate(m.error_rate), unit: '', delta: null },
-    ].map(t =>
+    ];
+    if (uptime != null) {
+      const up = fmtUptime(uptime);
+      tiles.push({ label: '运行时间', value: up.value, unit: up.unit, delta: null });
+    }
+    const tilesHTML = tiles.map(t =>
       '<div class="metric-tile"><div class="metric-label">' + esc(t.label) + '</div>' +
       '<div class="metric-value">' + esc(t.value) + (t.unit ? '<span class="metric-unit">' + esc(t.unit) + '</span>' : '') + '</div>' +
       (t.delta ? '<div class="metric-delta ' + t.delta.cls + '">' + t.delta.txt + '</div>' : '') +
       '</div>'
     ).join('');
-    return '<div class="metric-grid">' + tiles + '</div>';
+    return '<div class="metric-grid">' + tilesHTML + '</div>';
   }
 
-  window.Rock.comp.metrics = { delta, fmtQps, metricTiles };
+  window.Rock.comp.metrics = { delta, fmtQps, fmtUptime, metricTiles };
 })();

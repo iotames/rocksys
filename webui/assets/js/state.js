@@ -21,6 +21,7 @@
     metrics: null,                 // GET /admin/metrics 最新指标
     metricsError: null,            // 'obs' = 观测未开启
     metricsHistory: [],            // 趋势采样历史 [{t, qps, p50, p95, p99, err}]
+    system: null,                  // GET /admin/system 运行时长 + 机器资源概况（概览页）
     wafMetrics: null,              // GET /admin/shield/metrics 近 1 分钟拦截计数（内存窗口）
     wafMetricsError: null,
     wafStats: null,                // GET /admin/shield/stats 按日聚合 + Top IP
