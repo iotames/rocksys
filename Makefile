@@ -20,6 +20,7 @@
 #   make vet         # 静态检查
 #   make gen-env     # 生成 bin/default.env 全量默认值快照（在 bin/ 目录运行，不删 .env）
 #   make run         # 构建并在 bin/ 目录运行（工作目录=bin/，运行时文件落 bin/，绝不污染项目根目录）
+#   make deploy      # 部署到远端服务器：build → 上传 bin/rocksys → systemctl restart（Linux/Mac/WSL；不支持 Windows）
 #
 # 注：Makefile 为纯 Unix 语法，Windows 原生 cmd 不支持；请经 WSL2 执行（cd /mnt/d/.../rocksys && make xxx）。
 
@@ -45,7 +46,13 @@ LD_FLAGS := -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)
 # windows 目标产物自动追加 .exe 后缀
 CROSS_TARGETS := linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: all deps build cross-build zip release dev test vet gen-env run clean
+# deploy 部署目标：SSH/SCP 登录名（Host 别名），环境变量优先，缺省 rocksys；
+# 实际 IP/端口/密钥由 ~/.ssh/config 的 Host 条目解析，本 Makefile 不掺和。
+ROCKSYS_SERVER ?= rocksys
+# deploy 远端部署目录（相对 $HOME）：~/projects/rocksys/bin
+REMOTE_DIR := projects/rocksys/bin
+
+.PHONY: all deps build cross-build zip release deploy dev test vet gen-env run clean
 
 all: build
 
@@ -136,6 +143,27 @@ gen-env: build
 #   跟随工作目录落在 bin/，绝不污染项目根目录。禁止在项目根目录直接执行 ./bin/rocksys。
 run: build
 	cd bin && ./rocksys
+
+# deploy：构建并部署到远端服务器（Linux/Mac/WSL 执行；依赖 ssh/scp，不支持 Windows）。
+# 用法：make deploy（或 ROCKSYS_SERVER=<user@host别名> make deploy）。
+# 流程：build → ELF 防呆校验 → mkdir 远端目录 → 上传临时文件 → 远端原子替换 + --version
+# 回显验证 → systemctl restart → is-active 确认服务存活。任何一步失败立即中止。
+# 关键点：先传临时名 rocksys.new 再 mv 原子替换——直接 scp 覆盖运行中的二进制会报
+# Text file busy（ETXTBSY）；mv 是 rename，停机窗口压缩到 restart 一瞬。
+# 注：仅上传二进制，不触碰服务端 hotscripts/（服务器侧资产，或含个性化配置，不随部署覆盖）。
+deploy: build
+	@echo "==> 校验产物为 Linux ELF（Mac 本机构建产物会被拦截，请经 WSL 构建）"
+	@head -c 4 bin/rocksys | od -An -tx1 | grep -q '7f 45 4c 46' || \
+		{ echo "错误: bin/rocksys 不是 Linux 二进制，已中止部署" >&2; exit 1; }
+	@echo "==> 上传到 $(ROCKSYS_SERVER):~/$(REMOTE_DIR)/"
+	@ssh $(ROCKSYS_SERVER) "mkdir -p ~/$(REMOTE_DIR)"
+	scp -p bin/rocksys $(ROCKSYS_SERVER):~/$(REMOTE_DIR)/rocksys.new
+	@echo "==> 远端替换并重启 rocksys"
+	@ssh $(ROCKSYS_SERVER) "set -e; cd ~/$(REMOTE_DIR); \
+		chmod +x rocksys.new; mv -f rocksys.new rocksys; \
+		./rocksys --version; \
+		systemctl restart rocksys; sleep 1; systemctl is-active rocksys"
+	@echo "==> 部署完成: $(ROCKSYS_SERVER) 已重启运行 $(VERSION)"
 
 clean:
 	rm -rf bin
