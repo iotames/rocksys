@@ -233,7 +233,7 @@
         memRow = bar('内存', usedPct, esc(fmtMB(sys.mem_used)) + ' MB / ' + esc(fmtMB(sys.mem_total)) + ' MB');
       } else {
         memRow = bar('内存', null, isLinux
-          ? '系统级内存读取失败，请查看服务端日志'
+          ? '系统级内存读取失败（本机 /proc 受限不可读）'
           : '当前平台不支持系统级内存采集');
       }
       body = cpuRow + memRow +
