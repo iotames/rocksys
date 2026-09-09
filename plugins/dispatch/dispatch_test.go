@@ -32,11 +32,11 @@ func matchUp(rt *RouteTable, path string) (string, bool) {
 
 func TestRouteTable_Match_newline(t *testing.T) {
 	tests := []struct {
-		name     string
-		rules    *RouteTable
-		path     string
-		wantUp   string
-		wantOK   bool
+		name   string
+		rules  *RouteTable
+		path   string
+		wantUp string
+		wantOK bool
 	}{
 		{name: "命中前缀", rules: mustRT(t, "/api/order/=http://order-svc:9001"),
 			path: "/api/order/123", wantUp: "http://order-svc:9001", wantOK: true},

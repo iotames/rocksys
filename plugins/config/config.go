@@ -44,12 +44,12 @@ var defaultFile = ".env"
 // 热更：订阅 conf.Manager.Watch，外部改文件后重载并广播变更（§13 不重启）。
 type FileStore struct {
 	mu     sync.RWMutex
-	path   string                  // 配置文件路径（.env 格式）
-	kv     map[string]string       // 内存快照
-	cbs    []func(ChangeEvent)     // Watch 回调
-	cfgMgr conf.Manager            // 可空；非空时用于热更广播与 Set 联动
-	once   sync.Once               // 仅订阅一次 cfgMgr.Watch
-	unsub  chan struct{}           // 停止热更订阅信号
+	path   string              // 配置文件路径（.env 格式）
+	kv     map[string]string   // 内存快照
+	cbs    []func(ChangeEvent) // Watch 回调
+	cfgMgr conf.Manager        // 可空；非空时用于热更广播与 Set 联动
+	once   sync.Once           // 仅订阅一次 cfgMgr.Watch
+	unsub  chan struct{}       // 停止热更订阅信号
 }
 
 // NewFileStore 创建基于 path 的 FileStore。

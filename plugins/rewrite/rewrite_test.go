@@ -28,12 +28,12 @@ func TestParseRules_Empty(t *testing.T) {
 
 func TestParseRules_Error(t *testing.T) {
 	cases := []string{
-		"/api/v1",                    // 缺少 =
-		"api/v1/=uri|/api/",          // 前缀不以 / 开头
-		"/api/v1/=",                  // 缺少 spec
-		"/api/v1/=uri|api/",          // 改写前缀不以 / 开头
-		"/api/v1/=header=no-colon",   // header 缺冒号
-		"/api/v1/=unknown-action",    // 不支持的动作
+		"/api/v1",                  // 缺少 =
+		"api/v1/=uri|/api/",        // 前缀不以 / 开头
+		"/api/v1/=",                // 缺少 spec
+		"/api/v1/=uri|api/",        // 改写前缀不以 / 开头
+		"/api/v1/=header=no-colon", // header 缺冒号
+		"/api/v1/=unknown-action",  // 不支持的动作
 	}
 	for _, c := range cases {
 		if _, err := parseRules(c); err == nil {

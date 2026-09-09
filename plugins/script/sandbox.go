@@ -40,8 +40,10 @@ func (e *Engine) newVM() *lua.LState {
 }
 
 // installAPI 向 VM 注册白名单 API（§15）：
-//   req.header(key) / req.path() / req.method()
-//   ctx.set_target(target) / ctx.respond(code, body)
+//
+//	req.header(key) / req.path() / req.method()
+//	ctx.set_target(target) / ctx.respond(code, body)
+//
 // responded 为共享标记：respond 写入响应后置位，Handle 据此中断链。
 func installAPI(L *lua.LState, ctx *chain.Context, responded *bool) {
 	req := L.NewTable()
