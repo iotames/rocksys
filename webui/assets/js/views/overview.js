@@ -1,7 +1,7 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/overview.js 概览页
- * 页签「总览」：网关信息横条 + 运行指标卡（含运行时间瓦片与趋势图） + 资源监控卡 + 流量统计区（TRAFFIC_ANALYSIS：
- * 时间范围筛选 + 指标瓦片 + 访问/拦截趋势 + 地理位置，按需 SQL 聚合、服务端缓存） + HTTP 数据流图（组件节点带开关）
+ * 页签「总览」：网关信息横条 + 流量统计区（TRAFFIC_ANALYSIS：时间范围筛选 + 指标瓦片 + 地理位置（并入卡内，
+ * 紧接瓦片之下） + 访问/拦截趋势，按需 SQL 聚合、服务端缓存） + 运行状态卡（实时指标 + 资源监控） + HTTP 数据流图（组件节点带开关）
  * + 服务状态总览；页签「小黑屋」：当前在押的限时封禁预览（IP_BLACKLIST_PLAN §3.7）。
  * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api
  * / Rock.comp.{tabs,metrics,componentState,dataflow,chart,dataTable,empty}。
@@ -435,12 +435,13 @@
       body = Rock.comp.empty.message({ text: '加载中…' });
     } else {
       body = '<div class="geo-panels">' +
-        '<div class="geo-map-box" style="height:320px"><div id="geo-map" style="width:100%;height:100%"></div></div>' +
+        '<div class="geo-map-box" style="height:380px"><div id="geo-map" style="width:100%;height:100%"></div></div>' +
         '<div class="geo-rank"><div class="card-title" style="margin-bottom:6px">Top 地区 <span class="card-sub">' +
         srcLabel + '口径 · ' + scopeLabel + '</span></div>' + geoRankHTML(geo.geo || []) + '</div>' +
         '</div>';
     }
-    return '<div class="card" style="margin-top:16px"><div class="geo-card-head"><div class="card-title">地理位置 <span class="card-sub">按范围查库聚合 · 地图与排名联动</span></div>' +
+    // 并入流量统计卡内的分区样式（同运行状态卡「资源」分区的 border-top 风格）
+    return '<div style="border-top:1px solid rgba(127,127,127,.15);margin-top:12px;padding-top:10px"><div class="geo-card-head"><div class="card-title">地理位置 <span class="card-sub">按范围查库聚合 · 地图与排名联动</span></div>' +
       geoTogglesHTML() + '</div>' + body + '</div>';
   }
 
@@ -504,6 +505,8 @@
       body = '<div style="margin-bottom:10px">' + chips + '</div>' +
         (trafficPreset === 'custom' ? '<div style="margin-bottom:10px">' + custom + '</div>' : '') +
         trafficTilesHTML(sm) +
+        // 地理位置并入流量统计卡：紧接指标瓦片之下（异步拉取后经 renderGeoCard 填充）
+        '<div class="geo-slot"></div>' +
         '<div class="grid grid-2" style="margin-top:12px">' +
         '<div><div class="card-title" style="margin-bottom:6px">访问趋势 <span class="card-sub">req_ok · UTC 桶</span></div>' +
         '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-ok"></canvas></div></div>' +
@@ -531,6 +534,8 @@
   function renderTrafficBody() {
     const host = $('#page-overview .traffic-slot');
     if (!host || ovActiveTab !== 'overview') return;
+    const oldMap = $('#geo-map'); // 地理位置已并入本卡，整卡重绘前先销毁地图实例防泄漏
+    if (oldMap && window.echarts && echarts.getInstanceByDom) echarts.dispose(oldMap);
     host.innerHTML = trafficBodyHTML();
     drawTrafficCharts();
   }
@@ -609,17 +614,15 @@
 
     return gatewayBarHTML() +
 
-      // 运行状态卡（METRICS_WINDOW 重排：运行指标 + 资源监控合并，实时切片口径；
-      // 延迟分位数已拆分至流量统计区的 SQL 精确口径）
+      // 流量统计卡在前（含地理位置：紧接指标瓦片之下）；运行状态卡（实时口径）整体后移
+      '<div class="traffic-slot" style="margin-top:16px">' + trafficBodyHTML() + '</div>' +
+
       '<div class="card" style="margin-top:16px"><div class="card-title">运行状态 <span class="card-sub">实时 · 趋势 · 资源</span></div>' +
       metricsBody +
       (metricsOff ? '' : '<div style="border-top:1px solid rgba(127,127,127,.15);margin-top:12px;padding-top:10px">' +
         '<div class="card-title" style="margin-bottom:6px">资源 <span class="card-sub">机器 CPU / 内存 · 进程占用</span></div>' +
         resourceRowsHTML() + '</div>') +
       '</div>' +
-
-      '<div class="traffic-slot" style="margin-top:16px">' + trafficBodyHTML() + '</div>' +
-      '<div class="geo-slot"></div>' +
 
       '<div class="card" style="margin-top:16px"><div class="card-title">HTTP 数据流 <span class="card-sub">组件按链路顺序执行 · 开关即启停 · 点击名称进入详情（关闭即降级）</span></div>' +
       Rock.comp.dataflow.renderHTML(store.switches) +
