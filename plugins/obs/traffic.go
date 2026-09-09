@@ -1,0 +1,324 @@
+// traffic.go：流量统计读侧端点（TRAFFIC_ANALYSIS D1/D6/D10）。
+//
+// 端点（cmd/rocksys 装配时经 adminapi.RegisterPlugin 注入）：
+//   - GET /admin/obs/traffic/summary?from=&to=           指标标量 + 率 + computed_at/cache_ttl
+//   - GET /admin/obs/traffic/series?from=&to=&bucket=    访问/拦截时间桶趋势（hour|day，缺省自适应）
+//   - GET /admin/obs/traffic/geo?from=&to=&source=       Top 国家分布（access|blocked）
+//
+// 指标口径（闭合定义见 PLAN §3.4，验收"数字互洽"以此为准）：
+//
+//	req_ok=放行总数（含静态资源、含放行后 4xx/5xx）；请求次数=req_ok+block_total；
+//	req_pv=req_ok 去静态资源（后缀清单硬编码于 SQL）；uv=COUNT(DISTINCT client_ip,user_agent)。
+//
+// 时间口径：from/to 由前端换算为 UTC 传入，统一 time >= from AND time <= to（保证各桶之和=总数可对账）；
+// 桶标签以 UTC 返回、前端原样展示并标注 UTC。
+package obs
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/iotames/easyserver/log"
+)
+
+// 管理端点路径常量（main.go 装配引用）。
+const (
+	PathTrafficSummary = "/admin/obs/traffic/summary"
+	PathTrafficSeries  = "/admin/obs/traffic/series"
+	PathTrafficGeo     = "/admin/obs/traffic/geo"
+
+	// geoTopLimit 地区分布返回条数（国家数有限，写死即可）。
+	geoTopLimit = 10
+)
+
+// trafficShieldTable / trafficBlockAvailablee 由装配处注入（AdminHandler 层，不进热路径）：
+// shield_event 表名可配置（SHIELD_EVENT_TABLE，{table2} 占位符替换用）；
+// SHIELD_EVENT_LOG_ENABLED=false 时拦截侧字段输出 null（前端显示"—"）。
+var (
+	trafficShieldTable    = "shield_event"
+	trafficBlockAvailable = true
+)
+
+// SetShieldTable 注入 shield_event 运行期表名（装配期一次；空串回落 shield_event）。
+func SetShieldTable(name string) {
+	if name != "" {
+		trafficShieldTable = name
+	}
+}
+
+// SetBlockAvailable 注入拦截侧可用性（SHIELD_EVENT_LOG_ENABLED 实值；false=统计输出 null）。
+func SetBlockAvailable(ok bool) { trafficBlockAvailable = ok }
+
+// trafficScript 读统计脚本并替换 {table}(access_log)/{table2}(shield_event) 占位符。
+func (o *Obs) trafficScript(name string) (string, error) {
+	txt, err := o.dataDB.SQL(name)
+	if err != nil {
+		return "", fmt.Errorf("obs: 读取统计脚本 %s 失败: %w", name, err)
+	}
+	txt = strings.ReplaceAll(txt, "{table}", accessLogTable)
+	return strings.ReplaceAll(txt, "{table2}", trafficShieldTable), nil
+}
+
+// trafficQuery 执行统计脚本返回平铺行。
+func (o *Obs) trafficQuery(name string, args ...any) ([]map[string]any, error) {
+	sel, err := o.trafficScript(name)
+	if err != nil {
+		return nil, err
+	}
+	var rows []map[string]any
+	if err := o.dataDB.EasyDB().GetMany(sel, &rows, args...); err != nil {
+		return nil, fmt.Errorf("obs: 统计查询 %s 失败: %w", name, err)
+	}
+	return rows, nil
+}
+
+// parseTrafficRange 解析 from/to（复用 logs 的时间解析，转 UTC 口径）。
+func parseTrafficRange(q interface{ Get(string) string }, now time.Time) (time.Time, time.Time, error) {
+	from, to, err := parseTimeRange(q.Get("from"), q.Get("to"), now)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	return from.UTC(), to.UTC(), nil
+}
+
+// trafficTTL 当前缓存 TTL（秒；0=禁用）。
+func (o *Obs) trafficTTL() time.Duration {
+	return time.Duration(o.trafficCacheTTL) * time.Second
+}
+
+// Summary GET /admin/obs/traffic/summary?from=&to=。
+// 返回指标标量与率（率在 Go 侧计算，分母 0 防护输出 0）+ computed_at/cache_ttl。
+func (h *AdminHandler) TrafficSummary(w http.ResponseWriter, r *http.Request) {
+	o := h.obsReady(w)
+	if o == nil {
+		return
+	}
+	if o.dataDB == nil {
+		http.Error(w, "obs 数据访问层未就绪（DB_DRIVER/DB_DSN）", http.StatusServiceUnavailable)
+		return
+	}
+	from, to, err := parseTrafficRange(r.URL.Query(), time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ttl := o.trafficTTL()
+	key := fmt.Sprintf("summary|%d|%d", from.UnixMilli(), to.UnixMilli())
+	data, cached, err := o.tcache.do(key, ttl, func() (any, error) {
+		rows, err := o.trafficQuery("traffic_summary.sql",
+			from, to, from, to, from, to, from, to, from, to, from, to, from, to, from, to, from, to)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) == 0 {
+			return nil, fmt.Errorf("obs: 统计脚本 traffic_summary.sql 未返回行")
+		}
+		row := rows[0]
+		n := func(k string) float64 { return trafficAsF(row[k]) }
+		reqOK, blockTotal := n("req_ok"), n("block_total")
+		total := reqOK + blockTotal
+		return map[string]any{
+			"req_ok":        int64(reqOK),
+			"req_pv":        int64(n("req_pv")),
+			"uv":            int64(n("uv")),
+			"ip_all":        int64(n("ip_all")),
+			"block_total":   trafficBlockField(int64(blockTotal)),
+			"attack_ips":    trafficBlockField(int64(n("attack_ips"))),
+			"err4xx":        int64(n("err4xx")),
+			"err5xx":        int64(n("err5xx")),
+			"block4xx":      trafficBlockField(int64(n("block4xx"))),
+			"err4xx_rate":   safeRate(n("err4xx"), total),
+			"err5xx_rate":   safeRate(n("err5xx"), total),
+			"block4xx_rate": safeRate(n("block4xx"), blockTotal),
+			"computed_at":   time.Now().UTC().Format(time.RFC3339),
+			"from":          from.Format(time.RFC3339),
+			"to":            to.Format(time.RFC3339),
+			"cache_ttl_sec": int(ttl.Seconds()),
+		}, nil
+	})
+	if err != nil {
+		log.Error("obs: traffic summary 查询失败", "err", err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// 缓存命中时保持首次 computed_at（在缓存值内），cache_hit 供前端/验收判断，不污染缓存值本身。
+	m := data.(map[string]any)
+	m["cache_hit"] = cached
+	writeJSON(w, m)
+}
+
+// Series GET /admin/obs/traffic/series?from=&to=&bucket=hour|day。
+// 桶宽缺省自适应（跨度 ≤48h 用 hour）；两表 UNION ALL 各桶输出 ok_count/blocked_count。
+func (h *AdminHandler) TrafficSeries(w http.ResponseWriter, r *http.Request) {
+	o := h.obsReady(w)
+	if o == nil {
+		return
+	}
+	if o.dataDB == nil {
+		http.Error(w, "obs 数据访问层未就绪（DB_DRIVER/DB_DSN）", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	from, to, err := parseTrafficRange(q, time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	bucket := q.Get("bucket")
+	if bucket == "" { // 自适应：跨度 ≤48h 用小时桶
+		if to.Sub(from) <= 48*time.Hour {
+			bucket = "hour"
+		} else {
+			bucket = "day"
+		}
+	}
+	if bucket != "hour" && bucket != "day" {
+		http.Error(w, "bucket 参数非法（可选 hour/day）", http.StatusBadRequest)
+		return
+	}
+	ttl := o.trafficTTL()
+	key := fmt.Sprintf("series|%d|%d|%s", from.UnixMilli(), to.UnixMilli(), bucket)
+	data, cached, err := o.tcache.do(key, ttl, func() (any, error) {
+		script := "traffic_series_hour.sql"
+		if bucket == "day" {
+			script = "traffic_series_day.sql"
+		}
+		rows, err := o.trafficQuery(script, from, to, from, to)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, map[string]any{
+				"bucket":        row["bucket"],
+				"ok_count":      int64(trafficAsF(row["ok_count"])),
+				"blocked_count": trafficBlockField(int64(trafficAsF(row["blocked_count"]))),
+			})
+		}
+		return out, nil
+	})
+	if err != nil {
+		log.Error("obs: traffic series 查询失败", "err", err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"bucket":        bucket,
+		"series":        data,
+		"cache_hit":     cached,
+		"cache_ttl_sec": int(ttl.Seconds()),
+	})
+}
+
+// Geo GET /admin/obs/traffic/geo?from=&to=&source=access|blocked。
+// 按 country GROUP BY 计数倒序；空串计「未知」且参与排序（读侧映射，不悄悄丢量）。
+func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
+	o := h.obsReady(w)
+	if o == nil {
+		return
+	}
+	if o.dataDB == nil {
+		http.Error(w, "obs 数据访问层未就绪（DB_DRIVER/DB_DSN）", http.StatusServiceUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	from, to, err := parseTrafficRange(q, time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	source := q.Get("source")
+	if source == "" {
+		source = "access"
+	}
+	if source != "access" && source != "blocked" {
+		http.Error(w, "source 参数非法（可选 access/blocked）", http.StatusBadRequest)
+		return
+	}
+	ttl := o.trafficTTL()
+	key := fmt.Sprintf("geo|%d|%d|%s", from.UnixMilli(), to.UnixMilli(), source)
+	data, cached, err := o.tcache.do(key, ttl, func() (any, error) {
+		rows, err := o.trafficQuery("traffic_geo_top.sql", from, to, source, source, geoTopLimit)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			country, _ := row["country"].(string)
+			if country == "" {
+				country = "未知" // 空串计「未知」参与排序（PLAN §3.4 口径）
+			}
+			out = append(out, map[string]any{
+				"country": country,
+				"cnt":     int64(trafficAsF(row["cnt"])),
+			})
+		}
+		return out, nil
+	})
+	if err != nil {
+		log.Error("obs: traffic geo 查询失败", "err", err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"source": source, "geo": data, "cache_hit": cached})
+}
+
+// obsReady 取 obs 实例（未注册或未启用输出 503 引导态并返回 nil；豁免 toast 红线②，
+// 前端按行内引导卡渲染「功能未开启」）。
+func (h *AdminHandler) obsReady(w http.ResponseWriter) *Obs {
+	if h.obs == nil {
+		http.Error(w, "obs 未注册", http.StatusServiceUnavailable)
+		return nil
+	}
+	if !h.obs.enabled {
+		http.Error(w, "obs 未启用（OBS_ENABLED=false），流量统计不可用；可在「插件」页开启后重试", http.StatusServiceUnavailable)
+		return nil
+	}
+	return h.obs
+}
+
+// trafficBlockField 拦截侧字段：SHIELD_EVENT_LOG_ENABLED=false 时输出 null（前端显示"—"）。
+func trafficBlockField(v int64) any {
+	if !trafficBlockAvailable {
+		return nil
+	}
+	return v
+}
+
+// safeRate 率计算，分母 0 防护输出 0。
+func safeRate(num, den float64) float64 {
+	if den <= 0 {
+		return 0
+	}
+	return num / den
+}
+
+// trafficAsF 平铺行数值取数（方言返回类型不一，统一 float64 再取整）。
+func trafficAsF(v any) float64 {
+	switch n := v.(type) {
+	case int64:
+		return float64(n)
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case []byte:
+		f, _ := strconv.ParseFloat(string(n), 64)
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(n, 64)
+		return f
+	default:
+		return 0
+	}
+}
+
+// writeJSON 统一 JSON 输出。
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}

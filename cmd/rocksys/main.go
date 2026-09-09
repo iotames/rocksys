@@ -438,6 +438,17 @@ func buildServer(args []string) (*Server, error) {
 		return nil, fmt.Errorf("register script list: %w", err)
 	}
 	obsAdmin := obs.NewAdminHandler(mgr)
+	obs.SetShieldTable(configValue(cfgMgr.List(), "SHIELD_EVENT_TABLE"))
+	obs.SetBlockAvailable(recorder != nil && recorder.LoggingEnabled())
+	if err := adminSrv.RegisterPlugin(obs.PathTrafficSummary, obsAdmin.TrafficSummary); err != nil {
+		return nil, fmt.Errorf("register traffic summary: %w", err)
+	}
+	if err := adminSrv.RegisterPlugin(obs.PathTrafficSeries, obsAdmin.TrafficSeries); err != nil {
+		return nil, fmt.Errorf("register traffic series: %w", err)
+	}
+	if err := adminSrv.RegisterPlugin(obs.PathTrafficGeo, obsAdmin.TrafficGeo); err != nil {
+		return nil, fmt.Errorf("register traffic geo: %w", err)
+	}
 	if err := adminSrv.RegisterPlugin("/admin/metrics", obsAdmin.Metrics); err != nil {
 		return nil, fmt.Errorf("register obs metrics: %w", err)
 	}

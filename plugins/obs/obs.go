@@ -132,6 +132,10 @@ type Obs struct {
 	dataDB  *db.DB          // 统一数据访问层（nil 时降级 discardStore，日志不落盘）
 	geo     *geoip.Resolver // GeoIP 解析器（装配期 SetGeoip 注入，可 nil=geo 列空串）
 
+	// 流量统计（TRAFFIC_ANALYSIS D1）：TTL 秒数注册进配置中心（0=禁用），结果缓存常驻。
+	trafficCacheTTL int            // *int 注册：OBS_TRAFFIC_CACHE_TTL
+	tcache          *trafficCache
+
 	// access_log 自动清理（DB 后端专用，数据保留见 DATA_DICT 维护约定）：
 	// 默认不开启，未开启时登录管理后台有警告提示。
 	pruneLogEnabled bool // *bool 注册：OBS_LOG_PRUNE_ENABLED
@@ -173,6 +177,10 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	if err := cfgMgr.Register(&o.pruneLogDays, "OBS_LOG_RETENTION_DAYS", strconv.Itoa(defaultLogPruneDays), "访问日志保留天数（自动清理开启后生效）"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_RETENTION_DAYS", "err", err)
 	}
+	if err := cfgMgr.Register(&o.trafficCacheTTL, "OBS_TRAFFIC_CACHE_TTL", "600", "流量统计结果缓存 TTL（秒；缺省 600=10 分钟，0=禁用缓存）", "统计为按需 SQL 聚合，缓存防大表重复聚合拖库；命中时响应 computed_at 保持首次计算时刻"); err != nil {
+		log.Warn("obs: 注册配置项失败", "name", "OBS_TRAFFIC_CACHE_TTL", "err", err)
+	}
+	o.tcache = newTrafficCache()
 	o.sink.Store(NewAsyncStore(o.buildStore()))
 	return o
 }

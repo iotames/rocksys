@@ -342,6 +342,9 @@ func (r *EventRecorder) newGeoEvent(ctx *chain.Context, bt BlockType, ruleHit st
 	return ev
 }
 
+// LoggingEnabled 拦截明细是否落库（SHIELD_EVENT_LOG_ENABLED 实值；obs 流量统计输出 null 与否用）。
+func (r *EventRecorder) LoggingEnabled() bool { return r.logEnabled }
+
 // Stats 观测计数（admin 输出用）。
 func (r *EventRecorder) Stats() (written, dropped int64) {
 	return r.written.Load(), r.dropped.Load()
