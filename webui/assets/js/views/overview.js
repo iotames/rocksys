@@ -315,7 +315,7 @@
     if (!traffic || !traffic.geo || traffic.geo.geo_ready) return;
     if (sessionStorage.getItem('rock-geo-warned')) return;
     sessionStorage.setItem('rock-geo-warned', '1');
-    toast('地理位置数据未加载：未找到 mmdb 文件，统计中地区将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效', 'error');
+    toast('地理位置数据未加载：未找到 mmdb 文件，统计中地区将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效。下载直链见页内引导卡', 'error');
   }
 
   function trafficTilesHTML(sm) {
@@ -382,8 +382,11 @@
         ? trafficGeoHTML(traffic.geo)
         : '<div class="empty" style="padding:16px 8px;text-align:left">' +
           '<div><b>地理位置数据未加载</b>：未找到 mmdb 文件，地区统计显示为「未知」。</div>' +
-          '<div class="form-hint">下一步：从 MaxMind 下载免费 GeoLite2 的 GeoLite2-City.mmdb / GeoLite2-Country.mmdb，' +
-          '放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/，或工作目录、~/geoip 任一处），重启服务后生效。</div></div>';
+          '<div class="form-hint">下一步：下载 GeoLite2 的 GeoLite2-City.mmdb / GeoLite2-Country.mmdb，' +
+          '放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/，或工作目录、~/geoip 任一处），重启服务后生效。</div>' +
+          '<div class="form-hint">下载直链（GitHub，P3TERX/GeoLite.mmdb）：<br>' +
+          '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-City.mmdb" target="_blank" rel="noopener">GeoLite2-City.mmdb</a><br>' +
+          '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-Country.mmdb" target="_blank" rel="noopener">GeoLite2-Country.mmdb</a></div></div>';
       body = '<div style="margin-bottom:10px">' + chips + '</div>' +
         (trafficPreset === 'custom' ? '<div style="margin-bottom:10px">' + custom + '</div>' : '') +
         trafficTilesHTML(sm) +

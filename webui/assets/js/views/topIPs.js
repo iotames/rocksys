@@ -120,7 +120,7 @@
       ' 天 · 按拦截次数（聚合查询无分页）</span></span>' +
       '<span class="comp-actions">' + actions + '</span></div>' +
       (geoMissing(rows)
-        ? '<div class="form-hint" style="margin-bottom:6px">地理位置数据未加载：未找到 mmdb 文件，地区列显示为「未知」。下一步：下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效。</div>'
+        ? '<div class="form-hint" style="margin-bottom:6px">地理位置数据未加载：未找到 mmdb 文件，地区列显示为「未知」。下一步：下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启生效。下载直链见概览页「流量统计」引导卡（P3TERX/GeoLite.mmdb）。</div>'
         : '') +
       '<div class="table-wrap"><table class="table"><thead><tr>' + head +
       cols.map(c => '<th' + (c.width ? ' style="width:' + esc(c.width) + '"' : '') + '>' + esc(c.label) + '</th>').join('') +

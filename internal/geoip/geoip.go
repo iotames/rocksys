@@ -165,7 +165,9 @@ func (l *lazyDB) load(r *Resolver, name string) *dbHandle {
 			log.Warn("geoip: 未找到数据库文件，地理信息将留空",
 				"file", name,
 				"search_dirs", r.searchDirs(),
-				"hint", "请到 MaxMind 官网免费下载 GeoLite2 库放入上述任一目录后重启生效")
+				"hint", "下载 GeoLite2 库放入上述任一目录后重启生效；直链参考（P3TERX/GeoLite.mmdb）：",
+				"dl_city", "https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-City.mmdb",
+				"dl_country", "https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-Country.mmdb")
 			return
 		}
 		h, err := r.factory(path)
