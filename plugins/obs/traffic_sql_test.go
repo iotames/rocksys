@@ -301,11 +301,10 @@ func TestTrafficScriptsMySQL(t *testing.T) {
 	}
 	defer d.Close()
 	const acc, sh = "obs_access_log_traffic_mysqltest", "shield_event_traffic_mysqltest"
-	t.Cleanup(func() {
-		for _, tb := range []string{acc, sh} {
-			_, _ = d.EasyDB().Exec("DROP TABLE IF EXISTS " + tb)
-		}
-	})
+	// defer 而非 t.Cleanup（LIFO）：t.Cleanup 晚于 defer d.Close() 执行，
+	// DROP 会落在已关闭连接上被静默吞掉 → 残留表污染共享库（F 级「库中多余表」）。
+	dropTrafficTablesLater := func() { dropTrafficTables(t, d, acc, sh) } // t 在测试体内已不可用于 defer 后，直接闭包
+	defer dropTrafficTablesLater()
 	// 建表前先 DROP：防上一次失败运行残留行导致计数翻倍
 	dropTrafficTables(t, d, acc, sh)
 	trafficCreateTables(t, d, acc, sh)
@@ -326,11 +325,10 @@ func TestTrafficScriptsPostgres(t *testing.T) {
 	}
 	defer d.Close()
 	const acc, sh = "obs_access_log_traffic_pgtest", "shield_event_traffic_pgtest"
-	t.Cleanup(func() {
-		for _, tb := range []string{acc, sh} {
-			_, _ = d.EasyDB().Exec("DROP TABLE IF EXISTS " + tb)
-		}
-	})
+	// defer 而非 t.Cleanup（LIFO）：t.Cleanup 晚于 defer d.Close() 执行，
+	// DROP 会落在已关闭连接上被静默吞掉 → 残留表污染共享库（F 级「库中多余表」）。
+	dropTrafficTablesLater := func() { dropTrafficTables(t, d, acc, sh) } // t 在测试体内已不可用于 defer 后，直接闭包
+	defer dropTrafficTablesLater()
 	// 建表前先 DROP：防上一次失败运行残留行导致计数翻倍
 	dropTrafficTables(t, d, acc, sh)
 	trafficCreateTables(t, d, acc, sh)
