@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS {table} (
     raw_url     TEXT NOT NULL DEFAULT '',          -- 含查询串的原始 URL（攻击特征常在此）
     user_agent  TEXT NOT NULL DEFAULT '',          -- 客户端 User-Agent（爬虫识别依据）
     host        TEXT NOT NULL DEFAULT '',          -- 请求 Host
+    country     TEXT NOT NULL DEFAULT '',          -- 攻击来源 GeoIP 国家码（ISO 如 CN；mmdb 未加载为空串，统计计「未知」）
+    city        TEXT NOT NULL DEFAULT '',          -- 攻击来源 GeoIP 省市（City 库解析；mmdb 未加载为空串）
     status_code INTEGER NOT NULL DEFAULT 0,        -- 拦截响应码（403/413/429，含义见表头注释）
     rule_hit    TEXT NOT NULL DEFAULT '',          -- 命中规则/特征名（见表头注释）
     req_bytes   INTEGER NOT NULL DEFAULT 0,        -- 请求体字节数（Content-Length）

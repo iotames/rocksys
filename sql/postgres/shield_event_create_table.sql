@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS {table} (
     raw_url     TEXT NOT NULL DEFAULT '',         -- 含查询串的原始 URL（攻击特征常在此）
     user_agent  TEXT NOT NULL DEFAULT '',         -- 客户端 User-Agent（爬虫识别依据）
     host        TEXT NOT NULL DEFAULT '',         -- 请求 Host
+    country     TEXT NOT NULL DEFAULT '',         -- 攻击来源 GeoIP 国家码（ISO 如 CN；mmdb 未加载为空串，统计计「未知」）
+    city        TEXT NOT NULL DEFAULT '',         -- 攻击来源 GeoIP 省市（City 库解析；mmdb 未加载为空串）
     status_code INT NOT NULL DEFAULT 0,           -- 拦截响应码（403/413/429，含义见表头注释）
     rule_hit    TEXT NOT NULL DEFAULT '',         -- 命中规则/特征名（见表头注释）
     req_bytes   BIGINT NOT NULL DEFAULT 0,        -- 请求体字节数（Content-Length）
@@ -37,6 +39,8 @@ COMMENT ON COLUMN {table}.path IS 'URL 路径';
 COMMENT ON COLUMN {table}.raw_url IS '含查询串的原始 URL（攻击特征常在此）';
 COMMENT ON COLUMN {table}.user_agent IS '客户端 User-Agent（爬虫识别依据）';
 COMMENT ON COLUMN {table}.host IS '请求 Host';
+COMMENT ON COLUMN {table}.country IS '攻击来源 GeoIP 国家码（ISO 如 CN；mmdb 未加载为空串，统计计「未知」）';
+COMMENT ON COLUMN {table}.city IS '攻击来源 GeoIP 省市（City 库解析；mmdb 未加载为空串）';
 COMMENT ON COLUMN {table}.status_code IS '拦截响应码：403（黑名单/风险路径/遍历/SQL注入/XSS/爬虫UA/方法不允许/规则deny）、413（请求体超限）、429（限流）';
 COMMENT ON COLUMN {table}.rule_hit IS '命中规则/特征名：sql_pattern/xss_pattern/path_traversal/risk_path/crawler_ua/ip_blacklist/rate_limit/method_whitelist/max_body_size 等';
 COMMENT ON COLUMN {table}.req_bytes IS '请求体字节数（Content-Length）';

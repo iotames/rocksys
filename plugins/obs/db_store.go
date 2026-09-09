@@ -1,7 +1,7 @@
 // DBStore 访问日志数据库存储后端：
 // 复用统一数据访问层 internal/db（DB_DRIVER/DB_DSN，默认 sqlite rocksys.db），
 // SQL 全部外置 sql/<dbtype>/（外置目录优先、嵌入兜底，遵循项目铁律）。
-// 表结构：15 个索引列（维度化固定列）+ extra JSON 列（负载维度），见 dim.go。
+// 表结构：18 个索引列（维度化固定列）+ extra JSON 列（负载维度），见 dim.go。
 package obs
 
 import (
@@ -88,6 +88,7 @@ func (s *DBStore) Write(batch []*AccessRecord) error {
 			r.Time.UTC(),
 			r.TraceID, r.TenantID, r.Path, r.Method, r.ClientIP, r.StatusCode,
 			r.Upstream, r.ShieldMs, r.BizMs, r.TotalMs, r.EgressMs, r.ReqBytes, r.RespBytes,
+			r.UserAgent, r.Country, r.City,
 			extra,
 		); err != nil {
 			return fmt.Errorf("obs: 插入访问日志失败: %w", err)

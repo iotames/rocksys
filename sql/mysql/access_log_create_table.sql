@@ -17,5 +17,8 @@ CREATE TABLE IF NOT EXISTS {table} (
     egress_ms   BIGINT NOT NULL DEFAULT 0 COMMENT '出网耗时（ms）＝响应写回客户端完成 − 转发完成；历史行为 0',
     req_bytes   BIGINT NOT NULL DEFAULT 0 COMMENT '请求体字节数',
     resp_bytes  BIGINT NOT NULL DEFAULT 0 COMMENT '响应体字节数',
+    user_agent  VARCHAR(512) NOT NULL DEFAULT '' COMMENT '客户端 User-Agent（UV 口径=IP+UA）',
+    country     VARCHAR(8) NOT NULL DEFAULT '' COMMENT '客户端 GeoIP 国家码（ISO 如 CN；mmdb 未加载为空串，统计计「未知」）',
+    city        VARCHAR(255) NOT NULL DEFAULT '' COMMENT '客户端 GeoIP 省市（City 库解析；mmdb 未加载为空串）',
     extra       TEXT NOT NULL COMMENT '扩展字段（JSON，向前兼容）'
 ) DEFAULT CHARSET=utf8mb4 COMMENT='访问日志表：放行请求的访问明细，与 shield_event（拦截记录）分开记录'

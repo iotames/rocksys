@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS {table} (
     raw_url     VARCHAR(2048) NOT NULL DEFAULT '' COMMENT '含查询串的原始 URL（攻击特征常在此）',
     user_agent  VARCHAR(512) NOT NULL DEFAULT '' COMMENT '客户端 User-Agent（爬虫识别依据）',
     host        VARCHAR(255) NOT NULL DEFAULT '' COMMENT '请求 Host',
+    country     VARCHAR(8) NOT NULL DEFAULT '' COMMENT '攻击来源 GeoIP 国家码（ISO 如 CN；mmdb 未加载为空串，统计计「未知」）',
+    city        VARCHAR(255) NOT NULL DEFAULT '' COMMENT '攻击来源 GeoIP 省市（City 库解析；mmdb 未加载为空串）',
     status_code INT NOT NULL DEFAULT 0 COMMENT '拦截响应码：403（黑名单/风险路径/遍历/SQL注入/XSS/爬虫UA/方法不允许/规则deny）、413（请求体超限）、429（限流）',
     rule_hit    VARCHAR(255) NOT NULL DEFAULT '' COMMENT '命中规则/特征名：sql_pattern/xss_pattern/path_traversal/risk_path/crawler_ua 等',
     req_bytes   BIGINT NOT NULL DEFAULT 0 COMMENT '请求体字节数（Content-Length）',

@@ -6,6 +6,7 @@
 package db_test
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -37,11 +38,13 @@ func runSchemaSyncTest(t *testing.T, driver, dsn string) {
 
 	specs := []db.TableSpec{{Table: table, CreateScript: "ip_blacklist_create_table.sql", IndexScript: "ip_blacklist_create_index.sql"}}
 
-	// 旧版表：缺 block_type/hit_count/expires_at/deleted_at/updated_at（B 级）；缺全部索引（D 级）
+	// 旧版表：缺 block_type/hit_count/expires_at/deleted_at（B 级自动补）；updated_at 保留——
+	// 它是 NOT NULL 无默认值的时间列（C 级，DiffSchema 有意不自动生成，见其 Note 边界），
+	// 旧版若连它一起缺，同步后必残留差异、零差异复核恒挂。
 	oldDDL := map[string]string{
-		"sqlite":   "CREATE TABLE ip_blacklist (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL)",
-		"mysql":    "CREATE TABLE ip_blacklist (id BIGINT AUTO_INCREMENT PRIMARY KEY, ip VARCHAR(45) NOT NULL, title VARCHAR(64) NOT NULL DEFAULT '', created_at DATETIME(3) NOT NULL)",
-		"postgres": "CREATE TABLE ip_blacklist (id BIGSERIAL PRIMARY KEY, ip TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL)",
+		"sqlite":   "CREATE TABLE ip_blacklist (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
+		"mysql":    "CREATE TABLE ip_blacklist (id BIGINT AUTO_INCREMENT PRIMARY KEY, ip VARCHAR(45) NOT NULL, title VARCHAR(64) NOT NULL DEFAULT '', created_at DATETIME(3) NOT NULL, updated_at DATETIME(3) NOT NULL)",
+		"postgres": "CREATE TABLE ip_blacklist (id BIGSERIAL PRIMARY KEY, ip TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)",
 	}
 	if _, err := d.EasyDB().GetSqlDB().Exec(oldDDL[driver]); err != nil {
 		t.Fatalf("建旧版表: %v", err)

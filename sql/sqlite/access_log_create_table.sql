@@ -17,5 +17,8 @@ CREATE TABLE IF NOT EXISTS {table} (
 egress_ms   INTEGER NOT NULL DEFAULT 0,        -- 出网耗时（ms）＝响应写回客户端完成 − 转发完成；历史行为 0
     req_bytes   INTEGER NOT NULL DEFAULT 0,        -- 请求体字节数
     resp_bytes  INTEGER NOT NULL DEFAULT 0,        -- 响应体字节数
+    user_agent  TEXT NOT NULL DEFAULT '',          -- 客户端 User-Agent（UV 口径=IP+UA）
+    country     TEXT NOT NULL DEFAULT '',          -- 客户端 GeoIP 国家码（ISO 如 CN；mmdb 未加载为空串，统计计「未知」）
+    city        TEXT NOT NULL DEFAULT '',          -- 客户端 GeoIP 省市（City 库解析；mmdb 未加载为空串）
     extra       TEXT NOT NULL DEFAULT '{}'         -- 扩展字段（JSON，向前兼容）
 )

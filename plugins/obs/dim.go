@@ -55,6 +55,9 @@ const (
 	DimEgressMs   = "egress_ms"
 	DimReqBytes   = "req_bytes"
 	DimRespBytes  = "resp_bytes"
+	DimUserAgent  = "user_agent"
+	DimCountry    = "country"
+	DimCity       = "city"
 	// 预留负载维度（仅注册，本次不采集，后期启用）：
 	// DimRequestBody = "request_body"  // 纯文本 POST 请求体
 )
@@ -76,6 +79,9 @@ var Dims = []DimSpec{
 	{DimEgressMs, DimInt, DimIndexed, "出网耗时（毫秒）"},
 	{DimReqBytes, DimInt, DimIndexed, "请求流量（字节）"},
 	{DimRespBytes, DimInt, DimIndexed, "响应流量（字节）"},
+	{DimUserAgent, DimString, DimIndexed, "客户端 User-Agent"},
+	{DimCountry, DimString, DimIndexed, "客户端 GeoIP 国家码（ISO）"},
+	{DimCity, DimString, DimIndexed, "客户端 GeoIP 省市"},
 }
 
 // dimIndex 维度名 → 注册条目（初始化时构建，只读）。
@@ -110,6 +116,9 @@ type AccessRecord struct {
 	EgressMs   int64     // DimEgressMs（出网耗时）
 	ReqBytes   int64     // DimReqBytes
 	RespBytes  int64     // DimRespBytes
+	UserAgent  string    // DimUserAgent
+	Country    string    // DimCountry（GeoIP 国家码，mmdb 未加载为空串）
+	City       string    // DimCity（GeoIP 省市，mmdb 未加载为空串）
 	// Extras 负载维度集合（key 必须先在 Dims 注册为 payload 维度）。
 	// 序列化时平铺进顶层 JSON，DB 侧存 extra 列。
 	Extras map[string]any
@@ -133,6 +142,9 @@ func (r *AccessRecord) ToFlatMap() map[string]any {
 	m[DimEgressMs] = r.EgressMs
 	m[DimReqBytes] = r.ReqBytes
 	m[DimRespBytes] = r.RespBytes
+	m[DimUserAgent] = r.UserAgent
+	m[DimCountry] = r.Country
+	m[DimCity] = r.City
 	for k, v := range r.Extras {
 		m[k] = v
 	}

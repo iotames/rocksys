@@ -51,7 +51,7 @@
 > 类型列按 `sqlite / postgres / mysql` 顺序标注；「默认」为空表示无默认值（NOT NULL）。
 > 「可能值示例」为真实场景取值样例。
 
-### 2.1 shield_event — WAF 拦截事件明细表（14 列）
+### 2.1 shield_event — WAF 拦截事件明细表（16 列）
 
 **说明**：拦截请求被转发链短路，本表在拦截点就地记录（obs 收不到被拦请求，因此两表各记各的）。
 `block_type` 枚举见 §3.1，`rule_hit` 特征名见 §3.3。
@@ -68,6 +68,8 @@
 | `raw_url` | 原始 URL | 含查询串的原始 URL（攻击特征常在此） | `/login?id=1' OR '1'='1` | TEXT / TEXT / VARCHAR(2048) | `''` |
 | `user_agent` | 客户端标识 | 客户端 User-Agent（爬虫识别依据） | `Mozilla/5.0 (compatible; Googlebot/2.1)` | TEXT / TEXT / VARCHAR(512) | `''` |
 | `host` | 请求主机 | 请求 Host | `127.0.0.1:8080` | TEXT / TEXT / VARCHAR(255) | `''` |
+| `country` | 来源国家 | 攻击来源 GeoIP 国家码（ISO 如 CN；mmdb 未加载时为空串，统计计「未知」） | `CN` | TEXT / TEXT / VARCHAR(8) | `''` |
+| `city` | 来源省市 | 攻击来源 GeoIP 省市（City 库解析；mmdb 未加载时为空串） | `广东省/深圳市` | TEXT / TEXT / VARCHAR(255) | `''` |
 | `status_code` | 拦截响应码 | 拦截响应码（403/413/429，见 §3.2） | `403` | INTEGER / INT / INT | `0` |
 | `rule_hit` | 命中规则 | 命中的规则/特征名（见 §3.3） | `sql_pattern` | TEXT / TEXT / VARCHAR(255) | `''` |
 | `req_bytes` | 请求体大小 | 请求体字节数（Content-Length） | `0`、`1024` | INTEGER / BIGINT / BIGINT | `0` |
@@ -75,7 +77,7 @@
 
 > ⚠ 方言差异备注：`path`、`extra` 在 sqlite/postgres 有默认值（`''`/`'{}'`），MySQL 无默认值（NOT NULL，写入必须显式给值）。
 
-### 2.2 access_log — 访问日志表（16 列）
+### 2.2 access_log — 访问日志表（19 列）
 
 **说明**：放行请求的访问明细（拦截请求不经过 obs，见 §2.1 说明）。耗时列单位均为毫秒（ms），
 四段拆解：入网 + 转发（业务） + 出网 = 总耗时（±1ms 取整误差）。
@@ -99,6 +101,9 @@
 | `egress_ms` | 出网耗时 | 出网耗时（ms）＝响应写回客户端完成−转发完成；含客户端网络传输时间，慢客户端会撑大该值；历史行为 `0` | `2`、`15` | INTEGER / BIGINT / BIGINT | `0` |
 | `req_bytes` | 请求字节 | 请求体字节数 | `512` | INTEGER / BIGINT / BIGINT | `0` |
 | `resp_bytes` | 响应字节 | 响应体字节数 | `2048` | INTEGER / BIGINT / BIGINT | `0` |
+| `user_agent` | 客户端标识 | 客户端 User-Agent（UV 口径=IP+UA） | `Mozilla/5.0 ...` | TEXT / TEXT / VARCHAR(512) | `''` |
+| `country` | 客户端国家 | 客户端 GeoIP 国家码（ISO 如 CN；mmdb 未加载时为空串，统计计「未知」） | `CN` | TEXT / TEXT / VARCHAR(8) | `''` |
+| `city` | 客户端省市 | 客户端 GeoIP 省市（City 库解析；mmdb 未加载时为空串） | `广东省/深圳市` | TEXT / TEXT / VARCHAR(255) | `''` |
 | `extra` | 扩展字段 | 扩展字段（JSON，向前兼容） | `{}` | TEXT / TEXT / TEXT | `'{}'` |
 
 ### 2.3 admin_users — 管理接口超级管理员表（5 列）

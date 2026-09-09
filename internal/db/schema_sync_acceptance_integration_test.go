@@ -17,7 +17,6 @@ import (
 	"context"
 	"os"
 	"strings"
-	"syscall"
 	"testing"
 
 	"rocksys/internal/db"
@@ -26,23 +25,8 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// lockSharedDevDB 跨包互斥锁：devdb 为共享开发库，go test 多包并行时，本包的
-// 全清单验收（DROP/CREATE 7 张规范表）会与其它包（如 plugins/shield 的 attack_archive
-// 建表测试）互踩同名表，以文件锁把冲突面串行化（仅测试用）。
-func lockSharedDevDB(t *testing.T) {
-	t.Helper()
-	f, err := os.OpenFile(os.TempDir()+"/rocksys-devdb-it.lock", os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		t.Fatalf("打开互斥锁文件失败: %v", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		t.Fatalf("加互斥锁失败: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-	})
-}
+// lockSharedDevDB 在 testdevdblock_{unix,windows}_test.go 按 OS 分文件实现
+// （devdb 共享库互斥，防 go test 多包并行互踩同名表）。
 
 // pgDSN / mysqlDSN 真库连接串（环境变量门控）。
 func pgDSN() string { return os.Getenv("PG_TEST_DSN") }

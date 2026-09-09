@@ -130,6 +130,8 @@ type ShieldEvent struct {
 	RawURL     string // 含查询串的原始 URL（攻击特征常在此）
 	UserAgent  string
 	Host       string
+	Country    string // 攻击来源 GeoIP 国家码（mmdb 未加载为空串，统计计「未知」）
+	City       string // 攻击来源 GeoIP 省市（mmdb 未加载为空串）
 	StatusCode int    // 拦截响应码（403/413/429）
 	RuleHit    string // 命中的规则/特征名（如 sql_pattern / crawler_ua）
 	ReqBytes   int64
@@ -411,7 +413,7 @@ func (r *EventRecorder) writeBatch(batch []*ShieldEvent) {
 		if _, err := r.edb.Exec(ins,
 			ev.Time.UTC(),
 			ev.TraceID, int(ev.BlockType), ev.ClientIP, ev.Method,
-			ev.Path, ev.RawURL, ev.UserAgent, ev.Host,
+			ev.Path, ev.RawURL, ev.UserAgent, ev.Host, ev.Country, ev.City,
 			ev.StatusCode, ev.RuleHit, ev.ReqBytes, ev.Extra,
 		); err != nil {
 			lastErr = err

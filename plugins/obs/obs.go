@@ -260,6 +260,8 @@ func (o *Obs) OnDone(ctx *chain.Context) {
 		EgressMs:   ctx.DF.EgressMs(),
 		ReqBytes:   ctx.R.ContentLength,
 		RespBytes:  int64(len(ctx.RespBody)),
+		UserAgent:  ctx.R.UserAgent(),
+		// Country/City 由 geoip Resolver 写时解析填充（未装配 Resolver 时保持空串，统计计「未知」）。
 	}
 	// 负载维度预留点：后期采集纯文本 POST 请求体等扩展字段时，
 	// 先在 dim.go Dims 注册 payload 维度，再在此写 Extras（存储零改动）。

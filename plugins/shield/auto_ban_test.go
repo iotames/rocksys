@@ -193,7 +193,7 @@ func insertShieldEvent(t *testing.T, rec *EventRecorder, at time.Time, bt BlockT
 	}
 	if _, err := rec.edb.Exec(ins,
 		at.UTC(), "trace-ab", int(bt), ip, "GET", "/a", "/a?a=1",
-		"UA", "example.com", 403, "test", int64(0), "{}"); err != nil {
+		"UA", "example.com", "", "", 403, "test", int64(0), "{}"); err != nil {
 		t.Fatalf("插入拦截事件失败: %v", err)
 	}
 }

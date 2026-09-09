@@ -12,7 +12,9 @@ WHERE time >= $1 AND time <= $2
   AND ($9 = '' OR SUBSTR(CAST(status_code AS TEXT), 1, 1) = $10)
   AND ($11 = 0 OR status_code >= 400)
 ORDER BY
-  CASE $12 WHEN 1 THEN total_ms WHEN 3 THEN egress_ms ELSE -1 END DESC,
-  CASE $13 WHEN 2 THEN total_ms WHEN 4 THEN egress_ms ELSE -1 END ASC,
+  -- $12/$13 经 lib/pq 以未知类型下发，PG 对 CASE <param> WHEN <int> 的消解会判为 text
+  -- （text = integer 报错），显式 CAST 固化为整数比较（sqlite/mysql 无此问题）。
+  CASE CAST($12 AS INTEGER) WHEN 1 THEN total_ms WHEN 3 THEN egress_ms ELSE -1 END DESC,
+  CASE CAST($13 AS INTEGER) WHEN 2 THEN total_ms WHEN 4 THEN egress_ms ELSE -1 END ASC,
   id DESC
 LIMIT $14 OFFSET $15
