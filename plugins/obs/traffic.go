@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/iotames/easyserver/log"
+
+	"rocksys/internal/db"
 )
 
 // 管理端点路径常量（main.go 装配引用）。
@@ -38,7 +40,7 @@ const (
 // trafficShieldTable / trafficBlockAvailable（包级常量/状态，不进热路径）：
 // 表名固定 shield_event（表名不开放配置——配置面只会增加测试与同步负担，无业务收益）；
 // SHIELD_EVENT_LOG_ENABLED=false 时拦截侧字段输出 null（前端显示"—"）。
-const trafficShieldTable = "shield_event"
+const trafficShieldTable = db.TableShieldEvent
 
 var trafficBlockAvailable = true
 

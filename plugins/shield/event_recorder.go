@@ -222,7 +222,7 @@ func NewEventRecorder(cfgMgr conf.Manager, dataDB *db.DB) *EventRecorder {
 	r := &EventRecorder{
 		edb:       dataDB.EasyDB(),
 		sqls:      dataDB,
-		tableName: "shield_event",
+		tableName: db.TableShieldEvent,
 		ch:        make(chan *ShieldEvent, defaultEventBuffer),
 		stopCh:    make(chan struct{}),
 		doneCh:    make(chan struct{}),

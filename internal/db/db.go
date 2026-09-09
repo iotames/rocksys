@@ -31,6 +31,14 @@ type SQLSource interface {
 	SQL(name string) (string, error)
 }
 
+// TableShieldEvent / TableAccessLog 数据表名唯一权威常量（表名不开放配置）。
+// 全仓库代码注入点（建表、查询、统计）一律引用此处；改表名只改这一处。
+// 注意：SQL 脚本内部仍使用 {table}/{table2} 占位符机制，不受本常量影响。
+const (
+	TableShieldEvent = "shield_event" // WAF 拦截事件表（plugins/shield）
+	TableAccessLog   = "access_log"   // 访问日志表（plugins/obs）
+)
+
 // scriptSubDir db 业务在 HOT_SCRIPTS_DIR 统一外挂根下的固定子目录：
 // 外挂 SQL 覆写目录 = HOT_SCRIPTS_DIR/sql（默认 hotscripts/sql，相对工作目录），
 // 与嵌入的 sql/ 目录结构一致（sql/<dbtype>/）。★ 统一收敛：不再提供独立 SQL_DIR 配置。

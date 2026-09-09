@@ -418,10 +418,10 @@ func buildServer(args []string) (*Server, error) {
 		adminSrv.SetSQLSource(dataDB) // 用户存储 SQL 脚本源（sql/<dbtype>/admin_users_*.sql）
 		// 表结构同步：表清单在装配处注册（表名在这里已知，无法从脚本文件名推断），
 		// 数据连接与清单一并注入（详见 buildTableSpecs）。
-		adminSrv.SetTableSpecs(dataDB, buildTableSpecs("shield_event"))
+		adminSrv.SetTableSpecs(dataDB, buildTableSpecs(db.TableShieldEvent))
 		// 启动缺列检测（TRAFFIC_ANALYSIS D16）：访问/拦截两表缺列只告警不自动迁移
 		// （结构同步始终人工确认），提示管理员经 WebUI 补齐。
-		for table, cols := range missingLogColumns(dataDB, buildTableSpecs("shield_event")) {
+		for table, cols := range missingLogColumns(dataDB, buildTableSpecs(db.TableShieldEvent)) {
 			log.Warn("db: 访问/拦截日志表缺列，统计与落库将受影响",
 				"table", table, "missing", strings.Join(cols, ","),
 				"howto", "登录 WebUI 打开「数据库」页查看表结构 diff，人工确认执行补列 SQL 后恢复（缺列期间两表落库暂停，转发不受影响）")
@@ -678,7 +678,7 @@ func missingLogColumns(d *db.DB, specs []db.TableSpec) map[string][]string {
 // 防漏防漂移：cmd/rocksys/main_test.go 的一致性单测比对三方言脚本文件集合与本清单。
 func buildTableSpecs(shieldEventTable string) []db.TableSpec {
 	if strings.TrimSpace(shieldEventTable) == "" {
-		shieldEventTable = "shield_event"
+		shieldEventTable = db.TableShieldEvent
 	}
 	return []db.TableSpec{
 		{Table: "admin_users", CreateScript: "admin_users_create_table.sql"},
@@ -686,7 +686,7 @@ func buildTableSpecs(shieldEventTable string) []db.TableSpec {
 		{Table: "ip_whitelist", CreateScript: "ip_whitelist_create_table.sql", IndexScript: "ip_whitelist_create_index.sql"},
 		{Table: "attack_archive", CreateScript: "attack_archive_create_table.sql", IndexScript: "attack_archive_create_index.sql"},
 		{Table: shieldEventTable, CreateScript: "shield_event_create_table.sql", IndexScript: "shield_event_create_index.sql"},
-		{Table: "access_log", CreateScript: "access_log_create_table.sql", IndexScript: "access_log_create_index.sql"},
+		{Table: db.TableAccessLog, CreateScript: "access_log_create_table.sql", IndexScript: "access_log_create_index.sql"},
 		{Table: "sql_exec_log", CreateScript: "sql_exec_log_create_table.sql", IndexScript: "sql_exec_log_create_index.sql"},
 		{Table: "outbox", CreateScript: "mq_create_table.sql", IndexScript: "mq_create_index.sql"},
 	}

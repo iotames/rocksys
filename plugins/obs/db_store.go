@@ -16,8 +16,8 @@ import (
 	"rocksys/internal/db"
 )
 
-// accessLogTable 访问日志表名（数据访问层内，与 sql 脚本 {table} 占位符对应）。
-const accessLogTable = "access_log"
+// accessLogTable 访问日志表名（引用数据访问层唯一权威常量，与 sql 脚本 {table} 占位符对应）。
+const accessLogTable = db.TableAccessLog
 
 // DBStore 数据库存储后端。
 type DBStore struct {
