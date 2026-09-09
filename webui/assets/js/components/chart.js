@@ -36,10 +36,12 @@
     return d ? pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) : '';
   }
 
-  // Canvas 自绘趋势折线图：data 为采样数组，value(p) 取每个采样的数值
+  // Canvas 自绘趋势折线图：data 为采样数组，value(p) 取每个采样的数值。
+  // opts.fmtX 可选：X 轴刻度格式化（缺省 HH:MM:SS；天粒度桶等场景可传自定义）。
   function line(canvas, opts) {
     const data = opts.data;
     const value = opts.value;
+    const fmtX = opts.fmtX || fmtClock;
     if (!canvas) return;
     const container = canvas.parentElement;
     const W = container.clientWidth;
@@ -91,7 +93,7 @@
     [0, 0.5, 1].forEach(f => {
       const idx = Math.min(n - 1, Math.round((n - 1) * f));
       const x = xAt(idx);
-      ctx.fillText(fmtClock(data[idx].t), x, H - 8);
+      ctx.fillText(fmtX(data[idx].t), x, H - 8);
     });
     // 面积渐变
     const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);

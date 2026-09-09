@@ -1,6 +1,7 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/overview.js 概览页
- * 页签「总览」：网关信息横条 + 运行指标卡（含运行时间瓦片与趋势图） + 资源监控卡 + HTTP 数据流图（组件节点带开关）
+ * 页签「总览」：网关信息横条 + 运行指标卡（含运行时间瓦片与趋势图） + 资源监控卡 + 流量统计区（TRAFFIC_ANALYSIS：
+ * 时间范围筛选 + 指标瓦片 + 访问/拦截趋势 + 地理位置，按需 SQL 聚合、服务端缓存） + HTTP 数据流图（组件节点带开关）
  * + 服务状态总览；页签「小黑屋」：当前在押的限时封禁预览（IP_BLACKLIST_PLAN §3.7）。
  * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api
  * / Rock.comp.{tabs,metrics,componentState,dataflow,chart,dataTable,empty}。
@@ -25,6 +26,13 @@
 
   // ── 页签状态：总览 / 小黑屋 ─────────────────────────────────────────
   let ovActiveTab = 'overview'; // 'overview' | 'jail'
+
+  // ── 流量统计区状态（TRAFFIC_ANALYSIS D10/D14：页面局部区块，与运行指标区口径互不替代）──
+  let trafficPreset = '24h'; // 当前预设：'24h' | 'today' | '7d' | '30d' | 'custom'
+  let trafficQuery = { fromDate: '', fromTime: '00:00', toDate: '', toTime: '23:59' }; // 自定义范围（本地时间）
+  let traffic = null; // { summary, series, geo } 拉取结果
+  let trafficErr = null; // 行内错误兜底（toast 按 UX 红线在 loadTraffic 里弹）
+  let trafficOff = false; // obs 未启用（503 引导态）
 
   // 小黑屋数据缓存（切页签/静默重载时刷新；拉取失败保留旧数据 + 行内提示）
   let jailRows = [];
@@ -106,6 +114,7 @@
         else if (!opts.silent && e.status !== 0) { toast('指标加载失败：' + e.message, 'error'); }
       }
     }
+    loadTraffic(opts); // 流量统计区：异步拉取后局部重渲染（不阻塞首屏）
     render();
     // 小黑屋页签随首页静默重载联动刷新（手动刷新/开关操作触发，总览页签不受影响）
     if (ovActiveTab === 'jail') loadJail(opts);
@@ -182,7 +191,10 @@
       tabsHTML() +
       (ovActiveTab === 'jail' ? jailBodyHTML() : overviewBodyHTML());
 
-    if (ovActiveTab !== 'jail' && !store.metricsError && store.metrics) drawChart();
+    if (ovActiveTab !== 'jail') {
+      if (!store.metricsError && store.metrics) drawChart();
+      drawTrafficCharts();
+    }
   }
 
   // ── 页签「总览」：原有内容（行为不变）──────────────────────────────
@@ -244,6 +256,170 @@
     return '<div class="card"><div class="card-title">资源监控 <span class="card-sub">机器 CPU / 内存 · 进程占用</span></div>' + body + '</div>';
   }
 
+  // ── 流量统计区（TRAFFIC_ANALYSIS）────────────────────────────────
+  // 指标口径（与 /admin/obs/traffic/summary 对齐）：请求次数 = req_ok + block_total；
+  // req_ok 含静态资源与放行后 4xx/5xx；PV 去静态资源；UV = IP+UA。
+  function trafficRangeValue(preset) {
+    const now = new Date();
+    let from;
+    if (preset === '24h') from = new Date(now.getTime() - 24 * 3600 * 1000);
+    else if (preset === '7d') from = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+    else if (preset === '30d') from = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+    else if (preset === 'today') from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    else return null; // custom：用 trafficQuery 组装
+    return { from: fmtLocalMin(from), to: fmtLocalMin(now) };
+  }
+  // 本地时间 → 'YYYY-MM-DDTHH:mm'（服务端 logs 页同款解析口径：按本地时区解析后转 UTC 聚合）
+  function fmtLocalMin(d) {
+    return d.getFullYear() + '-' + Rock.util.pad2(d.getMonth() + 1) + '-' + Rock.util.pad2(d.getDate()) +
+      'T' + Rock.util.pad2(d.getHours()) + ':' + Rock.util.pad2(d.getMinutes());
+  }
+  function currentTrafficRange() {
+    if (trafficPreset === 'custom') {
+      if (!trafficQuery.fromDate || !trafficQuery.toDate) return null;
+      return { from: trafficQuery.fromDate + 'T' + trafficQuery.fromTime, to: trafficQuery.toDate + 'T' + trafficQuery.toTime };
+    }
+    return trafficRangeValue(trafficPreset);
+  }
+
+  async function loadTraffic(opts) {
+    const range = currentTrafficRange();
+    if (!range) { trafficErr = '自定义时间范围不完整'; renderTrafficBody(); return; }
+    const qs = 'from=' + encodeURIComponent(range.from) + '&to=' + encodeURIComponent(range.to);
+    trafficOff = false;
+    try {
+      const spanMs = new Date(range.to.replace('T', ' ')) - new Date(range.from.replace('T', ' '));
+      const bucket = spanMs <= 48 * 3600 * 1000 ? 'hour' : 'day';
+      const [summary, series, geo] = await Promise.all([
+        api.get('/admin/obs/traffic/summary?' + qs),
+        api.get('/admin/obs/traffic/series?' + qs + '&bucket=' + bucket),
+        api.get('/admin/obs/traffic/geo?' + qs + '&source=access'),
+      ]);
+      traffic = { summary, series, geo, bucket };
+      trafficErr = null;
+    } catch (e) {
+      if (e.status === 503) { trafficOff = true; } // obs 未启用：页内引导态（豁免 toast 红线②）
+      else {
+        trafficErr = e.message || '加载失败';
+        if (!opts.silent && e.status !== 0) {
+          toast('流量统计加载失败：' + e.message + '，可点页内「刷新」重试；若数据库刚升级请先在「数据库」页完成表结构同步', 'error');
+        }
+      }
+    }
+    renderTrafficBody();
+    maybeGeoToast();
+  }
+
+  // D17：依赖 geo 的页面会话内首次进入且 geo 未就绪时弹一次统一警告 toast（sessionStorage 标记防刷屏）
+  function maybeGeoToast() {
+    if (!traffic || !traffic.geo || traffic.geo.geo_ready) return;
+    if (sessionStorage.getItem('rock-geo-warned')) return;
+    sessionStorage.setItem('rock-geo-warned', '1');
+    toast('地理位置数据未加载：未找到 mmdb 文件，统计中地区将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效', 'error');
+  }
+
+  function trafficTilesHTML(sm) {
+    const dash = '—';
+    const fmtRate = r => (r == null ? dash : (r * 100).toFixed(1) + '%');
+    const tile = (label, val, sub) =>
+      '<div class="metric-tile"><div class="metric-label">' + esc(label) + '</div>' +
+      '<div class="metric-value">' + esc(val) + '</div>' +
+      (sub ? '<div class="metric-sub form-hint">' + esc(sub) + '</div>' : '') + '</div>';
+    const N = Rock.util.fmtInt;
+    const n = v => (v == null ? dash : N(v));
+    const reqTotal = (sm.req_ok != null && sm.block_total != null) ? sm.req_ok + sm.block_total : null;
+    return '<div class="metric-grid">' +
+      tile('请求次数', n(reqTotal), '放行 + 拦截') +
+      tile('PV', n(sm.req_pv), '去静态资源') +
+      tile('UV', n(sm.uv), 'IP + UA 口径') +
+      tile('独立 IP', n(sm.ip_all), '') +
+      tile('拦截次数', n(sm.block_total), '') +
+      tile('攻击 IP', n(sm.attack_ips), '') +
+      tile('4xx', n(sm.err4xx), '错误率 ' + fmtRate(sm.err4xx_rate)) +
+      tile('4xx 拦截', n(sm.block4xx), '拦截率 ' + fmtRate(sm.block4xx_rate)) +
+      tile('5xx', n(sm.err5xx), '错误率 ' + fmtRate(sm.err5xx_rate)) +
+      '</div>' +
+      (sm.computed_at ? '<div class="form-hint">统计时刻 ' + esc(sm.computed_at.replace('T', ' ').slice(0, 19)) + ' UTC · 服务端缓存 10 分钟（可配置）</div>' : '');
+  }
+
+  function trafficGeoHTML(geo) {
+    if (!geo || !geo.geo || !geo.geo.length) return Rock.comp.empty.message({ text: '所选范围暂无数据' });
+    const max = geo.geo[0].cnt || 1;
+    const rows = geo.geo.map(g => {
+      const pct = Math.max(2, Math.round((g.cnt / max) * 100));
+      return '<div class="geo-row"><span class="geo-name">' + esc(g.country || '未知') + '</span>' +
+        '<span class="geo-bar"><span style="width:' + pct + '%"></span></span>' +
+        '<span class="geo-cnt">' + esc(Rock.util.fmtInt(g.cnt)) + '</span></div>';
+    }).join('');
+    return '<div class="geo-list">' + rows + '</div>';
+  }
+
+  function trafficBodyHTML() {
+    const presets = [['24h', '近 24 小时'], ['today', '今日'], ['7d', '近 7 天'], ['30d', '近 30 天']];
+    const chips = presets.map(p =>
+      '<button class="btn btn-sm' + (trafficPreset === p[0] ? ' btn-primary' : '') + '" data-act="traffic-range" data-preset="' + p[0] + '">' + p[1] + '</button>'
+    ).join('');
+    const custom =
+      '<input type="date" id="traffic-from-date" value="' + esc(trafficQuery.fromDate) + '"> ' +
+      '<input type="time" id="traffic-from-time" value="' + esc(trafficQuery.fromTime) + '"> ~ ' +
+      '<input type="date" id="traffic-to-date" value="' + esc(trafficQuery.toDate) + '"> ' +
+      '<input type="time" id="traffic-to-time" value="' + esc(trafficQuery.toTime) + '"> ' +
+      '<button class="btn btn-sm" data-act="traffic-apply">应用</button>';
+    let body;
+    if (trafficOff) {
+      body = '<div class="empty" style="padding:24px 8px">' +
+        '<div>观测组件未开启，无法统计流量（数据由访问日志/拦截日志按需聚合而来）</div>' +
+        '<button class="btn btn-sm btn-primary" data-act="go-obs">去组件页开启观测</button></div>';
+    } else if (trafficErr) {
+      body = Rock.comp.empty.emptyCard({ text: '流量统计加载失败：' + esc(trafficErr), br: true,
+        action: '<button class="btn btn-sm btn-primary" data-act="overview-reload">重试</button>' });
+    } else if (!traffic) {
+      body = Rock.comp.empty.message({ text: '加载中…' });
+    } else {
+      const sm = traffic.summary || {};
+      const geoReady = !traffic.geo || traffic.geo.geo_ready;
+      const geoCard = geoReady
+        ? trafficGeoHTML(traffic.geo)
+        : '<div class="empty" style="padding:16px 8px;text-align:left">' +
+          '<div><b>地理位置数据未加载</b>：未找到 mmdb 文件，地区统计显示为「未知」。</div>' +
+          '<div class="form-hint">下一步：从 MaxMind 下载免费 GeoLite2 的 GeoLite2-City.mmdb / GeoLite2-Country.mmdb，' +
+          '放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/，或工作目录、~/geoip 任一处），重启服务后生效。</div></div>';
+      body = '<div style="margin-bottom:10px">' + chips + '</div>' +
+        (trafficPreset === 'custom' ? '<div style="margin-bottom:10px">' + custom + '</div>' : '') +
+        trafficTilesHTML(sm) +
+        '<div class="grid grid-2" style="margin-top:12px">' +
+        '<div><div class="card-title" style="margin-bottom:6px">访问趋势 <span class="card-sub">req_ok · UTC 桶</span></div>' +
+        '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-ok"></canvas></div></div>' +
+        '<div><div class="card-title" style="margin-bottom:6px">拦截趋势 <span class="card-sub">blocked · UTC 桶</span></div>' +
+        '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-blocked"></canvas></div></div>' +
+        '</div>' +
+        '<div style="margin-top:12px"><div class="card-title" style="margin-bottom:6px">地理位置 <span class="card-sub">按国家（访问口径）</span></div>' +
+        geoCard + '</div>';
+    }
+    return '<div class="card" style="margin-top:16px"><div class="card-title">流量统计 <span class="card-sub">按时间范围查库聚合 · 与运行指标（实时内存）口径不同</span></div>' +
+      body + '</div>';
+  }
+
+  // 流量趋势两图（render 后调用；桶标签为 UTC 原样，仅格式化显示）
+  function drawTrafficCharts() {
+    if (!traffic || !traffic.series) return;
+    const rows = traffic.series.series || [];
+    const toPoint = key => rows.map(r => ({ t: String(r.bucket).replace(' ', 'T') + 'Z', value: r[key] }));
+    const dayFmt = t => { const d = Rock.util.toDate(t); return d ? (d.getUTCMonth() + 1) + '-' + d.getUTCDate() : ''; };
+    const hourFmt = t => { const d = Rock.util.toDate(t); return d ? (d.getUTCMonth() + 1) + '-' + d.getUTCDate() + ' ' + Rock.util.pad2(d.getUTCHours()) + ':00' : ''; };
+    const fmtX = traffic.bucket === 'day' ? dayFmt : hourFmt;
+    Rock.comp.chart.line($('#traffic-chart-ok'), { data: toPoint('ok_count'), value: p => p.value, fmtX: fmtX });
+    Rock.comp.chart.line($('#traffic-chart-blocked'), { data: toPoint('blocked_count'), value: p => p.value, fmtX: fmtX });
+  }
+
+  // 流量区局部重渲染（拉取完成后不整页重绘，避免打断其他区块）
+  function renderTrafficBody() {
+    const host = $('#page-overview .traffic-slot');
+    if (!host || ovActiveTab !== 'overview') return;
+    host.innerHTML = trafficBodyHTML();
+    drawTrafficCharts();
+  }
+
   function overviewBodyHTML() {
     // ---- 运行指标卡（含趋势图，指标页合并至此；运行时间来自 /admin/system）----
     const metricsOff = store.metricsError === 'obs';
@@ -278,6 +454,8 @@
       '<div class="card"><div class="card-title">运行指标 <span class="card-sub">实时 · 趋势</span></div>' + metricsBody + chartBody + '</div>' +
       resourceCardHTML() +
       '</div>' +
+
+      '<div class="traffic-slot" style="margin-top:16px">' + trafficBodyHTML() + '</div>' +
 
       '<div class="card" style="margin-top:16px"><div class="card-title">HTTP 数据流 <span class="card-sub">组件按链路顺序执行 · 开关即启停 · 点击名称进入详情（关闭即降级）</span></div>' +
       Rock.comp.dataflow.renderHTML(store.switches) +
@@ -370,6 +548,23 @@
     tabsHTML,
     actions: {
       'overview-reload': function () { load({ manual: true }); },
+      // 流量统计：预设时间范围切换（立即拉取）
+      'traffic-range': function (el) {
+        trafficPreset = el.getAttribute('data-preset') || '24h';
+        render();
+        loadTraffic({ manual: true });
+      },
+      // 流量统计：自定义范围应用（读当前输入值）
+      'traffic-apply': function () {
+        trafficPreset = 'custom';
+        trafficQuery = {
+          fromDate: ($('#traffic-from-date') || {}).value || trafficQuery.fromDate,
+          fromTime: ($('#traffic-from-time') || {}).value || '00:00',
+          toDate: ($('#traffic-to-date') || {}).value || trafficQuery.toDate,
+          toTime: ($('#traffic-to-time') || {}).value || '23:59',
+        };
+        loadTraffic({ manual: true });
+      },
       // 页签切换：总览 / 小黑屋（切到小黑屋时拉取最新在押数据）
       'overview-tab': function (el) {
         const tab = el.getAttribute('data-tab') || 'overview';

@@ -242,7 +242,12 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 	ttl := o.trafficTTL()
 	key := fmt.Sprintf("geo|%d|%d|%s", from.UnixMilli(), to.UnixMilli(), source)
 	data, cached, err := o.tcache.do(key, ttl, func() (any, error) {
-		rows, err := o.trafficQuery("traffic_geo_top.sql", from, to, source, source, geoTopLimit)
+		// 占位符方言差异：PG 占位符可复用传 5 参；sqlite/mysql 的 ? 不可复用（UNION 两分支各带 from/to/source），传 7 参
+		args := []any{from, to, source, from, to, source, geoTopLimit}
+		if o.dataDB.Driver() == "postgres" {
+			args = []any{from, to, source, source, geoTopLimit}
+		}
+		rows, err := o.trafficQuery("traffic_geo_top.sql", args...)
 		if err != nil {
 			return nil, err
 		}
@@ -264,7 +269,14 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"source": source, "geo": data, "cache_hit": cached})
+	writeJSON(w, map[string]any{
+		"source":    source,
+		"geo":       data,
+		"cache_hit": cached,
+		// geo 数据就绪信号（D17 引导卡判定）：未装配 mmdb 或加载失败时为 false，
+		// 前端据此显示常驻警告引导卡（缺哪个文件、去哪下载、重启生效）。
+		"geo_ready": o.geo != nil && o.geo.Ready(),
+	})
 }
 
 // obsReady 取 obs 实例（未注册或未启用输出 503 引导态并返回 nil；豁免 toast 红线②，
