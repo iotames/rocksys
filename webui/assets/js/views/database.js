@@ -48,6 +48,9 @@
       loaded: false, loading: false,
       totalBytes: 0, tables: [],
     },
+    geo: {              // GeoIP 历史回填（TRAFFIC_ANALYSIS 增量：两表 country/city 缺失行批量补齐）
+      running: false, result: null, error: null,
+    },
   };
 
   // 差异分级展示配置：级别 → { label 差异类型, tag 分级标签（绿=自动/橙=需人工/灰=仅提示） }
@@ -326,7 +329,58 @@
       (state.driver === 'mysql' ? 'MySQL 下为 InnoDB 估算（以系统表为准）' : '取自数据库系统表') + '。</div>' +
       overviewTable.html(sz.loaded || sz.tables.length ? sz.tables : []);
     html += '</div>';
+    html += geoSyncHTML();
     return html;
+  }
+
+  // GeoIP 历史回填卡（TRAFFIC_ANALYSIS 增量）：两表 country/city 缺失行按 mmdb 批量补齐。
+  // 只补缺失行（WHERE country=''），已回填/有值的行不动；无地理信息的 IP（私网等）跳过并计数。
+  function geoSyncHTML() {
+    const g = state.geo;
+    let body;
+    if (g.error) {
+      body = '<div class="alert alert-warn" style="margin-bottom:8px">' + esc(g.error) + '</div>' +
+        '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync">重试同步</button>';
+    } else if (g.result) {
+      body = '<div class="alert alert-info" style="margin-bottom:8px">' + esc(g.result.text || '完成') + '</div>' +
+        '<button class="btn btn-sm" data-act="db-geoip-sync">再次同步（处理新增缺失行）</button>';
+    } else {
+      body = '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync"' + (g.running ? ' disabled' : '') + '>' +
+        (g.running ? '同步中…' : '开始同步') + '</button>';
+    }
+    return '<div class="card"><div class="card-title">GeoIP 同步' +
+      '<span class="tag tag-blue">维护工具</span></div>' +
+      '<div class="form-hint" style="margin-bottom:8px">对 access_log / shield_event 中「有 IP 但国家/城市缺失」的历史行，' +
+      '按当前已加载的 mmdb 数据批量回填 country / city。只补缺失行，不影响已有值；' +
+      '私网/回环等无地理信息的 IP 会跳过并计数。回填后流量统计的地理位置分布即覆盖历史数据。</div>' +
+      body + '</div>';
+  }
+
+  // 执行回填（POST /admin/db/geoip_sync；POST-only，防本机恶意页面 GET 触发批量写）
+  async function runGeoSync() {
+    if (state.geo.running) return;
+    const ok = await confirmDialog({
+      title: 'GeoIP 历史回填',
+      message: '将按当前 mmdb 数据，批量更新 access_log / shield_event 中 geo 缺失的行' +
+        '（仅写 country/city 两列的空值行，其他数据不动）。是否继续？',
+      confirmText: '开始回填',
+    });
+    if (!ok) return;
+    state.geo.running = true;
+    render();
+    try {
+      const r = await api.post('/admin/db/geoip_sync')();
+      if (r && r.ok === false) throw new Error(r.err || '回填失败');
+      state.geo.result = r || { text: '完成' };
+      state.geo.error = null;
+      toast('GeoIP 回填完成：' + (r && r.text || ''), 'success');
+      loadSize(true); // 回填不改行数但刷新概览无妨
+    } catch (e) {
+      state.geo.error = e.message || '回填失败';
+      toast('GeoIP 回填失败：' + state.geo.error + '。若提示 mmdb 未加载，请先放置数据文件并重启服务', 'error');
+    }
+    state.geo.running = false;
+    render();
   }
 
   // ── 执行历史页签：sql_exec_log 审计记录分页展示 ────────────────────────┘
@@ -485,6 +539,7 @@
       'db-exec': function () { execSQL(); },
       'db-copy-sql': function () { copySQL(); },
       'db-size-refresh': function () { loadSize(true); },
+      'db-geoip-sync': function () { runGeoSync(); },
       'db-hist-refresh': function () { state.hist.offset = 0; loadHist({ force: true }); },
       'db-hist-prev': function () {
         state.hist.offset = Math.max(0, state.hist.offset - HIST_PAGE_SIZE);

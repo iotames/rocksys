@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -419,6 +420,32 @@ func buildServer(args []string) (*Server, error) {
 		// 表结构同步：表清单在装配处注册（表名在这里已知，无法从脚本文件名推断），
 		// 数据连接与清单一并注入（详见 buildTableSpecs）。
 		adminSrv.SetTableSpecs(dataDB, buildTableSpecs(db.TableShieldEvent))
+		// GeoIP 历史回填（数据库页入口，POST 才生效）：对两表「有 IP 但 geo 缺失」的行
+		// 按 mmdb 批量回填 country/city；mmdb 未加载时 503 引导（先放置数据文件并重启）。
+		adminSrv.RegisterPlugin("/admin/db/geoip_sync", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "回填为维护操作，仅接受 POST", http.StatusMethodNotAllowed)
+				return
+			}
+			if geoRes == nil || !geoRes.Ready() {
+				http.Error(w, "geoip: mmdb 未加载，无法回填；请放置 GeoLite2 mmdb（见概览页引导卡）并重启服务后重试", http.StatusServiceUnavailable)
+				return
+			}
+			reps, err := geoSyncAll(dataDB, geoRes)
+			w.Header().Set("Content-Type", "application/json")
+			errText := ""
+			if err != nil {
+				log.Error("geoip: 历史回填失败", "err", err.Error())
+				errText = err.Error()
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":     err == nil,
+				"err":    errText,
+				"text":   geoSyncReportText(reps),
+				"tables": reps,
+			})
+		})
+
 		// 启动缺列检测（TRAFFIC_ANALYSIS D16）：访问/拦截两表缺列只告警不自动迁移
 		// （结构同步始终人工确认），提示管理员经 WebUI 补齐。
 		for table, cols := range missingLogColumns(dataDB, buildTableSpecs(db.TableShieldEvent)) {
