@@ -64,7 +64,7 @@ func TestEventCounterSnapshot(t *testing.T) {
 	c.Add(BlockSQLInjection, now)
 	c.Add(BlockSQLInjection, now)
 	c.Add(BlockRateLimit, now)
-	s := c.Snapshot(now)
+	s := c.Snapshot(now, time.Minute)
 	if s.Total != 3 {
 		t.Errorf("Total = %d，期望 3", s.Total)
 	}
@@ -79,7 +79,7 @@ func TestEventCounterWindowSlides(t *testing.T) {
 	now := time.Now()
 	c.Add(BlockXSS, now.Add(-2*time.Minute)) // 旧桶：应滑出窗口
 	c.Add(BlockXSS, now.Add(-10*time.Second))
-	s := c.Snapshot(now)
+	s := c.Snapshot(now, time.Minute)
 	if s.Total != 1 {
 		t.Errorf("旧桶数据不应计入，Total = %d", s.Total)
 	}
@@ -88,8 +88,36 @@ func TestEventCounterWindowSlides(t *testing.T) {
 	}
 }
 
+// 窗口可选（D13）：同一份 1 小时内存数据，切 5m/15m/1h 由整分钟桶聚合、零误差。
+func TestEventCounterWindowParam(t *testing.T) {
+	c := &eventCounter{}
+	now := time.Now().Add(2 * time.Minute) // 取整对齐留裕量
+	now = now.Truncate(time.Minute)
+	cases := []struct {
+		ago    time.Duration // 距 now 多少分钟
+		bucket int           // 落在几分钟后计入
+	}{
+		{ago: 2 * time.Minute, bucket: 5},   // 2 分钟前：进 5m
+		{ago: 10 * time.Minute, bucket: 15}, // 10 分钟前：进 15m
+		{ago: 40 * time.Minute, bucket: 60}, // 40 分钟前：仅 1h
+		{ago: 90 * time.Minute, bucket: 0},  // 90 分钟前：超 1h 窗口，永不计入
+	}
+	for _, cs := range cases {
+		c.Add(BlockSQLInjection, now.Add(-cs.ago))
+	}
+	// 分钟桶语义：1m 窗口只含当前分钟桶（2 分钟前那条已滑出），
+	// 5m 含 2 分钟前、15m 加 10 分钟前、1h 再加 40 分钟前。
+	wantByMinutes := map[int]int64{1: 0, 5: 1, 15: 2, 60: 3}
+	for name, minutes := range map[string]int{"1m": 1, "5m": 5, "15m": 15, "1h": 60} {
+		want := wantByMinutes[minutes]
+		if got := c.Snapshot(now, time.Duration(minutes)*time.Minute).Total; got != want {
+			t.Errorf("window=%s Total = %d，期望 %d", name, got, want)
+		}
+	}
+}
+
 // 无锁并发：多 goroutine 并发 Add（同 slot 原子自增 + 跨 slot 桶竞争）不 panic、计数不丢。
-// 快照时刻距写入 ≤30s（全部桶在 1 分钟窗口内），故总数必须精确等于写入次数。
+// 快照用 5m 窗口（写入与快照可能跨分钟桶边界，5m 必含全部写入桶），总数必须精确等于写入次数。
 func TestEventCounterConcurrent(t *testing.T) {
 	c := &eventCounter{}
 	const workers = 8
@@ -107,7 +135,7 @@ func TestEventCounterConcurrent(t *testing.T) {
 		}(w)
 	}
 	wg.Wait()
-	s := c.Snapshot(base.Add(30 * time.Second))
+	s := c.Snapshot(base.Add(30*time.Second), 5*time.Minute)
 	if want := int64(workers * perWorker); s.Total != want {
 		t.Errorf("并发总数 = %d，期望 %d（计数丢失）", s.Total, want)
 	}

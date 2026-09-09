@@ -39,14 +39,15 @@ import (
 // sqlIdentRe 合法 SQL 标识符（SHIELD_EVENT_TABLE 配置值兜底校验用）。
 var sqlIdentRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// 计数器窗口：1 分钟 × 60 桶（每桶 1s），与 obs.metrics 滑动窗口同构（本实现无锁）。
+// 计数器窗口：1 小时 × 60 桶（每桶 1 分钟，TRAFFIC_ANALYSIS D13：窗口瓦片可切 1m/5m/15m/1h，
+// 由整分钟桶聚合，零误差）。与 obs.metrics 滑动窗口同构（本实现无锁）。
 const (
-	counterWindow   = time.Minute
+	counterWindow   = time.Hour
 	counterBuckets  = 60
-	counterBucketMs = int64(counterWindow) / int64(time.Millisecond) / counterBuckets // 1000ms
+	counterBucketMs = int64(counterWindow) / int64(time.Millisecond) / counterBuckets // 60000ms = 1 分钟
 )
 
-// counterBucket 单桶：覆盖 1s 时间段（slot = UnixMilli/1000）。
+// counterBucket 单桶：覆盖 1 分钟时间段（slot = UnixMilli/60000）。
 // 全部字段原子化（无锁实现）：Add 仅 CAS 抢占过期桶后原子自增，不持互斥锁。
 type counterBucket struct {
 	slot   atomic.Int64
@@ -94,14 +95,22 @@ type CounterSnapshot struct {
 	ByType map[string]int64 `json:"by_type"` // 类别名 → 拦截次数
 }
 
-// Snapshot 计算窗口内聚合值：仅统计最近 1 分钟内的桶（无锁遍历）。
-func (c *eventCounter) Snapshot(now time.Time) CounterSnapshot {
+// Snapshot 计算窗口内聚合值（无锁遍历）：window 为聚合时长（1m/5m/15m/1h，
+// 须为分钟整数倍且 ≤ counterWindow），由整分钟桶聚合零误差。
+func (c *eventCounter) Snapshot(now time.Time, window time.Duration) CounterSnapshot {
 	nowSlot := now.UnixMilli() / counterBucketMs
+	winSlots := int64(window / time.Minute)
+	if winSlots < 1 {
+		winSlots = 1
+	}
+	if winSlots > counterBuckets {
+		winSlots = counterBuckets
+	}
 	s := CounterSnapshot{ByType: make(map[string]int64, blockTypeCount)}
 	for i := range c.buckets {
 		b := &c.buckets[i]
 		slot := b.slot.Load()
-		if slot == 0 || slot > nowSlot || nowSlot-slot >= counterBuckets {
+		if slot == 0 || slot > nowSlot || nowSlot-slot >= winSlots {
 			continue // 未使用或已滑出窗口
 		}
 		total := b.total.Load()
@@ -579,6 +588,12 @@ func (r *EventRecorder) StatsTopIP(from time.Time, limit int) ([]map[string]any,
 	}
 	for _, row := range rows {
 		normalizeEventRow(row)
+		// geo 查询时解析（TRAFFIC_ANALYSIS D12）：Top IP 行数少，逐行解析免加列；
+		// 未注入 Resolver（mmdb 未配置）时字段为空串，前端显示占位。
+		if r.geo != nil {
+			ip, _ := row["client_ip"].(string)
+			row["country"], row["city"] = r.geo.Lookup(ip)
+		}
 	}
 	return rows, nil
 }

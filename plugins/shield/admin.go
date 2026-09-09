@@ -26,6 +26,7 @@ const (
 	PathShieldEvents  = "/admin/shield/events"
 	PathShieldStats   = "/admin/shield/stats"
 	PathShieldMetrics = "/admin/shield/metrics"
+	PathShieldTotal   = "/admin/shield/total"
 	PathShieldPrune   = "/admin/shield/prune"
 
 	// 动态 IP 黑白名单管理（WAF 方案 §6.1；副作用一律 POST，防本机恶意页面无凭证触发）。
@@ -59,26 +60,62 @@ func NewAdminHandler(mgr *hotswap.Manager) *AdminHandler {
 	return h
 }
 
-// Metrics GET /admin/shield/metrics → 1 分钟窗口实时计数（内存读取，无需查库）。
+// metricsWindows 实时窗口可选桶宽（TRAFFIC_ANALYSIS D13）：窗口名 → 分钟数。
+var metricsWindows = map[string]int{"1m": 1, "5m": 5, "15m": 15, "1h": 60}
+
+// Metrics GET /admin/shield/metrics?window=1m|5m|15m|1h → 实时拦截计数（内存读取，无需查库）。
+// 缺省 1m 兼容现状；内存窗口固定 1 小时（60×1 分钟桶），按所选窗口由整分钟桶聚合（零误差）。
 // recorder 未注入（DB 未配置）时 counters 部分仍可用，落库计数为 0。
 func (h *AdminHandler) Metrics(w http.ResponseWriter, r *http.Request) {
 	if h.shield == nil {
 		http.Error(w, "shield 未注册", http.StatusServiceUnavailable)
 		return
 	}
-	snap := h.shield.Counter().Snapshot(time.Now())
+	winName := r.URL.Query().Get("window")
+	if winName == "" {
+		winName = "1m"
+	}
+	minutes, ok := metricsWindows[winName]
+	if !ok {
+		http.Error(w, "window 参数非法（可选 1m/5m/15m/1h）", http.StatusBadRequest)
+		return
+	}
+	snap := h.shield.Counter().Snapshot(time.Now(), time.Duration(minutes)*time.Minute)
 	written, dropped := int64(0), int64(0)
 	if rec := h.shield.Recorder(); rec != nil {
 		written, dropped = rec.Stats()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"window_seconds": 60,
+		"window":         winName,
+		"window_minutes": minutes,
+		"window_seconds": minutes * 60,
 		"total":          snap.Total,
 		"by_type":        snap.ByType,
 		"written":        written, // 累计落库条数
 		"dropped":        dropped, // 累计丢弃条数（通道满降级）
 	})
+}
+
+// Total GET /admin/shield/total → 拦截事件落库总数（查库 COUNT 全范围，TRAFFIC_ANALYSIS D13）。
+// 与 metrics 的内存窗口口径不同：本值受保留期影响（清理会减少），前端进页查一次、不跟随窗口刷新。
+func (h *AdminHandler) Total(w http.ResponseWriter, r *http.Request) {
+	if h.shield == nil {
+		http.Error(w, "shield 未注册", http.StatusServiceUnavailable)
+		return
+	}
+	rec := h.shield.Recorder()
+	if rec == nil {
+		http.Error(w, "拦截事件记录器未启用（DB 未配置）", http.StatusServiceUnavailable)
+		return
+	}
+	cnt, err := rec.CountEvents(EventQuery{To: time.Now().UTC()}) // From 零值=全范围
+	if err != nil {
+		http.Error(w, "查询落库总数失败: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"total": cnt})
 }
 
 // Events GET /admin/shield/events → 按条件查询拦截明细，返回 JSONL。

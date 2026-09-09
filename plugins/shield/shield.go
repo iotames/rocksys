@@ -41,8 +41,8 @@ type Shield struct {
 	// ★ SHIELD_ENABLED 是挂载开关（配置中心唯一真源）：挂载即拦截，内部不再读取本字段。
 	enabled bool
 	rps     int // 0 = 不限流
-	burst       int
-	limitBy     string // 限流维度，当前仅支持 "ip"
+	burst   int
+	limitBy string // 限流维度，当前仅支持 "ip"
 
 	// pathRules 路径/UA 规则：无配置项，代码注入（SetPathRules），Start 时并入快照。
 	pathRules []PathRule

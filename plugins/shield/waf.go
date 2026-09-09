@@ -30,8 +30,8 @@ type wafSnapshot struct {
 	sqlPatterns  []string
 	xssPatterns  []string
 	pathPatterns []string
-	crawlerUAs   []string // UA黑名单特征（开关 SHIELD_WAF_CRAWLER_UA）
-	uaWhitelist  []string // UA白名单：优先于黑名单，仅豁免爬虫 UA 拦截步；无开关、有数据即生效
+	crawlerUAs   []string            // UA黑名单特征（开关 SHIELD_WAF_CRAWLER_UA）
+	uaWhitelist  []string            // UA白名单：优先于黑名单，仅豁免爬虫 UA 拦截步；无开关、有数据即生效
 	riskPaths    map[string]struct{} // 文件风险路径 + 配置追加（小写）
 }
 

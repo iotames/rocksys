@@ -457,6 +457,9 @@ func buildServer(args []string) (*Server, error) {
 	if err := adminSrv.RegisterPlugin(shield.PathShieldMetrics, shieldAdmin.Metrics); err != nil {
 		return nil, fmt.Errorf("register shield metrics: %w", err)
 	}
+	if err := adminSrv.RegisterPlugin(shield.PathShieldTotal, shieldAdmin.Total); err != nil {
+		return nil, fmt.Errorf("register shield total: %w", err)
+	}
 	if err := adminSrv.RegisterPlugin(shield.PathShieldEvents, shieldAdmin.Events); err != nil {
 		return nil, fmt.Errorf("register shield events: %w", err)
 	}
