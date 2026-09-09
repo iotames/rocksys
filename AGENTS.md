@@ -21,10 +21,11 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 
 - `make deps`：同步地基库（目录缺失时从 GitHub clone）。
 - `make build`：构建 `bin/rocksys`，版本号取当前 git 最新 tag。
-- `make release`：发布打包 = build + 拷贝外挂资源到 `bin/hotscripts/`（`sql/`、`rules/`、`trusted_proxies/`，运行期外挂优先、内嵌兜底，改文件无需重编译）。
+- `make geoip`：归位/下载 GeoLite2 mmdb（City/Country）到 `bin/geoip/`——查找链（bin/geoip → bin → . → ~/geoip）命中即复用，全无才从 P3TERX/GeoLite.mmdb 直链下载（国内可 `GEOIP_PROXY=http://127.0.0.1:7897`），失败仅告警不阻断。
+- `make release`：发布打包 = build + geoip + 拷贝外挂资源到 `bin/hotscripts/`（`sql/`、`rules/`、`trusted_proxies/`，运行期外挂优先、内嵌兜底，改文件无需重编译）。**目标文件已存在即跳过不覆盖**（保留用户本地个性化修改，逐文件打印跳过清单）。
 - `make dev`：`-tags dev` 编译并在 bin/ 运行（WebUI 前端免编译热重载，见下节）。
 - `make cross-build`：交叉编译 linux amd64/arm64、windows amd64。
-- `make zip`：三平台发布包打包（cross-build + 外挂资源）→ `bin/rocksys-<版本>-<os>-<arch>.zip`，供 GitHub Release 发布（配合 `.github/workflows/release.yml` 推 `v*` tag 自动构建发布）。
+- `make zip`：三平台发布包打包（cross-build + geoip + 外挂资源，含 `bin/geoip/` mmdb 数据）→ `bin/rocksys-<版本>-<os>-<arch>.zip`，供 GitHub Release 发布（配合 `.github/workflows/release.yml` 推 `v*` tag 自动构建发布；CI 上 mmdb 缺失时由 geoip 目标自动直链下载，下载失败不阻断发布）。
 - `make test`：运行 `go test ./...`。
 - `make vet`：运行 `go vet ./...`。
 - `make run`：构建并运行。
@@ -77,7 +78,7 @@ go vet ./...
 ## 调试/测试必读
 - `bin/hotscripts/sql/` 是发布外挂脚本（外挂优先、内嵌兜底），改 `sql/` 后必须同步刷新（`cp -r sql/* bin/hotscripts/sql/`），否则服务端用的还是旧脚本。
 - easyserver 日志默认模板渲染 time/level/msg 后，调用方全部 attr 以 ` key=value` 通用透传落盘（err 等错误细节必留痕）；排查线上错误看日志行尾 attr 即可。
-- API 断言通过 ≠ UI 可用；后续涉及前端页面改动必须开浏览器看渲染效果。
+- API 断言通过 ≠ UI 可用；涉及前端页面改动必须开浏览器**实看渲染效果并截图留证**（贴回会话/回填区），禁止仅以 DOM 快照或接口返回代替；用户明示要求截图验证时尤其不可省略。
 
 ## Testing Guidelines
 
