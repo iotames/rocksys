@@ -22,6 +22,7 @@ __pycache__/
 bin/
 *.exe
 *.zip
+*.mmdb
 
 # 日志
 *.log
