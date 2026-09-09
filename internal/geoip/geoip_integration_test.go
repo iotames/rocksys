@@ -13,9 +13,9 @@ func TestRealMmdbIntegration(t *testing.T) {
 		t.Skip("未设置 GEOIP_INTEGRATION_DIR，跳过真实 mmdb 集成测试")
 	}
 	r := NewResolver(dir)
-	country, city := r.Lookup("8.8.8.8")
-	if country == "" {
+	gi := r.Lookup("8.8.8.8")
+	if gi.Code == "" {
 		t.Fatal("真实库查询 8.8.8.8 应至少返回国家码")
 	}
-	t.Logf("8.8.8.8 → country=%q city=%q ready=%v", country, city, r.Ready())
+	t.Logf("8.8.8.8 → code=%q country=%q city=%q ready=%v", gi.Code, gi.Country, gi.City, r.Ready())
 }

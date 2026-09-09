@@ -321,7 +321,8 @@ func (r *EventRecorder) SetGeoip(res *geoip.Resolver) { r.geo = res }
 func (r *EventRecorder) newGeoEvent(ctx *chain.Context, bt BlockType, ruleHit string) *ShieldEvent {
 	ev := newEvent(ctx, bt, ruleHit)
 	if r.geo != nil {
-		ev.Country, ev.City = r.geo.Lookup(ev.ClientIP)
+		gi := r.geo.Lookup(ev.ClientIP)
+		ev.Country, ev.City = gi.Code, gi.City
 	}
 	return ev
 }
@@ -579,7 +580,8 @@ func (r *EventRecorder) StatsTopIP(from time.Time, limit int) ([]map[string]any,
 		// 未注入 Resolver（mmdb 未配置）时字段为空串，前端显示占位。
 		if r.geo != nil {
 			ip, _ := row["client_ip"].(string)
-			row["country"], row["city"] = r.geo.Lookup(ip)
+			gi := r.geo.Lookup(ip)
+			row["country"], row["country_name"], row["city"] = gi.Code, gi.Country, gi.City
 		}
 	}
 	return rows, nil

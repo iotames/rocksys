@@ -37,17 +37,33 @@ type nameMap struct {
 // geoRecord 只声明需要的字段，避免整棵 GeoIP2 记录树的解码开销（热路径）。
 type geoRecord struct {
 	Country struct {
-		ISOCode string `maxminddb:"iso_code"`
+		ISOCode string  `maxminddb:"iso_code"`
+		Names   nameMap `maxminddb:"names"`
 	} `maxminddb:"country"`
 	Subdivisions []nameMap `maxminddb:"subdivisions"`
 	City         nameMap   `maxminddb:"city"`
 }
 
+// GeoInfo 一次查询的完整地理信息（借鉴 netguard GeoIpInfo 并增强）：
+//   - Code    ISO 国家码（如 "CN"，入库/聚合口径）
+//   - Country 国名（本地化优先 zh-CN，缺失回落 en，如 "中国"；无则为空）
+//   - City    省市拼接（如 "广东省/深圳市"）
+//
+// 任何失败路径字段均为空串（零值可用）。
+type GeoInfo struct {
+	Code    string
+	Country string
+	City    string
+}
+
+// empty 判断是否无有效地理信息。
+func (g GeoInfo) empty() bool { return g.Code == "" && g.Country == "" && g.City == "" }
+
 // dbHandle 抽象单个 mmdb 库的查询能力，便于单测注入假 reader 覆盖分支，
 // 无需往仓库提交二进制 fixture（真实文件路径走环境变量门控的集成测试）。
 type dbHandle interface {
-	// lookup 返回 (ISO 国家码, 省市拼接)；记录不存在时返回空串。
-	lookup(ip netip.Addr) (country, city string)
+	// lookup 返回该库能提供的地理信息；记录不存在时返回零值。
+	lookup(ip netip.Addr) GeoInfo
 }
 
 // dbFactory 按路径打开一个 mmdb 库；独立成函数类型是为了测试时替换。
@@ -59,30 +75,36 @@ type maxmindDB struct {
 	r *maxminddb.Reader
 }
 
-func (m *maxmindDB) lookup(ip netip.Addr) (country, city string) {
+func (m *maxmindDB) lookup(ip netip.Addr) GeoInfo {
 	var rec geoRecord
 	if err := m.r.Lookup(ip).Decode(&rec); err != nil {
-		// 无记录或字段缺失是常态（如仅 Country 库查省市），静默返回空即可。
-		return "", ""
+		// 无记录或字段缺失是常态（如仅 Country 库查省市），静默返回零值即可。
+		return GeoInfo{}
 	}
-	return rec.Country.ISOCode, joinNames(rec.Subdivisions, rec.City)
+	return GeoInfo{
+		Code:    rec.Country.ISOCode,
+		Country: pickName(rec.Country.Names),
+		City:    joinNames(rec.Subdivisions, rec.City),
+	}
 }
 
-// joinNames 拼"省/市"，名字优先中文，其次英文，避免空段产生多余分隔符。
-func joinNames(subs []nameMap, city nameMap) string {
-	pick := func(m nameMap) string {
-		if v := m.Names["zh-CN"]; v != "" {
-			return v
-		}
-		return m.Names["en"]
+// pickName 名称字典取值：优先中文，缺失回落英文（部分区域无 zh-CN 译名）。
+func pickName(m nameMap) string {
+	if v := m.Names["zh-CN"]; v != "" {
+		return v
 	}
+	return m.Names["en"]
+}
+
+// joinNames 拼"省/市"，避免空段产生多余分隔符。
+func joinNames(subs []nameMap, city nameMap) string {
 	out := ""
 	for _, s := range subs {
-		if name := pick(s); name != "" {
+		if name := pickName(s); name != "" {
 			out += name + "/"
 		}
 	}
-	if name := pick(city); name != "" {
+	if name := pickName(city); name != "" {
 		out += name
 	}
 	// 去掉末尾可能悬空的分隔符（有省无市的情形）。
@@ -129,32 +151,39 @@ func (r *Resolver) Ready() bool {
 	return r.city.load(r, CityFile) != nil || r.country.load(r, CountryFile) != nil
 }
 
-// Lookup 返回 (ISO 国家码如 "CN", 省市拼接如 "广东省/深圳市")。
-// 任何失败路径（非法 IP、私有/回环地址、库缺失、解析失败）一律返回空串，
-// 绝不 panic、绝不阻断转发主流程。
-func (r *Resolver) Lookup(ipStr string) (country, city string) {
+// Lookup 返回地理信息（ISO 码、本地化国名、省市）。任何失败路径（非法 IP、
+// 私有/回环地址、库缺失、解析失败）一律返回零值，绝不 panic、绝不阻断转发主流程。
+func (r *Resolver) Lookup(ipStr string) GeoInfo {
 	ip, err := netip.ParseAddr(ipStr)
 	if err != nil || !ip.IsValid() {
-		return "", ""
+		return GeoInfo{}
 	}
 	// 私有/回环/链路本地等地址无地理意义，提前短路，也避免误命中库里的保留段。
 	if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-		return "", ""
+		return GeoInfo{}
 	}
 	if ip.Is4In6() {
 		ip = ip.Unmap()
 	}
 
+	// 合并双库：字段级取非空优先（Country 库可能只有国名，City 库省市更细；
+	// 同字段两库都有值时 City 库优先，避免两库不一致）。
+	info := GeoInfo{}
 	if c := r.country.load(r, CountryFile); c != nil {
-		country, _ = (*c).lookup(ip)
+		info = (*c).lookup(ip)
 	}
-	// City 库优先：国家码与省市同源，避免两库不一致；Country 库作为 City 缺失时的兜底。
 	if c := r.city.load(r, CityFile); c != nil {
-		if cy, ct := (*c).lookup(ip); cy != "" || ct != "" {
-			return cy, ct
+		if ci := (*c).lookup(ip); !ci.empty() {
+			if info.Code == "" {
+				info.Code = ci.Code
+			}
+			if info.Country == "" {
+				info.Country = ci.Country
+			}
+			info.City = ci.City
 		}
 	}
-	return country, ""
+	return info
 }
 
 // load 惰性定位并加载单个库（once 幂等）；缺失或打开失败缓存 nil 并告警一次。

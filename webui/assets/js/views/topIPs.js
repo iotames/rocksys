@@ -85,10 +85,13 @@
 
   // ── 渲染 ────────────────────────────────────────────────────────────
 
-  // 地区文案：country/city 任一非空即拼展示；全空计「未知」（mmdb 未加载时后端不下发字段）
+  // 地区文案（METRICS_WINDOW 增量：后端 geo 查询时解析下发 country_name 本地化国名）：
+  // 优先 "国名/省市" 全本地化（如 中国/广东省/深圳市）；仅 ISO 码时显示码；全空计「未知」。
   function geoText(r) {
-    const parts = [String(r.country || '').trim(), String(r.city || '').trim()].filter(Boolean);
-    return parts.length ? parts.join(' / ') : '未知';
+    const parts = [String(r.country_name || '').trim(), String(r.city || '').trim()].filter(Boolean);
+    if (parts.length) return parts.join('/');
+    if (r.country) return String(r.country);
+    return '未知';
   }
   // geo 是否未就绪：有行但全部行没有 country 字段（后端 Resolver 未加载时不下发）
   function geoMissing(rows) {

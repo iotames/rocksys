@@ -11,10 +11,12 @@ import (
 
 // fakeDB 假 reader：按库名返回固定结果，用于覆盖分支而不依赖二进制 fixture。
 type fakeDB struct {
-	country, city string
+	code, country, city string
 }
 
-func (f *fakeDB) lookup(netip.Addr) (string, string) { return f.country, f.city }
+func (f *fakeDB) lookup(netip.Addr) GeoInfo {
+	return GeoInfo{Code: f.code, Country: f.country, City: f.city}
+}
 
 // newTestResolver 构造注入假 factory 的 Resolver；home 指向指定目录以隔离真实 $HOME。
 // 返回 factory 的调用计数指针，用于断言"缺失结论被缓存、不再重复扫盘/打开"。
@@ -61,15 +63,15 @@ func TestLookupSplitDirs(t *testing.T) {
 	}
 	// 配置目录设为 dirB：Country 在配置目录命中，City 回落到 $HOME/geoip(dirA) 命中。
 	r, calls := newTestResolver(dirB, dirA, map[string]dbHandle{
-		cityPath:    &fakeDB{country: "CN", city: "广东省/深圳市"},
-		countryPath: &fakeDB{country: "CN"},
+		cityPath:    &fakeDB{code: "CN", city: "广东省/深圳市"},
+		countryPath: &fakeDB{code: "CN"},
 	})
 	if !r.Ready() {
 		t.Fatal("两库分别命中后 Ready 应为 true")
 	}
-	country, city := r.Lookup("8.8.8.8")
-	if country != "CN" || city != "广东省/深圳市" {
-		t.Fatalf("期望 CN/广东省/深圳市，实际 %q/%q", country, city)
+	gi := r.Lookup("8.8.8.8")
+	if gi.Code != "CN" || gi.City != "广东省/深圳市" {
+		t.Fatalf("期望 CN/广东省/深圳市，实际 %q/%q", gi.Code, gi.City)
 	}
 	if *calls != 2 {
 		t.Fatalf("两库各打开一次，期望 factory 调用 2 次，实际 %d", *calls)
@@ -82,9 +84,8 @@ func TestMissingDegrade(t *testing.T) {
 	dir := writeEmpty(t)
 	r, calls := newTestResolver(dir, dir, nil)
 	for i := 0; i < 3; i++ {
-		country, city := r.Lookup("8.8.8.8")
-		if country != "" || city != "" {
-			t.Fatalf("缺失库应返回空串，实际 %q/%q", country, city)
+		if gi := r.Lookup("8.8.8.8"); !gi.empty() {
+			t.Fatalf("缺失库应返回零值，实际 %+v", gi)
 		}
 	}
 	if r.Ready() {
@@ -103,12 +104,11 @@ func TestInvalidAndPrivateIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, calls := newTestResolver(dirA, dirA, map[string]dbHandle{
-		cityPath: &fakeDB{country: "CN", city: "广东省/深圳市"},
+		cityPath: &fakeDB{code: "CN", city: "广东省/深圳市"},
 	})
 	for _, ip := range []string{"", "not-an-ip", "192.168.1.1", "127.0.0.1", "10.0.0.1", "169.254.1.1", "::1", "fe80::1"} {
-		country, city := r.Lookup(ip)
-		if country != "" || city != "" {
-			t.Fatalf("IP %q 应返回空串，实际 %q/%q", ip, country, city)
+		if gi := r.Lookup(ip); !gi.empty() {
+			t.Fatalf("IP %q 应返回零值，实际 %+v", ip, gi)
 		}
 	}
 	if *calls != 0 {
@@ -125,8 +125,8 @@ func TestOpenFailureCached(t *testing.T) {
 	}
 	r, calls := newTestResolver(dir, dir, nil) // factory 未注册 → 打开失败
 	for i := 0; i < 2; i++ {
-		if country, city := r.Lookup("8.8.8.8"); country != "" || city != "" {
-			t.Fatalf("打开失败应返回空串，实际 %q/%q", country, city)
+		if gi := r.Lookup("8.8.8.8"); !gi.empty() {
+			t.Fatalf("打开失败应返回零值，实际 %+v", gi)
 		}
 	}
 	if *calls != 1 {
@@ -146,11 +146,11 @@ func TestCountryFallbackWhenCityMisses(t *testing.T) {
 	}
 	r, _ := newTestResolver(dir, dir, map[string]dbHandle{
 		cityPath:    &fakeDB{},
-		countryPath: &fakeDB{country: "JP"},
+		countryPath: &fakeDB{code: "JP"},
 	})
-	country, city := r.Lookup("8.8.8.8")
-	if country != "JP" || city != "" {
-		t.Fatalf("期望回落 JP/空，实际 %q/%q", country, city)
+	gi := r.Lookup("8.8.8.8")
+	if gi.Code != "JP" || gi.City != "" {
+		t.Fatalf("期望回落 JP/空，实际 %q/%q", gi.Code, gi.City)
 	}
 }
 

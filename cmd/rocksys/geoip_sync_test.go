@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"rocksys/internal/db"
+	"rocksys/internal/geoip"
 )
 
 // stubResolver 桩解析器：公网 IP 返回固定地理，其他返回空（模拟私网/库外地址）。
@@ -16,14 +17,14 @@ type stubResolver struct{}
 
 func (stubResolver) Ready() bool { return stubReady }
 
-func (stubResolver) Lookup(ip string) (string, string) {
+func (stubResolver) Lookup(ip string) geoip.GeoInfo {
 	if ip == "8.8.8.8" {
-		return "US", "加利福尼亚州/山景城"
+		return geoip.GeoInfo{Code: "US", Country: "美国", City: "加利福尼亚州/山景城"}
 	}
 	if ip == "1.2.3.4" {
-		return "US", ""
+		return geoip.GeoInfo{Code: "US"}
 	}
-	return "", ""
+	return geoip.GeoInfo{}
 }
 
 var stubReady = true

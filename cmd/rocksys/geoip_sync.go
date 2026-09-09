@@ -11,11 +11,12 @@ import (
 	"strings"
 
 	"rocksys/internal/db"
+	"rocksys/internal/geoip"
 )
 
 // geoLookup GeoIP 解析最小接口（*geoip.Resolver 天然满足；测试可注入桩）。
 type geoLookup interface {
-	Lookup(ip string) (country, city string)
+	Lookup(ip string) geoip.GeoInfo
 	Ready() bool
 }
 
@@ -55,7 +56,8 @@ func geoSyncTable(d *db.DB, table string, res geoLookup) (geoSyncReport, error) 
 	}
 	rep.IPs = len(ips)
 	for _, ip := range ips {
-		country, city := res.Lookup(ip)
+		gi := res.Lookup(ip)
+		country, city := gi.Code, gi.City
 		if country == "" && city == "" {
 			rep.Skipped++
 			if len(rep.IPSample) < 5 {

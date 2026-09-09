@@ -305,7 +305,9 @@ func (o *Obs) OnDone(ctx *chain.Context) {
 	}
 	// geo 写时解析：装配期注入的共享 Resolver（未注入=nil 时保持空串，统计计「未知」，不阻断转发）。
 	if o.geo != nil {
-		al.Country, al.City = o.geo.Lookup(al.ClientIP)
+		// country 列存 ISO 码（聚合口径），city 列存省市
+		gi := o.geo.Lookup(al.ClientIP)
+		al.Country, al.City = gi.Code, gi.City
 	}
 	// 负载维度预留点：后期采集纯文本 POST 请求体等扩展字段时，
 	// 先在 dim.go Dims 注册 payload 维度，再在此写 Extras（存储零改动）。
