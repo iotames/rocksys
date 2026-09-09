@@ -31,21 +31,19 @@ type geoSyncReport struct {
 
 // geoipSyncTables 参与回填的表（表名固定，取值与 internal/db 权威常量一致）。
 // geoSyncBatchIPs 单趟处理的缺失 IP 上限：防超大表首趟过久；未完可再次执行续填。
+// geoSyncBatchStmt 每条批量 UPDATE 携带的 IP 数：CASE WHEN 展开参数随 IP 数线性增长，
+// 单语句过大会拖慢解析，分批执行兼顾效率与语句长度。
 var (
 	geoipSyncTables = []string{db.TableAccessLog, db.TableShieldEvent}
 	geoSyncBatchIPs = 5000
+
+	geoSyncBatchStmt = 200
 )
 
 // geoSyncTable 对单表执行一轮回填：DISTINCT 缺失 IP（单趟上限 geoSyncBatchIPs，可重复执行续填）
-// → 解析 → 按 IP 批量 UPDATE。
+// → 解析 → 按 IP 分组批量 UPDATE（CASE client_ip WHEN 语法三方言统一，配合 client_ip 索引点查）。
 func geoSyncTable(d *db.DB, table string, res geoLookup) (geoSyncReport, error) {
 	rep := geoSyncReport{Table: table, IPSample: []string{}}
-	ph := func(i int) string {
-		if d.Driver() == "postgres" {
-			return fmt.Sprintf("$%d", i)
-		}
-		return "?"
-	}
 	// DISTINCT 缺失 geo 的非空 IP（单趟限量，防超大表首趟过久；再点一次同步即续填）
 	q := fmt.Sprintf(
 		"SELECT DISTINCT client_ip FROM %s WHERE (country = '' OR country IS NULL) AND client_ip <> '' LIMIT %d",
@@ -55,6 +53,8 @@ func geoSyncTable(d *db.DB, table string, res geoLookup) (geoSyncReport, error) 
 		return rep, fmt.Errorf("geoip: 查询缺失 IP 失败: %w", err)
 	}
 	rep.IPs = len(ips)
+	type geoVal struct{ ip, country, city string }
+	var vals []geoVal
 	for _, ip := range ips {
 		gi := res.Lookup(ip)
 		country, city := gi.Code, gi.City
@@ -65,12 +65,52 @@ func geoSyncTable(d *db.DB, table string, res geoLookup) (geoSyncReport, error) 
 			}
 			continue
 		}
+		vals = append(vals, geoVal{ip, country, city})
+	}
+	// 分批组装批量 UPDATE：country/city 各一个 CASE client_ip WHEN ? THEN ?，三方言语法一致。
+	// 注意参数顺序必须与占位符出现顺序一致：先全部 country 对、再全部 city 对、最后 IN 列表。
+	for start := 0; start < len(vals); start += geoSyncBatchStmt {
+		end := min(start+geoSyncBatchStmt, len(vals))
+		batch := vals[start:end]
+		var cCase, yCase, inList strings.Builder
+		var args []any
+		pi := 1
+		ph := func() string {
+			if d.Driver() == "postgres" {
+				p := fmt.Sprintf("$%d", pi)
+				pi++
+				return p
+			}
+			return "?"
+		}
+		for i := range batch {
+			if i > 0 {
+				cCase.WriteString(" ")
+				yCase.WriteString(" ")
+				inList.WriteString(",")
+			}
+			cCase.WriteString("WHEN " + ph() + " THEN " + ph())
+			yCase.WriteString("WHEN " + ph() + " THEN " + ph())
+			inList.WriteString(ph())
+		}
+		for _, v := range batch {
+			args = append(args, v.ip, v.country)
+		}
+		for _, v := range batch {
+			args = append(args, v.ip, v.city)
+		}
+		for _, v := range batch {
+			args = append(args, v.ip)
+		}
 		u := fmt.Sprintf(
-			"UPDATE %s SET country = %s, city = %s WHERE client_ip = %s AND (country = '' OR country IS NULL)",
-			table, ph(1), ph(2), ph(3))
-		if res2, err := d.EasyDB().Exec(u, country, city, ip); err != nil {
-			return rep, fmt.Errorf("geoip: 回填 %s 失败（ip=%s）: %w", table, ip, err)
-		} else if n, err := res2.RowsAffected(); err == nil {
+			"UPDATE %s SET country = CASE client_ip %s END, city = CASE client_ip %s END "+
+				"WHERE client_ip IN (%s) AND (country = '' OR country IS NULL)",
+			table, cCase.String(), yCase.String(), inList.String())
+		res2, err := d.EasyDB().Exec(u, args...)
+		if err != nil {
+			return rep, fmt.Errorf("geoip: 批量回填 %s 失败: %w", table, err)
+		}
+		if n, err := res2.RowsAffected(); err == nil {
 			rep.RowsUpdated += n
 		}
 	}

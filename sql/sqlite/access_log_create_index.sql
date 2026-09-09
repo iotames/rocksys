@@ -2,3 +2,4 @@
 CREATE INDEX IF NOT EXISTS idx_access_log_time ON {table}(time)
 CREATE INDEX IF NOT EXISTS idx_access_log_path ON {table}(path)
 CREATE INDEX IF NOT EXISTS idx_access_log_status ON {table}(status_code)
+CREATE INDEX IF NOT EXISTS idx_access_log_client_ip ON {table}(client_ip)

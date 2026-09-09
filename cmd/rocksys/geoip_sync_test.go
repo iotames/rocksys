@@ -122,3 +122,44 @@ func TestGeoipSyncNotReady(t *testing.T) {
 		t.Fatal("mmdb 未就绪应拒绝并报错")
 	}
 }
+
+func TestGeoipSyncBatchChunks(t *testing.T) {
+	// 批量 UPDATE 分批边界：把单语句 IP 容量压到 2，插入 5 个可解析 IP，验证跨批全量回填不丢行
+	d := openTestDB(t)
+	exec(t, d, mustDDL(t, d, "access_log_create_table.sql", "access_log"))
+	// 索引脚本是多条语句，exec 不拆句，这里只建本优化涉及的 client_ip 索引
+	exec(t, d, "CREATE INDEX idx_access_log_client_ip ON access_log(client_ip)")
+	exec(t, d, mustDDL(t, d, "shield_event_create_table.sql", "shield_event"))
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for i := 1; i <= 5; i++ {
+		exec(t, d, fmt.Sprintf(
+			`INSERT INTO access_log (time, trace_id, path, method, client_ip, status_code, user_agent, country, city, extra)
+			VALUES ('%s','t%d','/a','GET','8.8.8.%d',200,'UA','','','{}')`, now, i, i))
+	}
+	oldBatch := geoSyncBatchStmt
+	geoSyncBatchStmt = 2
+	defer func() { geoSyncBatchStmt = oldBatch }()
+
+	// 段内全解析桩：8.8.8.x 一律返回 US，便于构造 >1 批的可回填 IP
+	rep, err := geoSyncTable(d, "access_log", stubFlexResolver{})
+	if err != nil {
+		t.Fatalf("geoSyncTable err: %v", err)
+	}
+	if rep.IPs != 5 || rep.RowsUpdated != 5 || rep.Skipped != 0 {
+		t.Errorf("报告 = %+v，期望 ips=5 rows=5 skipped=0", rep)
+	}
+	if got := countScalar(t, d, "SELECT COUNT(*) FROM access_log WHERE country = 'US'"); got != 5 {
+		t.Errorf("5 个 IP 跨 3 批应全部回填，实际 %d 行", got)
+	}
+}
+
+// stubFlexResolver 段内全解析桩：8.8.8.x 一律返回 US，其他返回空。
+type stubFlexResolver struct{}
+
+func (stubFlexResolver) Ready() bool { return true }
+func (stubFlexResolver) Lookup(ip string) geoip.GeoInfo {
+	if strings.HasPrefix(ip, "8.8.8.") {
+		return geoip.GeoInfo{Code: "US", City: "加利福尼亚州/山景城"}
+	}
+	return geoip.GeoInfo{}
+}
