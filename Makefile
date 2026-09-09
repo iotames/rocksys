@@ -13,8 +13,9 @@
 #   make deps        # 同步依赖仓库
 #   make build       # 构建 bin/rocksys
 #   make cross-build # 交叉编译生产产物（bin/rocksys-<os>-<arch>[.exe]，含 linux amd64/arm64、windows amd64）
-#   make zip         # 三平台发布包打包：cross-build + 外挂资源 → bin/rocksys-<版本>-<os>-<arch>.zip（可上传 GitHub Release）
-#   make release     # 发布打包：编译二进制 + 拷贝外挂资源到 bin/hotscripts/（SQL/WAF规则/可信代理，可运行时热修改）
+#   make geoip       # 归位/下载 GeoLite2 mmdb 到 bin/geoip/（本地找得到就复用，找不到才下载；失败不阻断）
+#   make zip         # 三平台发布包打包：cross-build + geoip + 外挂资源 → bin/rocksys-<版本>-<os>-<arch>.zip
+#   make release     # 发布打包：编译二进制 + geoip + 拷贝外挂资源到 bin/hotscripts/（已存在文件跳过不覆盖）
 #   make dev         # 开发模式：-tags dev 编译并在 bin/ 运行（WebUI 前端免编译热重载，改文件刷新即见）
 #   make test        # 运行全部测试
 #   make vet         # 静态检查
@@ -52,7 +53,18 @@ ROCKSYS_SERVER ?= rocksys
 # deploy 远端部署目录（相对 $HOME）：~/projects/rocksys/bin
 REMOTE_DIR := projects/rocksys/bin
 
-.PHONY: all deps build cross-build zip release deploy dev test vet gen-env run clean
+# GeoIP 数据（TRAFFIC_ANALYSIS）：make geoip 归位/下载 mmdb 到 bin/geoip/（运行期 GEOIP_MMDB_DIR
+# 默认值即 geoip，相对工作目录 bin/ 解析，解压/部署后开箱即用）。
+#   - 查找链：bin/geoip → bin（工作目录）→ . → ~/geoip，任一命中即复用（未归位则复制，不重复下载）
+#   - 本地全无才下载（P3TERX/GeoLite.mmdb 镜像直链）；国内网络可指定代理：
+#     make geoip GEOIP_PROXY=http://127.0.0.1:7897
+#   - 下载失败仅告警不阻断（geo 为可选增强，缺失时运行期自动降级「未知」）
+GEOIP_DIR ?= bin/geoip
+GEOIP_BASE_URL ?= https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07
+GEOIP_FILES := GeoLite2-City.mmdb GeoLite2-Country.mmdb
+GEOIP_PROXY ?=
+
+.PHONY: all deps build cross-build geoip zip release deploy dev test vet gen-env run clean
 
 all: build
 
@@ -88,22 +100,64 @@ cross-build: deps
 #   sql/                              → bin/hotscripts/sql/          （mysql/postgres/sqlite 三方言 SQL 脚本）
 #   plugins/shield/rules/             → bin/hotscripts/rules/         （WAF 规则 7 个 txt 文件）
 #   internal/netutil/trusted_proxies.txt → bin/hotscripts/trusted_proxies/（可信代理列表）
+# 实现在下方 copy_noclobber（逐文件拷贝、已存在即跳过）。
+
+# 逐文件拷贝、目标已存在即跳过（不盲目覆盖）：bin/hotscripts/ 是运行期外挂资产，
+# 用户可能已做本地个性化修改，反复发布必须保留（与 deploy 不触碰服务端 hotscripts/ 同一哲学）。
+define copy_noclobber
+	src=$(1); sub=$(2); \
+	find $$src -type f | while read -r f; do \
+		if [ "$$f" = "$$src" ]; then rel=$$(basename $$src); else rel=$${f#$$src/}; fi; \
+		d=bin/hotscripts/$$sub/$$rel; \
+		if [ -e "$$d" ]; then \
+			echo "  跳过（已存在）: $$d"; \
+		else \
+			mkdir -p $$(dirname $$d); \
+			cp $$f $$d; \
+		fi; \
+	done
+endef
+
 release-assets:
-	@echo "==> 拷贝外挂资源到 bin/hotscripts/"
-	@mkdir -p bin/hotscripts/sql bin/hotscripts/rules bin/hotscripts/trusted_proxies
-	@cp -r sql/* bin/hotscripts/sql/
-	@cp -r plugins/shield/rules/* bin/hotscripts/rules/
-	@cp internal/netutil/trusted_proxies.txt bin/hotscripts/trusted_proxies/
+	@echo "==> 拷贝外挂资源到 bin/hotscripts/（已存在的文件跳过，不覆盖）"
+	@mkdir -p bin/hotscripts
+	@$(call copy_noclobber,sql,sql)
+	@$(call copy_noclobber,plugins/shield/rules,rules)
+	@$(call copy_noclobber,internal/netutil/trusted_proxies.txt,trusted_proxies)
 	@echo "==> 发布包就绪"
 	@echo "  外挂资源: $$(find bin/hotscripts -type f | wc -l | tr -d ' ') 个文件（位于 bin/hotscripts/）"
 
-release: build release-assets
-	@echo "  二进制: bin/rocksys"
+# geoip：归位/下载 mmdb 到 bin/geoip/（release/zip 前置依赖；mmdb 不入库，发布物内置开箱即用）。
+# 查找链 bin/geoip → bin → . → ~/geoip 任一命中即复用（未归位则复制）；全无才下载，失败仅告警不阻断
+# （geo 为可选增强，缺失时运行期自动降级「未知」）。国内网络：make geoip GEOIP_PROXY=http://127.0.0.1:7897
+geoip:
+	@mkdir -p $(GEOIP_DIR)
+	@for f in $(GEOIP_FILES); do \
+		found=""; \
+		for d in $(GEOIP_DIR) bin . $$HOME/geoip; do \
+			if [ -f "$$d/$$f" ]; then found="$$d/$$f"; break; fi; \
+		done; \
+		if [ -n "$$found" ]; then \
+			echo "==> $$f: 使用本地 $$found"; \
+			if [ "$$found" != "$(GEOIP_DIR)/$$f" ]; then cp "$$found" "$(GEOIP_DIR)/$$f"; echo "  已归位到 $(GEOIP_DIR)/"; fi; \
+		else \
+			echo "==> 本地无 $$f，开始下载（下载失败不影响发布）"; \
+			curl -fL $(if $(GEOIP_PROXY),--proxy $(GEOIP_PROXY)) -o "$(GEOIP_DIR)/$$f.part" "$(GEOIP_BASE_URL)/$$f" \
+				&& mv "$(GEOIP_DIR)/$$f.part" "$(GEOIP_DIR)/$$f" \
+				&& echo "  已下载 $(GEOIP_DIR)/$$f" \
+				|| { rm -f "$(GEOIP_DIR)/$$f.part"; echo "警告: $$f 下载失败，发布包将不含该文件（运行期 geo 自动降级为「未知」）" >&2; }; \
+		fi; \
+	done
+	@ls -lh $(GEOIP_DIR)/ 2>/dev/null | grep mmdb || echo "  （$(GEOIP_DIR)/ 下暂无 mmdb 文件）"
 
-# 三平台发布包打包：在 cross-build 裸产物 + 外挂资源基础上，为每个平台生成 zip。
-# 产物：bin/rocksys-<版本>-<os>-<arch>.zip，解压即用（目录内含二进制 + hotscripts/ 外挂资源），
+release: build geoip release-assets
+	@echo "  二进制: bin/rocksys"
+	@echo "  GeoIP 数据: bin/geoip/（GEOIP_MMDB_DIR 默认值相对 bin/ 解析，开箱即用）"
+
+# 三平台发布包打包：在 cross-build 裸产物 + geoip 数据 + 外挂资源基础上，为每个平台生成 zip。
+# 产物：bin/rocksys-<版本>-<os>-<arch>.zip，解压即用（二进制 + hotscripts/ 外挂资源 + geoip/ 数据），
 # 适合上传 GitHub Release（配合 .github/workflows/release.yml 打 tag 自动发布）。
-zip: cross-build release-assets
+zip: cross-build geoip release-assets
 	@for t in $(CROSS_TARGETS); do \
 		os=$${t%/*}; arch=$${t#*/}; \
 		ext=""; \
@@ -113,6 +167,12 @@ zip: cross-build release-assets
 		mkdir -p "bin/$$dir"; \
 		cp "bin/rocksys-$$os-$$arch$$ext" "bin/$$dir/rocksys$$ext"; \
 		cp -r bin/hotscripts "bin/$$dir/"; \
+		if ls $(GEOIP_DIR)/*.mmdb >/dev/null 2>&1; then \
+			mkdir -p "bin/$$dir/geoip"; \
+			cp -r $(GEOIP_DIR)/*.mmdb "bin/$$dir/geoip/"; \
+		else \
+			echo "==> 提示: 无 mmdb 文件，zip 不含 geoip/ 目录（运行期 geo 自动降级「未知」）"; \
+		fi; \
 		cd bin && rm -f "$$dir.zip" && zip -rq "$$dir.zip" "$$dir" && cd ..; \
 		rm -rf "bin/$$dir"; \
 		echo "==> 打包完成: bin/$$dir.zip"; \

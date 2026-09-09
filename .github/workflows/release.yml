@@ -34,7 +34,9 @@ jobs:
           go-version-file: go.mod
 
       # make zip = deps（clone 地基库，三个均为 public）+ cross-build（三平台）
-      # + release-assets（外挂资源）+ 打包 zip
+      # + geoip（mmdb 缺失时从 P3TERX/GeoLite.mmdb 直链下载，CI 可直连 GitHub；
+      #   下载失败仅告警不阻断，zip 不含 geoip/ 目录，运行期自动降级「未知」）
+      # + release-assets（外挂资源，已存在文件跳过不覆盖）+ 打包 zip
       - name: Build and Package
         run: make zip
 
