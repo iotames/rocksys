@@ -68,6 +68,7 @@
 | 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；每条语句落 `sql_exec_log` 审计留痕；danger 级危险操作，服务端不做语句白名单） |
 | 43 | GET | `/admin/db/execlog` | SQL 执行历史查询（`sql_exec_log` 表，时间倒序 + offset 服务端分页） |
 | 44 | GET | `/admin/db/size` | 数据库空间占用统计（表名/备注/精确条数/占用空间 + 总空间；三方言） |
+| 45 | POST | `/admin/db/geoip_sync` | GeoIP 历史回填（对 access_log / shield_event「有 IP 但 country/city 缺失」的行按已加载 mmdb 批量回填；单趟每表上限 5000 个去重 IP，未完可重复执行续填；geo 未就绪 503；批量耗时随缺失量增长，前端请求超时放宽 60 秒） |
 | 43 | POST | `/admin/shield/blacklist/sync_file` | 从外挂规则文件 `rules/ip_blacklist.txt` 同步 IP 入库（block_type=11，幂等） |
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
 | 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的全部封禁条目（含永久；首页页签数据源） |
@@ -548,6 +549,7 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 |------|------|
 | `GET /admin/db/schema` | 逐表比对期望与实际结构，返回差异项与自动项生成 SQL；无差异时 `items:[]`、`sql:""` |
 | `POST /admin/db/exec` | body `{sql}`；拆句（分号切分，感知字符串字面量与注释内分号）逐条执行、**遇错即停**（DDL 无跨方言统一事务语义），返回已执行到的位置；进程内互斥（已有执行在途回 409） |
+| `POST /admin/db/geoip_sync` | 无 body；同步回填并返回 `{ok,text,tables:[{table,ips,rows_updated,skipped,ip_sample}]}`（`text` 为人读报告文案）；geo 未就绪（mmdb 缺失/未加载）回 503，响应文本为引导文案 |
 
 **`GET /admin/db/schema` 响应 200**：
 

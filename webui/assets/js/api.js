@@ -1,6 +1,6 @@
 /* ==========================================================================
  * RockSys 管理控制台 - api.js API 客户端
- * Token 存取、fetch 封装（get/post/put/text）、约 5 秒超时、401 处理、
+ * Token 存取、fetch 封装（get/post/put/text）、默认约 5 秒超时（可按请求放宽）、401 处理、
  * 503（观测未开启）识别、错误消息提取、网络不可达标记。
  * UI 状态反馈经 setUiBridge 由入口注入，API 客户端本身不依赖任何视图。
  * 挂载到全局命名空间 window.Rock.api。
@@ -42,8 +42,8 @@
     }
   }
 
-  // 请求核心：统一携带 Token、超时（约 5 秒）、401 / 503 / 网络错误处理
-  function request(method, url, body) {
+  // 请求核心：统一携带 Token、超时（默认约 5 秒，慢接口可经 timeoutMs 放宽）、401 / 503 / 网络错误处理
+  function request(method, url, body, timeoutMs) {
     const headers = {};
     const token = getToken();
     if (token) headers['Authorization'] = 'Bearer ' + token;
@@ -54,7 +54,7 @@
     }
     let res;
     try {
-      res = fetch(url, { method, headers, body: payload, cache: 'no-store', signal: AbortSignal.timeout(5000) });
+      res = fetch(url, { method, headers, body: payload, cache: 'no-store', signal: AbortSignal.timeout(timeoutMs || 5000) });
     } catch (e) {
       // 同步抛错（极少数情况）
       bridgeUnreachable(true);
@@ -116,7 +116,7 @@
       total: Number(r.headers.get('X-Total-Count')) || 0,
     })),
     put: url => body => request('PUT', url, body).then(r => r.json().catch(() => ({}))),
-    post: url => body => request('POST', url, body).then(r => r.json().catch(() => ({}))),
+    post: (url, timeoutMs) => body => request('POST', url, body, timeoutMs).then(r => r.json().catch(() => ({}))),
     text: url => request('GET', url).then(r => r.text()),
   };
 

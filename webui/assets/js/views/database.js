@@ -369,7 +369,8 @@
     state.geo.running = true;
     render();
     try {
-      const r = await api.post('/admin/db/geoip_sync')();
+      // 批量回填耗时随缺失数据量增长，放宽到 60 秒（默认 5 秒会误报超时）
+      const r = await api.post('/admin/db/geoip_sync', 60000)();
       if (r && r.ok === false) throw new Error(r.err || '回填失败');
       state.geo.result = r || { text: '完成' };
       state.geo.error = null;
@@ -377,7 +378,9 @@
       loadSize(true); // 回填不改行数但刷新概览无妨
     } catch (e) {
       state.geo.error = e.message || '回填失败';
-      toast('GeoIP 回填失败：' + state.geo.error + '。若提示 mmdb 未加载，请先放置数据文件并重启服务', 'error');
+      // mmdb 提示仅在服务端真返回 503（geo 未就绪）时附带，避免误导
+      const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务' : '';
+      toast('GeoIP 回填失败：' + state.geo.error + hint, 'error');
     }
     state.geo.running = false;
     render();
