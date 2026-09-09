@@ -21,7 +21,7 @@
 | 3 | TRAFFIC_ANALYSIS/STEP3_统计SQL脚本.md | traffic_summary/series_hour/series_day/geo_top 三方言 + sqlite 单测 + 真库门控集成 | 1 | 实施中(子Agent) |
 | 4 | TRAFFIC_ANALYSIS/STEP4_obs读侧端点.md | /admin/obs/traffic/{summary,series,geo} + singleflight TTL 缓存 + OBS_TRAFFIC_CACHE_TTL | 1,2,3 | 待实施 |
 | 5 | TRAFFIC_ANALYSIS/STEP5_shield窗口与落库总数.md | 实时窗口 1h=60 桶 + window 参数（1m/5m/15m/1h）、落库总数端点、Top IP geo 查询时解析 | 2 | 待实施 |
-| 6 | TRAFFIC_ANALYSIS/STEP6_启动缺列检测.md | 启动检测两表缺列打 warning（D16） | 1 | 待实施 |
+| 6 | TRAFFIC_ANALYSIS/STEP6_启动缺列检测.md | 启动检测两表缺列打 warning（D16） | 1 | 已实施 |
 | 7 | TRAFFIC_ANALYSIS/STEP7_概览流量统计区.md | overview.js 流量统计区：时间范围/指标卡/趋势/geo 卡 + 降级引导（D17） | 2,4 | 待实施 |
 | 8 | TRAFFIC_ANALYSIS/STEP8_waf与topIPs前端.md | waf.js 实时卡桶宽切换+落库总数瓦片+标签更正、topIPs.js 地区列、geo 警告 toast | 5,7 | 待实施 |
 | 9 | TRAFFIC_ANALYSIS/STEP9_文档同步与终验.md | §3.6 文档清单、bin/hotscripts/sql 同步、全量终验 | 1-8 | 待实施 |
@@ -43,3 +43,4 @@
 | 2026-09-09 | 智能体 | 2 | 子 Agent 并行完成 internal/geoip 包（v2 依赖、查找链、惰性加载、7 单测全过）；接线归 STEP2 |
 | 2026-09-09 | 智能体 | 1 | 已实施：两表加列三同步 + integration 基建修复（Flock 拆分/updated_at 旧版 DDL/PG 排序 CAST 存量缺陷）；go test ./... 与 vet 全绿，双真库 integration 全过 |
 | 2026-09-09 | 智能体 | 2 | 已实施：GEOIP_MMDB_DIR 注册 + 共享 Resolver 注入 obs/shield 写时解析；真实 mmdb 落值验证留 STEP7/9 |
+| 2026-09-09 | 智能体 | 6 | 已实施：missingLogColumns 启动缺列检测 + 三子用例单测；运行时冒烟并入 STEP7 |

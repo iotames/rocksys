@@ -419,6 +419,13 @@ func buildServer(args []string) (*Server, error) {
 		// 表结构同步：表清单在装配处注册（表名在这里已知，无法从脚本文件名推断），
 		// 数据连接与清单一并注入（详见 buildTableSpecs）。
 		adminSrv.SetTableSpecs(dataDB, buildTableSpecs(configValue(cfgMgr.List(), "SHIELD_EVENT_TABLE")))
+		// 启动缺列检测（TRAFFIC_ANALYSIS D16）：访问/拦截两表缺列只告警不自动迁移
+		// （结构同步始终人工确认），提示管理员经 WebUI 补齐。
+		for table, cols := range missingLogColumns(dataDB, buildTableSpecs(configValue(cfgMgr.List(), "SHIELD_EVENT_TABLE"))) {
+			log.Warn("db: 访问/拦截日志表缺列，统计与落库将受影响",
+				"table", table, "missing", strings.Join(cols, ","),
+				"howto", "登录 WebUI 打开「数据库」页查看表结构 diff，人工确认执行补列 SQL 后恢复（缺列期间两表落库暂停，转发不受影响）")
+		}
 	}
 	scriptAdmin := script.NewAdminHandler(mgr)
 	if err := adminSrv.RegisterPlugin(script.PathPublish, scriptAdmin.Publish); err != nil {
@@ -612,6 +619,39 @@ func genDefaultEnv(args []string) error {
 	}
 	fmt.Printf("default.env 已生成（基于当前工作目录）: %s\n", conf.DefaultEnvPath())
 	return nil
+}
+
+// missingLogColumns 启动缺列检测（TRAFFIC_ANALYSIS D16）：返回 访问/拦截两表 → 缺失列名列表
+// （表名取 specs 实值；只看 create 脚本为两表者）。DiffTable 对不存在表返回 A 级缺表项，
+// 本检测只关心缺列（Actual == "列不存在"），缺表交给既有建表流程。
+func missingLogColumns(d *db.DB, specs []db.TableSpec) map[string][]string {
+	const (
+		accessDDL = "access_log_create_table.sql"
+		shieldDDL = "shield_event_create_table.sql"
+	)
+	res := map[string][]string{}
+	for _, spec := range specs {
+		if spec.CreateScript != accessDDL && spec.CreateScript != shieldDDL {
+			continue
+		}
+		ddl, err := d.SQL(spec.CreateScript)
+		if err != nil {
+			log.Warn("db: 缺列检测读取建表脚本失败（跳过该表）", "script", spec.CreateScript, "err", err.Error())
+			continue
+		}
+		ddl = strings.ReplaceAll(ddl, "{table}", spec.Table)
+		cols, err := d.CatalogColumns(context.Background(), spec.Table)
+		if err != nil {
+			log.Warn("db: 缺列检测查询 catalog 失败（跳过该表）", "table", spec.Table, "err", err.Error())
+			continue
+		}
+		for _, it := range db.DiffTable(db.DiffInput{Table: spec.Table, ExpectedDDL: ddl, ActualCols: cols}) {
+			if it.Actual == "列不存在" {
+				res[spec.Table] = append(res[spec.Table], it.Object)
+			}
+		}
+	}
+	return res
 }
 
 // buildTableSpecs 表结构同步表清单（装配处单一事实来源，见 docs/DB_SCHEMA_SYNC_PLAN.md §3.1）。
