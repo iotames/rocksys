@@ -43,7 +43,7 @@
 | 17 | GET | `/admin/version` | 构建版本信息（左侧版本展示） |
 | 18 | GET | `/admin/logs/storage` | 访问日志存储总占用 |
 | 19 | POST | `/admin/logs/prune` | 手动清理访问日志（保留期外） |
-| 20 | GET | `/admin/shield/metrics` | WAF 近 1 分钟实时计数（内存滑动窗口，无需查库） |
+| 20 | GET | `/admin/shield/metrics` | WAF 实时计数（内存窗口，`window=1m/5m/15m/1h` 可选，缺省 1m；无需查库） |
 | 21 | GET | `/admin/shield/events` | WAF 拦截明细（JSONL，时间/类别/IP 过滤） |
 | 22 | GET | `/admin/shield/stats` | WAF 聚合统计（按日 × 类别 + Top IP） |
 | 23 | POST | `/admin/shield/prune` | 手动清理拦截明细（保留期外） |
@@ -72,6 +72,10 @@
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
 | 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的全部封禁条目（含永久；首页页签数据源） |
 | 46 | GET | `/admin/system` | 运行时长 + 机器资源概况（概览页运行时间瓦片与资源监控卡数据源） |
+| 47 | GET | `/admin/shield/total` | WAF 拦截事件落库总数（查库 COUNT 全范围，受保留期影响） |
+| 48 | GET | `/admin/obs/traffic/summary` | 流量统计指标标量 + 率（概览页流量统计区数据源） |
+| 49 | GET | `/admin/obs/traffic/series` | 流量统计访问/拦截时间桶趋势（hour/day，缺省自适应） |
+| 50 | GET | `/admin/obs/traffic/geo` | 流量统计 Top 国家分布（access/blocked 切换，含 geo_ready） |
 
 ---
 
@@ -506,9 +510,10 @@ WebUI「可信代理」页数据源（实现 `internal/netutil/proxies_admin.go`
 
 | 端点 | 说明 |
 |------|------|
-| `GET /admin/shield/metrics` | 近 1 分钟实时计数（内存滑动窗口，DB 未配置也可用）；响应 `{window_seconds,total,by_type,written,dropped}` |
+| `GET /admin/shield/metrics` | 实时拦截计数（内存滑动窗口，DB 未配置也可用）；query `window=1m\|5m\|15m\|1h`（缺省 1m 兼容现状；内存窗口固定 1 小时 = 60×1 分钟桶，按所选窗口由整分钟桶聚合、零误差）；响应 `{window,window_minutes,window_seconds,total,by_type,written,dropped}`，`written`/`dropped` 为本次运行累计落库/丢弃条数（重启清零） |
+| `GET /admin/shield/total` | 拦截事件**落库总数**（查库 `COUNT` 全范围，受保留期影响，清理会减少）；与 metrics 内存窗口口径不同；响应 `{"total":N}`；DB 未配置（记录器未启用）503。前端进页查一次、不跟随窗口刷新 |
 | `GET /admin/shield/events` | 拦截明细（JSONL）；query：`from`/`to`（日期或分钟精度）、`block_type`（1-10）、`client_ip`、`limit`（1-10000，缺省 500）、`offset`；总数经 `X-Total-Count` 头回传；每行 JSON 额外携带 `in_blacklist` 字段（bool，该行 IP 是否命中当前生效黑名单，内存快照判定与 stats TOP 同源，供前端「IP封禁」按钮置灰） |
-| `GET /admin/shield/stats` | 聚合统计；响应 `{days,total,daily:[{day,block_type,cnt}],top_ips:[{client_ip,cnt,in_blacklist}],blacklist_addable}`（`in_blacklist`=该 IP 是否命中当前生效黑名单，与拦截判定同源；`blacklist_addable`=DB 黑名单是否可用，WebUI 据此显示勾选列与批量加黑按钮） |
+| `GET /admin/shield/stats` | 聚合统计；响应 `{days,total,daily:[{day,block_type,cnt,type_name}],top_ips:[{client_ip,cnt,in_blacklist,country,city}],blacklist_addable}`（`in_blacklist`=该 IP 是否命中当前生效黑名单，与拦截判定同源；`blacklist_addable`=DB 黑名单是否可用，WebUI 据此显示勾选列与批量加黑按钮；Top IP 行 `country`/`city` 为 **geo 查询时逐行解析**（行数少免加列），GeoIP 未加载时不下发该两字段，前端显示占位「—」） |
 | `POST /admin/shield/prune` | 手动清理拦截明细；body `{"days":N}`（0-3650，缺省用配置默认值）；响应 `{"ok":true,"deleted":N}` |
 
 **动态黑白名单**（WAF 方案 DB 化，DB 未配置时端点统一 503；副作用一律 POST）：
@@ -648,6 +653,61 @@ SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_byte
 
 ---
 
+### 3.20 obs 流量统计端点组 — summary / series / geo（实现 `plugins/obs/traffic.go`）
+
+概览页「流量统计」区数据源（实现 `plugins/obs/traffic.go`，`cmd/rocksys` 装配注册）。
+数据来自 `access_log`（放行侧）与 `shield_event`（拦截侧）两表 SQL 聚合；
+时间口径：前端将本地时间换算为 **UTC** 传入，桶标签也以 UTC 返回、前端原样展示并标注 UTC。
+
+**指标口径（闭合定义，验收对账以此为准）**：
+
+- `req_ok` = 放行总数（**含静态资源、含放行后的 4xx/5xx**）；请求次数 = `req_ok + block_total`；
+- `req_pv` = `req_ok` 去静态资源后缀（`.js .css .map .ico .png .jpg .jpeg .gif .svg .webp .woff .woff2 .ttf .eot`）；
+- `uv` = `COUNT(DISTINCT client_ip, user_agent)`（历史数据 UA 为空串时退化为纯 IP 口径）；
+- geo 空串计「未知」且参与排序（不悄悄丢量）。
+
+**缓存语义**：服务端 singleflight + TTL 缓存（key = 端点 + from + to + bucket/source），TTL 由 `OBS_TRAFFIC_CACHE_TTL`（秒，缺省 600，0=禁用，支持热更）控制；命中时 `computed_at` 保持首次计算时刻，`cache_ttl_sec` 回传当前 TTL、`cache_hit` 标记是否命中。实时 QPS（`/admin/metrics`）不参与缓存。
+
+**降级**：
+
+- obs 未注册 / `OBS_ENABLED=false` → `503` 文本引导态（前端按「功能未开启」页内引导卡渲染，豁免 toast 红线②）；
+- `SHIELD_EVENT_LOG_ENABLED=false` → 拦截侧字段（`block_total`/`attack_ips`/`block4xx`/`block4xx_rate`/`blocked_count`）输出 `null`（前端显示「—」）；
+- DB 数据访问层未就绪 → `503`；时间参数非法 / `from` 晚于 `to` → `400`。
+
+| 端点 | 说明 |
+|------|------|
+| `GET /admin/obs/traffic/summary` | query `from`/`to`（`YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`，必传）；响应见下 |
+| `GET /admin/obs/traffic/series` | query `from`/`to` + `bucket=hour\|day`（缺省自适应：跨度 ≤48h 用 hour，否则 day；非法值 400）；响应 `{bucket,series:[{bucket,ok_count,blocked_count}],cache_hit,cache_ttl_sec}`，`series[].bucket` 为 UTC 时间标签 |
+| `GET /admin/obs/traffic/geo` | query `from`/`to` + `source=access\|blocked`（缺省 access；非法值 400）；按 country 计数倒序取 Top 10；响应 `{source,geo:[{country,cnt}],cache_hit,geo_ready}`；`geo_ready`=GeoIP 是否就绪（未装配 mmdb 或加载失败为 false，前端据此显示常驻警告引导卡） |
+
+**`GET /admin/obs/traffic/summary` 响应 200**：
+
+```json
+{
+  "req_ok": 1000, "req_pv": 800, "uv": 120, "ip_all": 150,
+  "block_total": 30, "attack_ips": 5,
+  "err4xx": 20, "err5xx": 2, "block4xx": 30,
+  "err4xx_rate": 0.0195, "err5xx_rate": 0.002, "block4xx_rate": 1.0,
+  "computed_at": "2026-09-09T03:00:00Z", "from": "2026-09-08T00:00:00Z", "to": "2026-09-09T00:00:00Z",
+  "cache_ttl_sec": 600, "cache_hit": false
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| req_ok / req_pv / uv / ip_all | int | 放行总数 / PV（去静态资源）/ UV（IP+UA 去重）/ 独立 IP 数 |
+| block_total / attack_ips | int/null | 拦截总数 / 攻击 IP 数（拦截侧去重）；拦截事件记录关闭时 null |
+| err4xx / err5xx | int | 放行侧 4xx / 5xx 数（含静态资源口径内） |
+| block4xx | int/null | 拦截侧 4xx 数（当前恒等于 block_total，拦截码均为 4xx，字段预留） |
+| err4xx_rate / err5xx_rate | float | 率（分母 = 请求次数 req_ok+block_total，Go 侧计算，分母 0 输出 0，0~1） |
+| block4xx_rate | float/null | 4xx 拦截率（分母 = block_total） |
+| computed_at | string | 首次计算时刻（UTC RFC3339，缓存命中时不变） |
+| from / to | string | 实际生效的统计范围（UTC RFC3339） |
+| cache_ttl_sec / cache_hit | int / bool | 当前缓存 TTL（0=禁用）/ 本次是否缓存命中 |
+
+---
+
+
 ## 4. 数据字典（前端展示映射）
 
 ### 4.0 组件/服务元数据（/admin/meta 返回结构）
@@ -711,5 +771,6 @@ SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_byte
 | 1.6 | 2026-08-29 | 新增 §3.19 数据库表结构同步端点组：`GET /admin/db/schema`（A-F 分级差异检查 + 自动项生成 SQL）、`POST /admin/db/exec`（拆句逐条执行、遇错即停；danger 级，无语句白名单） |
 | 1.7 | 2026-08-29 | IP 黑名单增强：新增 `POST /admin/shield/blacklist/sync_file`（从文件同步）、`POST /admin/shield/blacklist/ban`（专用封禁，warn_times 累计满 5 转永久）、`GET /admin/shield/jail`（小黑屋在押预览）；黑名单列表 GET 新增 `sort` 排序参数（白名单映射固定倒序）；拦截明细 events 每行新增 `in_blacklist` 字段 |
 | 1.8 | 2026-09-08 | 新增 `GET /admin/system`（概览页运行时间瓦片 + 资源监控卡数据源，§3.17.1）：运行时长、机器/进程 CPU 与内存、Goroutines 等概况，字段不可得时为 null 前端降级 |
+| 1.9 | 2026-09-09 | 流量统计与 GeoIP：新增 §3.20 obs 流量统计端点组（`/admin/obs/traffic/summary` `/series` `/geo`，singleflight+TTL 缓存、503 引导降级、geo_ready）；`GET /admin/shield/metrics` 新增 `window` 参数（1m/5m/15m/1h，缺省 1m）；新增 `GET /admin/shield/total`（落库总数）；`/admin/shield/stats` 的 `top_ips` 行新增 `country`/`city`（geo 查询时解析，未加载不下发） |
 
 > 契约原则：只增不改删；新增字段不影响旧字段语义。

@@ -78,6 +78,13 @@ type MiddlewareLifecycle interface {
   - `GET /admin/metrics`、`GET /admin/logs`：观测指标与日志（obs 挂件端点注入）
 - **WebUI 托管**：`RegisterWebUI(fsys fs.FS)` 注册静态资源（根路径 `/` 返回 index.html，`/assets/...` 返回各静态文件），**每请求实时 `fs.ReadFile` 读取、不缓存**。控制台为纯静态单页（ElementUI 风格、无框架），静态资源双模式：生产由 `webui/embed.go` 用 `//go:embed index.html assets` 内嵌进二进制；开发（`-tags dev`）由 `webui/embed_dev.go` 用 `os.DirFS("../webui")` 实时读源码目录，改前端文件刷新即见、免重新编译。访问 `http://<admin-addr>/` 打开。
 
+### 2.7 `internal/geoip` — GeoIP 解析器（框架私有）
+
+- **作用**：基于 MaxMind GeoLite2 mmdb 文件的 IP 地理位置解析（无第三方依赖），供 obs / shield **共享一个实例、写时解析**：写日志/拦截事件时解析填 `access_log` / `shield_event` 的 `country`/`city` 列（读侧 Top IP 等少行场景另支持查询时逐行解析，免加列）。
+- **查找链（逐文件独立）**：`GeoLite2-City.mmdb` 与 `GeoLite2-Country.mmdb` 各自按 **`GEOIP_MMDB_DIR`（默认 `geoip`）→ 当前工作目录 → `$HOME/geoip`** 查找，City 优先、缺失回退 Country（仅国家码）。
+- **降级与生效**：惰性加载，未放置 mmdb 时启动日志 warning 告警一次、`country`/`city` 落空串（统计计「未知」），**不阻断转发**；文件补放后**重启生效**（不做运行期热载）。`Ready()` 供端点回传 `geo_ready` 就绪信号（前端引导卡判定）。
+- **配置**：`GEOIP_MMDB_DIR`（见 `docs/CONFIGURATION.md`）；调用链路见 `docs/PROJECT_STRUCTURE.md`。
+
 ---
 
 ## 3. 可选挂件（plugins/）
@@ -118,6 +125,8 @@ rockctl switch on shield
 SHIELD_RATE_LIMIT_RPS=100 \
 SHIELD_WAF_SQL_INJECTION=true SHIELD_WAF_XSS=true rocksys --upstream http://127.0.0.1:9000
 ```
+
+**拦截事件与 GeoIP / 实时窗口**：拦截事件落 `shield_event` 表（装配注入共享 `internal/geoip` 解析器，见 §2.7，写时解析填 `country`/`city`；Top IP 统计行为查询时逐行解析）。实时计数内存窗口固定 **1 小时 = 60×1 分钟桶**，`GET /admin/shield/metrics?window=1m|5m|15m|1h` 按所选窗口整桶聚合（缺省 1m）；`GET /admin/shield/total` 返回落库总数（查库口径，受保留期影响）。契约见 `docs/webui-api.md` §3.18。
 
 ### 3.2 dispatch — L2 路由分发（转发链中间件，Middle）
 
@@ -208,13 +217,17 @@ rockctl script rollback             # 回滚上一版本
 
 **作用**：访问日志（异步落库）+ 指标聚合 + 查询 API。
 
-**配置项**：`OBS_ENABLED`（父开关，默认 false）、`OBS_LOG_PRUNE_ENABLED`（access_log 自动清理子开关，默认 false）、`OBS_LOG_RETENTION_DAYS`（保留天数，默认 7）。
+**配置项**：`OBS_ENABLED`（父开关，默认 false）、`OBS_LOG_PRUNE_ENABLED`（access_log 自动清理子开关，默认 false）、`OBS_LOG_RETENTION_DAYS`（保留天数，默认 7）、`OBS_TRAFFIC_CACHE_TTL`（流量统计结果缓存 TTL，秒，缺省 600=10 分钟，0=禁用，支持热更）。
 
 **存储**：访问日志统一写数据库——复用统一数据访问层（`DB_DRIVER`/`DB_DSN`，默认 sqlite `rocksys.db`）写 `access_log` 表；SQL 外置 `sql/<dbtype>/`。数据访问层未就绪/建表失败时降级丢弃日志并告警（不阻断转发）。`access_log` 表字段/枚举见 `docs/DATA_DICT.md`。
 
 **异步落盘**：日志写入有界队列（4096 条，满则丢弃告警），后台 goroutine 批量写入当前后端；`Flush` 保证停机前全部落盘。
 
 **查询**：`GET /admin/metrics` 返回 QPS / P50 / P95 / P99 / 错误率；`GET /admin/logs` 按时间范围（精确到分）+ path 精确/模糊过滤返回 JSONL（详见 webui-api.md §3.11）；`GET /admin/logs/storage` 返回日志库占用（access_log 表 + 索引，WebUI 日志页顶部展示）。
+
+**流量统计报表**（读侧聚合端点，实现 `plugins/obs/traffic.go` + `traffic_cache.go`）：`GET /admin/obs/traffic/summary`（指标标量+率）、`GET /admin/obs/traffic/series`（访问/拦截时间桶趋势，hour/day 缺省自适应）、`GET /admin/obs/traffic/geo`（Top 国家分布，含 `geo_ready` 就绪信号）——数据为 `access_log` ∪ `shield_event` 两表 SQL 聚合（GeoIP 写时解析提供 country/city 列），服务端 singleflight+TTL 缓存（`OBS_TRAFFIC_CACHE_TTL`）；obs 未启用 503 引导降级、拦截事件记录关闭时拦截侧字段 null。指标闭合口径与响应契约见 `docs/webui-api.md` §3.20。
+
+**GeoIP 写时解析**：装配注入共享 `internal/geoip` 解析器（见 §2.7），写 `access_log` 日志行时解析客户端 `country`/`city`；未配置 mmdb 时列落空串（统计计「未知」）。
 
 ### 3.6 copy — 请求抄送（转发链中间件，Tail + ResponseHook）
 

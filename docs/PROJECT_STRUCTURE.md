@@ -16,6 +16,7 @@ rocksys/
 │   ├── dataflow/                 # 请求级数据流：trace_id/三时间戳/租户（串联）
 │   ├── hotswap/                  # ★ 生产热运维引擎：配置热更/组件热切/脚本热载
 │   ├── adminapi/                 # Admin API handler（回环地址，不对外网）
+│   ├── geoip/                    # GeoIP 解析器（GeoLite2 mmdb，写时解析 country/city，obs/shield 共享）
 │   └── conf/                     # 底座配置封装（基于 easyconf）
 ├── plugins/                      # ★ 可选挂件（默认全关，可热插拔，可独立演进）
 │   ├── shield/                   # L1 防护（转发链中间件）
@@ -24,7 +25,7 @@ rocksys/
 │   ├── trace/                    # trace_id 透传（转发链中间件）
 │   ├── script/                   # RockScript：Lua 策略引擎（内嵌组件）
 │   ├── config/                   # RockConfig：配置/热重载（内嵌组件）
-│   ├── obs/                      # RockObs：日志/统计（内嵌组件）
+│   ├── obs/                      # RockObs：日志/统计/流量报表（内嵌组件；traffic.go 三端点 + traffic_cache.go singleflight TTL 缓存）
 │   ├── registry/                 # RockRegistry：服务注册（独立进程组件）
 │   ├── auth/                     # RockAuth：认证/租户（独立进程组件）
 │   ├── mq/                       # RockMQ：异步消息（独立进程组件）
@@ -96,6 +97,7 @@ xxx/
   前端 `webui/assets/js/views/database.js`（检查 / 差异表 / SQL 编辑器 / danger 强确认执行）；
   表清单（`表名 ↔ 建表脚本`，文件名 ≠ 表名）在 `cmd/rocksys/main.go` 装配处注册。
 - 底座（反向代理转发引擎）**不直连业务数据库**（架构红线），本层仅服务可插拔组件（mq 等）。
+- **GeoIP 与流量统计链路**：`internal/geoip`（查找链 `GEOIP_MMDB_DIR` → 工作目录 → `~/geoip`，逐文件独立，惰性加载、缺失降级告警、重启生效）在 `cmd/rocksys/main.go` 构造后**写时解析**注入两处——obs 写 `access_log`、shield 写 `shield_event` 时解析填 `country`/`city` 列；读侧报表归 obs 插件：`plugins/obs/traffic.go`（`GET /admin/obs/traffic/summary|series|geo`，两表 SQL 聚合，`traffic_cache.go` singleflight+TTL 缓存）+ shield 读侧 `plugins/shield/admin.go`（`metrics?window=` / `total` / stats Top IP geo 逐行解析）。契约见 `docs/webui-api.md` §3.18/§3.20。
 
 ## 4. ★ 生产热运维引擎（hotswap）
 
