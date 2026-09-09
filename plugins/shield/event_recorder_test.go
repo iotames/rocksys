@@ -74,9 +74,11 @@ func TestEventCounterSnapshot(t *testing.T) {
 }
 
 // 窗口滑动：超过 1 分钟的旧桶不计入快照。
+// ★ 快照点取分钟中段（整分钟对齐 +30s）：分钟桶语义下若 now 恰处分钟头部，
+// -10s 的写入会落入上一分钟桶被 1m 窗口排除，造成偶发失败（未对齐时的已知边界）。
 func TestEventCounterWindowSlides(t *testing.T) {
 	c := &eventCounter{}
-	now := time.Now()
+	now := time.Now().Truncate(time.Minute).Add(30 * time.Second)
 	c.Add(BlockXSS, now.Add(-2*time.Minute)) // 旧桶：应滑出窗口
 	c.Add(BlockXSS, now.Add(-10*time.Second))
 	s := c.Snapshot(now, time.Minute)
