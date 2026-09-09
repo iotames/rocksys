@@ -37,6 +37,9 @@ const (
 
 	// geoTopLimit 地区分布返回条数（国家数有限，写死即可）。
 	geoTopLimit = 10
+
+	// PathTrafficCacheClear 清空流量统计结果缓存（POST；WebUI 流量统计卡「清空缓存」按钮）。
+	PathTrafficCacheClear = "/admin/obs/traffic/cache_clear"
 )
 
 // trafficShieldTable / trafficBlockAvailable（包级常量/状态，不进热路径）：
@@ -300,6 +303,21 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 		// 前端据此显示常驻警告引导卡（缺哪个文件、去哪下载、重启生效）。
 		"geo_ready": o.geo != nil && o.geo.Ready(),
 	})
+}
+
+// ClearCache POST /admin/obs/traffic/cache_clear：清空流量统计结果缓存（只清缓存不改数据）。
+// 场景：刚写入的日志想立即见统计、或大表聚合中途想放弃旧结果强制重算。
+func (h *AdminHandler) ClearCache(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "清空缓存仅接受 POST", http.StatusMethodNotAllowed)
+		return
+	}
+	o := h.obsReady(w)
+	if o == nil {
+		return
+	}
+	o.tcache.purge()
+	writeJSON(w, map[string]any{"ok": true, "text": "流量统计缓存已清空，下次查询将重新聚合"})
 }
 
 // obsReady 取 obs 实例（未注册或未启用输出 503 引导态并返回 nil；豁免 toast 红线②，

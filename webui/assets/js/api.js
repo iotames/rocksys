@@ -97,7 +97,7 @@
     }).catch(err => {
       if (err && err.name === 'TimeoutError') {
         bridgeUnreachable(true);
-        throw new ApiError('请求超时（5 秒）', 0);
+        throw new ApiError('请求超时（' + Math.round((timeoutMs || 5000) / 1000) + ' 秒）', 0);
       }
       if (err instanceof TypeError) {
         // fetch 网络层失败（连接拒绝 / 无法解析等）
@@ -109,7 +109,7 @@
   }
 
   const api = {
-    get: url => request('GET', url).then(r => r.json().catch(() => null)),
+    get: (url, timeoutMs) => request('GET', url, undefined, timeoutMs).then(r => r.json().catch(() => null)),
     // textMeta：NDJSON 文本 + X-Total-Count 响应头总数（服务端分页端点用）
     textMeta: url => request('GET', url).then(async r => ({
       text: await r.text(),

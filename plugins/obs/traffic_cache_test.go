@@ -101,6 +101,26 @@ func TestTrafficCacheErrorNotCached(t *testing.T) {
 	}
 }
 
+func TestTrafficCachePurge(t *testing.T) {
+	c := newTrafficCache()
+	calls := 0
+	fn := func() (any, error) { calls++; return calls, nil }
+	if _, cached, _ := c.do("k1", time.Hour, fn); cached {
+		t.Fatal("首次计算不应命中")
+	}
+	if _, cached, _ := c.do("k2", time.Hour, fn); cached {
+		t.Fatal("首次计算不应命中")
+	}
+	c.purge()
+	_, cached, _ := c.do("k1", time.Hour, fn)
+	if cached {
+		t.Fatal("purge 后不应命中缓存（应重新计算）")
+	}
+	if calls != 3 { // k1 + k2 + purge 后的 k1
+		t.Fatalf("purge 后应重新计算，fn 实际执行 %d 次", calls)
+	}
+}
+
 var errFake = &fakeError{}
 
 type fakeError struct{}

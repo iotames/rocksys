@@ -475,6 +475,9 @@ func buildServer(args []string) (*Server, error) {
 	if err := adminSrv.RegisterPlugin(obs.PathTrafficGeo, obsAdmin.TrafficGeo); err != nil {
 		return nil, fmt.Errorf("register traffic geo: %w", err)
 	}
+	if err := adminSrv.RegisterPlugin(obs.PathTrafficCacheClear, obsAdmin.ClearCache); err != nil {
+		return nil, fmt.Errorf("register traffic cache clear: %w", err)
+	}
 	if err := adminSrv.RegisterPlugin("/admin/metrics", obsAdmin.Metrics); err != nil {
 		return nil, fmt.Errorf("register obs metrics: %w", err)
 	}

@@ -34,11 +34,14 @@
   let traffic = null; // { summary, series } 拉取结果
   let trafficErr = null; // 行内错误兜底（toast 按 UX 红线在 loadTraffic 里弹）
   let trafficOff = false; // obs 未启用（503 引导态）
+  let trafficLoading = false; // 统计拉取中（页面显示加载中提示，刷新时保留旧数据）
+  const trafficTimeoutMs = 30000; // 查库聚合是重操作，超时放宽到 30 秒（默认 5 秒易误报）
   // 地理位置卡片状态：scope=世界/中国地图切换，source=访问/总拦截切换（联动地图热力与 Top 排名）
   let geoScope = 'china'; // 'world' | 'china'
   let geoSource = 'access'; // 'access' | 'blocked'
   let geo = null; // 拉取结果 { level, source, geo:[{country|region,cnt}], geo_ready }
   let geoErr = null; // 行内错误兜底（toast 按 UX 红线在 loadGeo 里弹）
+  let geoLoading = false; // 地理分布拉取中
 
   // 小黑屋数据缓存（切页签/静默重载时刷新；拉取失败保留旧数据 + 行内提示）
   let jailRows = [];
@@ -295,12 +298,15 @@
     if (!range) { trafficErr = '自定义时间范围不完整'; renderTrafficBody(); return; }
     const qs = 'from=' + encodeURIComponent(range.from) + '&to=' + encodeURIComponent(range.to);
     trafficOff = false;
+    trafficLoading = true;
+    renderTrafficBody(); // 立即给出加载中反馈（已有旧数据时保留旧内容+刷新中角标）
     try {
       const spanMs = new Date(range.to.replace('T', ' ')) - new Date(range.from.replace('T', ' '));
       const bucket = spanMs <= 48 * 3600 * 1000 ? 'hour' : 'day';
+      // 查库聚合是重操作，数据量大时耗时秒级，超时放宽到 30 秒（默认 5 秒易误报）
       const [summary, series] = await Promise.all([
-        api.get('/admin/obs/traffic/summary?' + qs),
-        api.get('/admin/obs/traffic/series?' + qs + '&bucket=' + bucket),
+        api.get('/admin/obs/traffic/summary?' + qs, trafficTimeoutMs),
+        api.get('/admin/obs/traffic/series?' + qs + '&bucket=' + bucket, trafficTimeoutMs),
       ]);
       traffic = { summary, series, bucket };
       trafficErr = null;
@@ -313,6 +319,7 @@
         }
       }
     }
+    trafficLoading = false;
     renderTrafficBody();
     loadGeo({ silent: true });
   }
@@ -330,8 +337,9 @@
     };
     const qs = 'from=' + encodeURIComponent(range.from) + '&to=' + encodeURIComponent(range.to) +
       '&source=' + source + '&level=' + level;
+    geoLoading = true;
     try {
-      const res = await api.get('/admin/obs/traffic/geo?' + qs);
+      const res = await api.get('/admin/obs/traffic/geo?' + qs, trafficTimeoutMs);
       if (res.level !== level || res.source !== source || stale()) return;
       geo = res;
       geoErr = null;
@@ -342,6 +350,7 @@
         toast('地理位置分布加载失败：' + geoErr + '，可点页内「刷新」重试', 'error');
       }
     }
+    geoLoading = false;
     renderGeoCard();
     maybeGeoToast();
   }
@@ -379,7 +388,9 @@
       tile('延迟 P99', n(sm.lat_p99), '毫秒') +
       tile('平均延迟', n(sm.lat_avg), '毫秒') +
       '</div>' +
-      (sm.computed_at ? '<div class="form-hint">统计时刻 ' + esc(sm.computed_at.replace('T', ' ').slice(0, 19)) + ' UTC · 服务端缓存 10 分钟（可配置）</div>' : '');
+      // 缓存时长随服务端配置动态展示（OBS_TRAFFIC_CACHE_TTL，0=禁用时不显示）
+      (sm.computed_at ? '<div class="form-hint">统计时刻 ' + esc(sm.computed_at.replace('T', ' ').slice(0, 19)) + ' UTC' +
+        (sm.cache_ttl_sec ? ' · 服务端缓存 ' + Math.round(sm.cache_ttl_sec / 60) + ' 分钟（可配置）' : '') + '</div>' : '');
   }
 
   // 地理位置卡片：世界/中国热力地图 + Top 地区排名（scope/source 切换联动地图与排名）
@@ -432,7 +443,7 @@
       body = Rock.comp.empty.emptyCard({ text: '地理位置分布加载失败：' + geoErr, br: true,
         action: '<button class="btn btn-sm btn-primary" data-act="geo-retry">重试</button>' });
     } else if (!geo) {
-      body = Rock.comp.empty.message({ text: '加载中…' });
+      body = Rock.comp.empty.message({ text: geoLoading ? '地理分布加载中…按范围查库聚合，请稍候' : '加载中…' });
     } else {
       body = '<div class="geo-panels">' +
         '<div class="geo-map-box" style="height:380px"><div id="geo-map" style="width:100%;height:100%"></div></div>' +
@@ -495,6 +506,9 @@
       body = '<div class="empty" style="padding:24px 8px">' +
         '<div>观测组件未开启，无法统计流量（数据由访问日志/拦截日志按需聚合而来）</div>' +
         '<button class="btn btn-sm btn-primary" data-act="go-obs">去组件页开启观测</button></div>';
+    } else if (trafficLoading && !traffic) {
+      // 首次加载：给出友好等待提示（查库聚合数据量大时可达秒级，超时已放宽 30 秒）
+      body = Rock.comp.empty.message({ text: '统计加载中…按时间范围查库聚合，数据量大时可能需要数秒，请稍候' });
     } else if (trafficErr) {
       body = Rock.comp.empty.emptyCard({ text: '流量统计加载失败：' + esc(trafficErr), br: true,
         action: '<button class="btn btn-sm btn-primary" data-act="overview-reload">重试</button>' });
@@ -514,7 +528,12 @@
         '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-blocked"></canvas></div></div>' +
         '</div>';
     }
-    return '<div class="card" style="margin-top:16px"><div class="card-title">流量统计 <span class="card-sub">按时间范围查库聚合 · 与运行指标（实时内存）口径不同</span></div>' +
+    return '<div class="card" style="margin-top:16px"><div class="card-title" style="display:flex;align-items:center;gap:8px">流量统计' +
+      (trafficLoading && traffic ? ' <span class="tag tag-blue">刷新中…</span>' : '') +
+      ' <span class="card-sub">按时间范围查库聚合 · 服务端缓存 15 分钟</span>' +
+      '<span style="flex:1"></span>' +
+      '<button class="btn btn-sm" data-act="traffic-cache-clear"' + (trafficLoading ? ' disabled' : '') +
+      ' title="清空服务端统计缓存，下次查询强制重新聚合">清空缓存</button></div>' +
       body + '</div>';
   }
 
@@ -745,6 +764,20 @@
           toTime: ($('#traffic-to-time') || {}).value || '23:59',
         };
         loadTraffic({ manual: true });
+      },
+      // 流量统计：清空服务端结果缓存（POST；成功后重新聚合当前范围，立见最新数据）
+      'traffic-cache-clear': async function (el) {
+        el.disabled = true;
+        try {
+          const r = await api.post('/admin/obs/traffic/cache_clear', trafficTimeoutMs)();
+          if (r && r.ok === false) throw new Error(r.err || '清空失败');
+          toast(r && r.text || '缓存已清空', 'success');
+          traffic = null; geo = null; // 旧结果作废，强制重拉
+          await loadTraffic({ manual: true, silent: true });
+        } catch (e) {
+          toast('清空缓存失败：' + (e.message || '未知错误') + '，可稍后重试', 'error');
+        }
+        renderTrafficBody();
       },
       // 地理位置：世界/中国切换（scope 决定聚合 level，地图与排名联动重拉）
       'geo-scope': function (el) {

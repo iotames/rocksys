@@ -37,6 +37,13 @@ func newTrafficCache() *trafficCache {
 	}
 }
 
+// purge 清空全部缓存条目（在途计算不受影响，其结果写入后按原 TTL 生效）。
+func (c *trafficCache) purge() {
+	c.mu.Lock()
+	c.entries = map[string]trafficEntry{}
+	c.mu.Unlock()
+}
+
 // do 计算 or 命中缓存。返回值 data 为结果（调用方只读，不得修改）；cached 表示是否缓存命中。
 // ttl 由调用方按当前配置动态传入（0 = 禁用：既不读也不写缓存，每次真算）。
 func (c *trafficCache) do(key string, ttl time.Duration, fn func() (any, error)) (data any, cached bool, err error) {

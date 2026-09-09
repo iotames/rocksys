@@ -676,7 +676,7 @@ SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_byte
 
 **延迟字段（METRICS_WINDOW）**：`lat_avg / lat_p50 / lat_p95 / lat_p99`（毫秒，int）——范围内 access_log.total_ms 的平均与分位数精确统计；范围内无行时为 `null`（前端显示"—"）。
 
-**缓存语义**：服务端 singleflight + TTL 缓存（key = 端点 + from + to + bucket/source），TTL 由 `OBS_TRAFFIC_CACHE_TTL`（秒，缺省 600，0=禁用，支持热更）控制；命中时 `computed_at` 保持首次计算时刻，`cache_ttl_sec` 回传当前 TTL、`cache_hit` 标记是否命中。实时 QPS（`/admin/metrics`）不参与缓存。
+**缓存语义**：服务端 singleflight + TTL 缓存（key = 端点 + from + to + bucket/source），TTL 由 `OBS_TRAFFIC_CACHE_TTL`（秒，缺省 900=15 分钟，0=禁用，支持热更）控制；`POST /admin/obs/traffic/cache_clear` 可清空全部统计缓存条目（在途计算不受影响）；命中时 `computed_at` 保持首次计算时刻，`cache_ttl_sec` 回传当前 TTL、`cache_hit` 标记是否命中。实时 QPS（`/admin/metrics`）不参与缓存。
 
 **降级**：
 
@@ -689,6 +689,7 @@ SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_byte
 | `GET /admin/obs/traffic/summary` | query `from`/`to`（`YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`，必传）；响应见下 |
 | `GET /admin/obs/traffic/series` | query `from`/`to` + `bucket=hour\|day`（缺省自适应：跨度 ≤48h 用 hour，否则 day；非法值 400）；响应 `{bucket,series:[{bucket,ok_count,blocked_count}],cache_hit,cache_ttl_sec}`，`series[].bucket` 为 UTC 时间标签 |
 | `GET /admin/obs/traffic/geo` | query `from`/`to` + `source=access\|blocked`（缺省 access）+ `level=country\|province`（缺省 country；非法值 400）；country 级按国家计数倒序取 Top 10；province 级只统计 `country='CN'` 按 city 列「省/市」前缀聚合（中国地图专用）；响应 `{source,level,geo:[{country\|region,cnt}],cache_hit,geo_ready}`；`geo_ready`=GeoIP 是否就绪（未装配 mmdb 或加载失败为 false，前端据此显示常驻警告引导卡） |
+| `POST /admin/obs/traffic/cache_clear` | 无参数；清空流量统计结果缓存（只清缓存不改数据），响应 `{ok:true,text}`；WebUI 流量统计卡「清空缓存」按钮用，成功后前端强制重聚当前时间范围 |
 
 **`GET /admin/obs/traffic/summary` 响应 200**：
 
@@ -699,7 +700,7 @@ SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_byte
   "err4xx": 20, "err5xx": 2, "block4xx": 30,
   "err4xx_rate": 0.0195, "err5xx_rate": 0.002, "block4xx_rate": 1.0,
   "computed_at": "2026-09-09T03:00:00Z", "from": "2026-09-08T00:00:00Z", "to": "2026-09-09T00:00:00Z",
-  "cache_ttl_sec": 600, "cache_hit": false
+  "cache_ttl_sec": 900, "cache_hit": false
 }
 ```
 

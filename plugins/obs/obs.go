@@ -205,7 +205,7 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	if err := cfgMgr.Register(&o.pruneLogDays, "OBS_LOG_RETENTION_DAYS", strconv.Itoa(defaultLogPruneDays), "访问日志保留天数（自动清理开启后生效）"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_LOG_RETENTION_DAYS", "err", err)
 	}
-	if err := cfgMgr.Register(&o.trafficCacheTTL, "OBS_TRAFFIC_CACHE_TTL", "600", "流量统计结果缓存 TTL（秒；缺省 600=10 分钟，0=禁用缓存）", "统计为按需 SQL 聚合，缓存防大表重复聚合拖库；命中时响应 computed_at 保持首次计算时刻"); err != nil {
+	if err := cfgMgr.Register(&o.trafficCacheTTL, "OBS_TRAFFIC_CACHE_TTL", "900", "流量统计结果缓存 TTL（秒；缺省 900=15 分钟，0=禁用缓存）", "统计为按需 SQL 聚合，缓存防大表重复聚合拖库；命中时响应 computed_at 保持首次计算时刻；可在 WebUI 流量统计卡「清空缓存」手动失效"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_TRAFFIC_CACHE_TTL", "err", err)
 	}
 	o.tcache = newTrafficCache()
