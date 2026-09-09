@@ -69,7 +69,7 @@ cd bin && ./rocksys
 
 - `make release`：编译二进制 + 拷贝外挂资源（SQL / WAF 规则 / 可信代理）到 `bin/hotscripts/`，运行期外挂优先、内嵌兜底，改文件无需重新编译；
 - `make cross-build`：交叉编译 linux amd64/arm64、windows amd64，产物见 `bin/`；
-- `make deploy`：构建并部署到远端服务器（Linux/Mac/WSL 执行）：登录目标取环境变量 `ROCKSYS_SERVER`（缺省 `rocksys`，即 `~/.ssh/config` 的 Host 别名），上传 `bin/rocksys` 到 `~/projects/rocksys/bin/`（临时名 + `mv` 原子替换，避免 Text file busy），远端 `--version` 回显验证后 `systemctl restart rocksys` 并确认服务存活；仅上传二进制，不触碰服务端 `hotscripts/`（服务器侧资产，或含个性化配置）。
+- `make deploy`：构建并部署到远端服务器（Linux/Mac/WSL 执行）：登录目标取环境变量 `ROCKSYS_SERVER`（缺省 `rocksys`，即 `~/.ssh/config` 的 Host 别名），上传 `bin/rocksys` 到 `~/projects/rocksys/bin/`（临时名 + `mv` 原子替换，避免 Text file busy），远端 `--version` 回显验证后 `systemctl restart rocksys` 并确认服务存活；上传前自动检查远端 GeoIP 数据（查找链三处均缺时从本地 `bin/geoip/` 补传，本地也没有仅告警不阻断）；仅上传二进制与缺失的 mmdb，不触碰服务端 `hotscripts/`（服务器侧资产，或含个性化配置）。
 
 > **Makefile 仅支持 Linux**（纯 Unix 语法）；Windows 原生 cmd 不支持，请经 WSL2 或直接用上方 `go build` 命令。
 

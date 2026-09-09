@@ -29,7 +29,7 @@ RockSys 磐石系统：极简增强式 HTTP 反向代理底座（Go 1.25+）。�
 - `make test`：运行 `go test ./...`。
 - `make vet`：运行 `go vet ./...`。
 - `make run`：构建并运行。
-- `make deploy`：部署到远端服务器（Linux/Mac/WSL 执行；不支持 Windows）：登录目标取环境变量 `ROCKSYS_SERVER`（缺省 `rocksys`，即 `~/.ssh/config` 的 Host 别名），流程 = build → ELF 防呆校验 → 上传 `bin/rocksys` 到 `~/projects/rocksys/bin/`（临时名 + `mv` 原子替换，防 Text file busy）→ 远端 `--version` 验证 → `systemctl restart rocksys` → `is-active` 确认存活。仅传二进制，不触碰服务端 `hotscripts/`（服务器侧资产，或含个性化配置）。
+- `make deploy`：部署到远端服务器（Linux/Mac/WSL 执行；不支持 Windows）：登录目标取环境变量 `ROCKSYS_SERVER`（缺省 `rocksys`，即 `~/.ssh/config` 的 Host 别名），流程 = build → ELF 防呆校验 → 远端 GeoIP 检查同步（远端查找链 `~/projects/rocksys/bin/geoip/` → `~/projects/rocksys/bin/` → `~/geoip` 均无该 mmdb 时从本地 `bin/geoip/` 补传；本地也没有仅告警不阻断）→ 上传 `bin/rocksys` 到 `~/projects/rocksys/bin/`（临时名 + `mv` 原子替换，防 Text file busy）→ 远端 `--version` 验证 → `systemctl restart rocksys` → `is-active` 确认存活。仅传二进制与缺失的 mmdb，不触碰服务端 `hotscripts/`（服务器侧资产，或含个性化配置）。
 
 > **Makefile 仅支持 Linux**（纯 Unix 语法，Windows 原生 cmd 不支持；Windows 下需经 WSL2：`cd /mnt/d/.../rocksys && make xxx`）。make 是为**人类**便捷设计的封装；**AI 智能体一律使用原生命令行（`go build` / `go test` / `go vet`），不要依赖 make** —— 见下节规范。
 

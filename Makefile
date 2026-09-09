@@ -206,15 +206,29 @@ run: build
 
 # deploy：构建并部署到远端服务器（Linux/Mac/WSL 执行；依赖 ssh/scp，不支持 Windows）。
 # 用法：make deploy（或 ROCKSYS_SERVER=<user@host别名> make deploy）。
-# 流程：build → ELF 防呆校验 → mkdir 远端目录 → 上传临时文件 → 远端原子替换 + --version
-# 回显验证 → systemctl restart → is-active 确认服务存活。任何一步失败立即中止。
+# 流程：build → ELF 防呆校验 → 远端 GeoIP 数据检查同步 → mkdir 远端目录 → 上传临时文件 →
+# 远端原子替换 + --version 回显验证 → systemctl restart → is-active 确认服务存活。
+# 任何一步失败立即中止（geoip 同步除外：双缺仅告警不阻断，geo 为可选增强）。
 # 关键点：先传临时名 rocksys.new 再 mv 原子替换——直接 scp 覆盖运行中的二进制会报
 # Text file busy（ETXTBSY）；mv 是 rename，停机窗口压缩到 restart 一瞬。
-# 注：仅上传二进制，不触碰服务端 hotscripts/（服务器侧资产，或含个性化配置，不随部署覆盖）。
+# 注：仅上传二进制与缺失的 mmdb，不触碰服务端 hotscripts/（服务器侧资产，或含个性化配置，不随部署覆盖）。
 deploy: build
 	@echo "==> 校验产物为 Linux ELF（Mac 本机构建产物会被拦截，请经 WSL 构建）"
 	@head -c 4 bin/rocksys | od -An -tx1 | grep -q '7f 45 4c 46' || \
 		{ echo "错误: bin/rocksys 不是 Linux 二进制，已中止部署" >&2; exit 1; }
+	@echo "==> 检查远端 GeoIP 数据（查找链 geoip/ → ./ → ~/geoip，缺则从本地 $(GEOIP_DIR)/ 同步）"
+	@for f in $(GEOIP_FILES); do \
+		if ssh $(ROCKSYS_SERVER) "test -f ~/$(REMOTE_DIR)/geoip/$$f || test -f ~/$(REMOTE_DIR)/$$f || test -f ~/geoip/$$f"; then \
+			echo "==> $$f: 远端已存在，跳过"; \
+		elif [ -f "$(GEOIP_DIR)/$$f" ]; then \
+			echo "==> 远端缺 $$f，从本地 $(GEOIP_DIR)/ 同步"; \
+			ssh $(ROCKSYS_SERVER) "mkdir -p ~/$(REMOTE_DIR)/geoip"; \
+			scp -p "$(GEOIP_DIR)/$$f" "$(ROCKSYS_SERVER):~/$(REMOTE_DIR)/geoip/$$f" \
+				|| echo "警告: $$f 同步失败（不阻断部署，远端 geo 降级为「未知」）" >&2; \
+		else \
+			echo "警告: 本地 $(GEOIP_DIR)/ 与远端均无 $$f，远端地理位置统计将降级为「未知」（可运行 make geoip 补齐后重部署）" >&2; \
+		fi; \
+	done
 	@echo "==> 上传到 $(ROCKSYS_SERVER):~/$(REMOTE_DIR)/"
 	@ssh $(ROCKSYS_SERVER) "mkdir -p ~/$(REMOTE_DIR)"
 	scp -p bin/rocksys $(ROCKSYS_SERVER):~/$(REMOTE_DIR)/rocksys.new
