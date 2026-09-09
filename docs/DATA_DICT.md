@@ -297,4 +297,4 @@
 - **期望结构权威来源 = 运行期 SQLSource**：即本文档所述 `sql/<dbtype>/` 建表/建索引脚本（外挂 `HOT_SCRIPTS_DIR/sql/` 优先、编译期内嵌兜底），与各挂件实际建表同源；外挂覆写过 sql/ 的部署，检查口径自动跟随，不使用编译期内嵌目录直读。
 - **实际结构 = 当前数据连接 catalog**：查询语句为 `sql/<dbtype>/schema_query_{columns,indexes,tables}.sql`（三方言各三份，`{table}` 占位符，支持外挂覆写，与其他 SQL 脚本同生命周期）。
 - **表清单在装配处注册**：7 张表的 `表名 ↔ 建表脚本` 对应关系在 `cmd/rocksys/main.go` 装配处（`buildTableSpecs`）注册为唯一事实来源——表名无法从脚本文件名推断（`mq_create_table.sql` 实际表名 `outbox`），一致性由 `TestTableSpecsMatchScripts` 单测防漏防漂移。
-- **`SHIELD_EVENT_TABLE` 口径**：`shield_event` 表名是可配置项（重启生效），表清单注册的是**运行期配置实值**——若自定义了表名，检查与同步均按实值进行；catalog 查询经同一 `{table}` 占位符替换，两边口径自动一致。
+- **表名口径**：`shield_event`/`access_log` 均为**固定表名**（不开放配置——配置面徒增 schema 同步与测试负担，无业务收益）；脚本经 `{table}`/`{table2}` 占位符替换注入固定表名，表清单注册与 catalog 查询口径自动一致。

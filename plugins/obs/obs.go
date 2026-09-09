@@ -133,7 +133,7 @@ type Obs struct {
 	geo     *geoip.Resolver // GeoIP 解析器（装配期 SetGeoip 注入，可 nil=geo 列空串）
 
 	// 流量统计（TRAFFIC_ANALYSIS D1）：TTL 秒数注册进配置中心（0=禁用），结果缓存常驻。
-	trafficCacheTTL int            // *int 注册：OBS_TRAFFIC_CACHE_TTL
+	trafficCacheTTL int // *int 注册：OBS_TRAFFIC_CACHE_TTL
 	tcache          *trafficCache
 
 	// access_log 自动清理（DB 后端专用，数据保留见 DATA_DICT 维护约定）：

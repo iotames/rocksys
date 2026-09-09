@@ -157,7 +157,7 @@
 
 ## 6. 变更记录
 
-- 2026-09-09 终验通过并实施完成（STEP1–9）：全量 `go test ./...`/`go vet ./...` 全绿；MySQL 8.0.28 / PG 18.4 真库门控（`-tags integration`）全过；生产构建通过；浏览器实测截图核验（概览流量统计区真实数据出数且口径互洽、缓存命中/禁用语义、WAF 桶宽切换与落库总数、geo 缺失引导卡与会话内一次 toast）。实施期新增工作：① 修复 integration 测试基建三处存量缺陷（syscall.Flock Windows 编译、缺 context 导入、旧版 DDL 缺 updated_at 致零差异断言恒挂）；② 修复 PG 存量缺陷 `access_log_query.sql` 排序参数类型消解为 text（显式 CAST）；③ 真库冒烟暴露 traffic 测试夹具三处缺陷（extra/path 无默认值、PG geo 占位符复用、临时表清理时序）。实施期临时决策 D-T1~D-T3 见 TRAFFIC_ANALYSIS_DECISIONS.md（时区传参口径沿 logs 页现状、{table2} 占位符约定、老数据 UV 退化确认），待人类审查。
+- 2026-09-09 终验通过并实施完成（STEP1–9）：全量 `go test ./...`/`go vet ./...` 全绿；MySQL 8.0.28 / PG 18.4 真库门控（`-tags integration`）全过；生产构建通过；浏览器实测截图核验（概览流量统计区真实数据出数且口径互洽、缓存命中/禁用语义、WAF 桶宽切换与落库总数、geo 缺失引导卡与会话内一次 toast）。实施期新增工作：① 修复 integration 测试基建三处存量缺陷（syscall.Flock Windows 编译、缺 context 导入、旧版 DDL 缺 updated_at 致零差异断言恒挂）；② 修复 PG 存量缺陷 `access_log_query.sql` 排序参数类型消解为 text（显式 CAST）；③ 真库冒烟暴露 traffic 测试夹具三处缺陷（extra/path 无默认值、PG geo 占位符复用、临时表清理时序）。实施期临时决策 D-T1~D-T3 见 TRAFFIC_ANALYSIS_DECISIONS.md（时区传参口径沿 logs 页现状、{table2} 占位符约定、老数据 UV 退化确认），待人类审查。同日人类审查：D-T1/D-T3 维持；D-T2 根因处置——取消 `SHIELD_EVENT_TABLE` 配置项（表名固定 `shield_event`，不开放配置），相关注册/校验/注入与文档口径全部移除改写。
 
 - 2026-09-08 初稿。
 - 2026-09-09 按用户意见重写（D10–D15：并入首页概览、UV=ip+UA、geo 本期实施、WAF 窗口桶宽化、实时趋势保留采样、依赖 v2）；同日独立审核修订（D16/D17：表结构同步表述与验收改写、三同步清单补全、指标口径闭合、geo 警告形态统一）。修订细节已并入正文与决策表，此处不再重复。

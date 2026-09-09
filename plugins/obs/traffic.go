@@ -35,20 +35,12 @@ const (
 	geoTopLimit = 10
 )
 
-// trafficShieldTable / trafficBlockAvailablee 由装配处注入（AdminHandler 层，不进热路径）：
-// shield_event 表名可配置（SHIELD_EVENT_TABLE，{table2} 占位符替换用）；
+// trafficShieldTable / trafficBlockAvailable（包级常量/状态，不进热路径）：
+// 表名固定 shield_event（表名不开放配置——配置面只会增加测试与同步负担，无业务收益）；
 // SHIELD_EVENT_LOG_ENABLED=false 时拦截侧字段输出 null（前端显示"—"）。
-var (
-	trafficShieldTable    = "shield_event"
-	trafficBlockAvailable = true
-)
+const trafficShieldTable = "shield_event"
 
-// SetShieldTable 注入 shield_event 运行期表名（装配期一次；空串回落 shield_event）。
-func SetShieldTable(name string) {
-	if name != "" {
-		trafficShieldTable = name
-	}
-}
+var trafficBlockAvailable = true
 
 // SetBlockAvailable 注入拦截侧可用性（SHIELD_EVENT_LOG_ENABLED 实值；false=统计输出 null）。
 func SetBlockAvailable(ok bool) { trafficBlockAvailable = ok }

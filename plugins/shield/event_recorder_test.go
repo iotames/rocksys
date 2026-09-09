@@ -186,7 +186,7 @@ func TestNewEventRecorderRegistersConfig(t *testing.T) {
 	r.Stop()
 	for _, n := range []string{
 		"SHIELD_EVENT_LOG_ENABLED", "SHIELD_EVENT_RETENTION_DAYS", "SHIELD_EVENT_PRUNE_ENABLED",
-		"SHIELD_EVENT_TABLE", "SHIELD_EVENT_BUFFER", "SHIELD_EVENT_FLUSH_ROWS", "SHIELD_EVENT_FLUSH_INTERVAL",
+		"SHIELD_EVENT_BUFFER", "SHIELD_EVENT_FLUSH_ROWS", "SHIELD_EVENT_FLUSH_INTERVAL",
 	} {
 		if _, ok := f.regs[n]; !ok {
 			t.Errorf("应注册配置项 %s", n)

@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"rocksys/internal/hotswap"
 	sqlfiles "rocksys"
+	"rocksys/internal/hotswap"
 )
 
 // cleanupEnvFiles 清理 easyconf 在包目录自动创建的工作目录 .env / default.env，以及

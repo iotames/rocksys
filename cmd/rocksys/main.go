@@ -418,10 +418,10 @@ func buildServer(args []string) (*Server, error) {
 		adminSrv.SetSQLSource(dataDB) // 用户存储 SQL 脚本源（sql/<dbtype>/admin_users_*.sql）
 		// 表结构同步：表清单在装配处注册（表名在这里已知，无法从脚本文件名推断），
 		// 数据连接与清单一并注入（详见 buildTableSpecs）。
-		adminSrv.SetTableSpecs(dataDB, buildTableSpecs(configValue(cfgMgr.List(), "SHIELD_EVENT_TABLE")))
+		adminSrv.SetTableSpecs(dataDB, buildTableSpecs("shield_event"))
 		// 启动缺列检测（TRAFFIC_ANALYSIS D16）：访问/拦截两表缺列只告警不自动迁移
 		// （结构同步始终人工确认），提示管理员经 WebUI 补齐。
-		for table, cols := range missingLogColumns(dataDB, buildTableSpecs(configValue(cfgMgr.List(), "SHIELD_EVENT_TABLE"))) {
+		for table, cols := range missingLogColumns(dataDB, buildTableSpecs("shield_event")) {
 			log.Warn("db: 访问/拦截日志表缺列，统计与落库将受影响",
 				"table", table, "missing", strings.Join(cols, ","),
 				"howto", "登录 WebUI 打开「数据库」页查看表结构 diff，人工确认执行补列 SQL 后恢复（缺列期间两表落库暂停，转发不受影响）")
@@ -438,7 +438,6 @@ func buildServer(args []string) (*Server, error) {
 		return nil, fmt.Errorf("register script list: %w", err)
 	}
 	obsAdmin := obs.NewAdminHandler(mgr)
-	obs.SetShieldTable(configValue(cfgMgr.List(), "SHIELD_EVENT_TABLE"))
 	obs.SetBlockAvailable(recorder != nil && recorder.LoggingEnabled())
 	if err := adminSrv.RegisterPlugin(obs.PathTrafficSummary, obsAdmin.TrafficSummary); err != nil {
 		return nil, fmt.Errorf("register traffic summary: %w", err)
@@ -671,7 +670,7 @@ func missingLogColumns(d *db.DB, specs []db.TableSpec) map[string][]string {
 // buildTableSpecs 表结构同步表清单（装配处单一事实来源，见 docs/DB_SCHEMA_SYNC_PLAN.md §3.1）。
 // 表名无法从脚本文件名推断，来源已在设计期逐一核实：
 //   - ip_blacklist / ip_whitelist：IPListStore 构造内字面量（plugins/shield/ip_list_store.go）
-//   - shield_event：SHIELD_EVENT_TABLE 配置实值（可改，重启生效；缺省回落 shield_event）
+//   - shield_event：固定表名（表名不开放配置）
 //   - access_log（plugins/obs）、admin_users（adminapi userstore）、attack_archive（shield）：
 //     各组件建表处字面量/常量
 //   - outbox：mq.New(..., "outbox") 字面量（mq_create_table.sql 文件名 ≠ 表名）
