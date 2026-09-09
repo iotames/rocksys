@@ -21,6 +21,7 @@ import (
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
 	"rocksys/internal/db"
+	"rocksys/internal/geoip"
 	"rocksys/internal/hotswap"
 	"rocksys/internal/netutil"
 
@@ -127,8 +128,9 @@ func percentile(sorted []int64, p float64) int64 {
 // Obs 可观测性中间件：挂 chain.Tail，实现 chain.ResponseHook。
 type Obs struct {
 	cfg     conf.Manager
-	enabled bool   // *bool 注册：OBS_ENABLED
-	dataDB  *db.DB // 统一数据访问层（nil 时降级 discardStore，日志不落盘）
+	enabled bool            // *bool 注册：OBS_ENABLED
+	dataDB  *db.DB          // 统一数据访问层（nil 时降级 discardStore，日志不落盘）
+	geo     *geoip.Resolver // GeoIP 解析器（装配期 SetGeoip 注入，可 nil=geo 列空串）
 
 	// access_log 自动清理（DB 后端专用，数据保留见 DATA_DICT 维护约定）：
 	// 默认不开启，未开启时登录管理后台有警告提示。
@@ -174,6 +176,9 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	o.sink.Store(NewAsyncStore(o.buildStore()))
 	return o
 }
+
+// SetGeoip 注入 GeoIP 解析器（装配期一次；写时解析填 country/city 列，nil=不解析）。
+func (o *Obs) SetGeoip(res *geoip.Resolver) { o.geo = res }
 
 // Name 中间件名（hotswap 按此名启停）。
 func (o *Obs) Name() string { return "obs" }
@@ -261,7 +266,10 @@ func (o *Obs) OnDone(ctx *chain.Context) {
 		ReqBytes:   ctx.R.ContentLength,
 		RespBytes:  int64(len(ctx.RespBody)),
 		UserAgent:  ctx.R.UserAgent(),
-		// Country/City 由 geoip Resolver 写时解析填充（未装配 Resolver 时保持空串，统计计「未知」）。
+	}
+	// geo 写时解析：装配期注入的共享 Resolver（未注入=nil 时保持空串，统计计「未知」，不阻断转发）。
+	if o.geo != nil {
+		al.Country, al.City = o.geo.Lookup(al.ClientIP)
 	}
 	// 负载维度预留点：后期采集纯文本 POST 请求体等扩展字段时，
 	// 先在 dim.go Dims 注册 payload 维度，再在此写 Extras（存储零改动）。

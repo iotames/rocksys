@@ -21,6 +21,7 @@ import (
 	"rocksys/internal/conf"
 	"rocksys/internal/db"
 	"rocksys/internal/engine"
+	"rocksys/internal/geoip"
 	"rocksys/internal/hotswap"
 	"rocksys/internal/netutil"
 
@@ -304,6 +305,17 @@ func buildServer(args []string) (*Server, error) {
 		log.Info("db: 数据访问层已就绪", "driver", dataDB.Driver())
 	}
 
+	// ── GeoIP 解析器（写时解析：obs/shield 共享一个实例）────────────────
+	// 惰性加载：无 mmdb 时仅告警降级（geo 列空串），不阻断转发；文件补放后重启生效。
+	var geoipDir string
+	if err := cfgMgr.Register(&geoipDir, "GEOIP_MMDB_DIR", "geoip",
+		"GeoIP 数据目录（含 GeoLite2-City.mmdb / GeoLite2-Country.mmdb，逐文件独立按 本目录→工作目录→~/geoip 查找）",
+		"未放置 mmdb 时地理位置统计降级为「未知」（日志告警一次）；文件补放后重启生效",
+	); err != nil {
+		return nil, fmt.Errorf("register GEOIP_MMDB_DIR: %w", err)
+	}
+	geoRes := geoip.NewResolver(geoipDir)
+
 	// ── WAF 拦截监控统计 ───────────────────────────────────────────────
 	// 拦截请求在 shield 处短路（obs 在 Tail 槽位看不到），故记录器必须在 shield 拦截点采集。
 	// 装配方式：DB 就绪后经 setter 注入（shield.New 签名不变，保持挂件独立性）；
@@ -316,6 +328,7 @@ func buildServer(args []string) (*Server, error) {
 	if dataDB != nil {
 		recorder = shield.NewEventRecorder(cfgMgr, dataDB)
 		shieldMw.SetEventRecorder(recorder) // 拦截点 → Record()（nil 安全，重复注入以最后一次为准）
+		recorder.SetGeoip(geoRes)           // 写时解析 geo 列（共享实例）
 
 		// WAF 方案：动态 IP 黑白名单 DB 化（管理面 CRUD/导入 + 拦截链路快照合并）。
 		// 注入即建表 + 重建快照 + 启动 TTL 兜底刷新（60s）；nil 场景由 SetIPListStores 内部跳过。
@@ -335,9 +348,11 @@ func buildServer(args []string) (*Server, error) {
 		autoBan = shield.NewAutoBanEngine(cfgMgr, shieldMw, recorder)
 	}
 
-	mgr.RegisterMiddleware(obs.New(cfgMgr, dataDB)) // 访问日志/指标 → chain.Tail(+ResponseHook)
-	mgr.RegisterMiddleware(copy.New(cfgMgr))        // 请求抄送 → chain.Tail(+ResponseHook)
-	mgr.RegisterMiddleware(result.New(cfgMgr))      // L3 结果 → chain.Tail(+ResponseHook)
+	obsMw := obs.New(cfgMgr, dataDB) // 访问日志/指标 → chain.Tail(+ResponseHook)
+	obsMw.SetGeoip(geoRes)           // 写时解析 geo 列（共享实例）
+	mgr.RegisterMiddleware(obsMw)
+	mgr.RegisterMiddleware(copy.New(cfgMgr))   // 请求抄送 → chain.Tail(+ResponseHook)
+	mgr.RegisterMiddleware(result.New(cfgMgr)) // L3 结果 → chain.Tail(+ResponseHook)
 
 	// 独立组件（RegisterComponent）：config/registry/object 无条件注册。
 	mgr.RegisterComponent(config.New(cfgMgr))   // KV 配置服务

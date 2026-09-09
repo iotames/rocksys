@@ -1,6 +1,6 @@
 # STEP3：traffic 统计 SQL 脚本（三方言）+ 单测
 
-状态：待实施
+状态：实施中
 
 ## 目标
 按 PLAN §3.4 新增三方言各 4 个脚本（照 stats_daily 日期范式与 UTC 口径；时间边界 `time >= from AND time <= to`）：

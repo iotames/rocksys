@@ -30,6 +30,7 @@ import (
 	"rocksys/internal/chain"
 	"rocksys/internal/conf"
 	"rocksys/internal/db"
+	"rocksys/internal/geoip"
 	"rocksys/internal/netutil"
 )
 
@@ -198,6 +199,8 @@ type EventRecorder struct {
 	flushRows     int           // 攒批行数阈值（装配期生效）
 	flushInterval time.Duration // flush 间隔（装配期生效）
 
+	geo *geoip.Resolver // GeoIP 解析器（装配期 SetGeoip 注入，可 nil=geo 列空串）
+
 	ch      chan *ShieldEvent // 异步落库缓冲通道（容量装配期生效）
 	dropped atomic.Int64      // 累计未落库条数（channel 满/脚本读取失败/单条写入失败，admin 观测用）
 	written atomic.Int64      // 累计落库条数（admin 观测用）
@@ -311,11 +314,23 @@ func (r *EventRecorder) Record(ctx *chain.Context, bt BlockType, ruleHit string)
 		return
 	}
 	select {
-	case r.ch <- newEvent(ctx, bt, ruleHit):
+	case r.ch <- r.newGeoEvent(ctx, bt, ruleHit):
 	default:
 		// 通道满（拦截洪流）丢弃该条并计数，绝不阻塞转发。
 		r.dropped.Add(1)
 	}
+}
+
+// SetGeoip 注入 GeoIP 解析器（装配期一次，写时解析填 country/city 列；nil=不解析）。
+func (r *EventRecorder) SetGeoip(res *geoip.Resolver) { r.geo = res }
+
+// newGeoEvent 构造拦截事件并写时解析 geo（解析失败/未装配返回空串，统计计「未知」，不阻断）。
+func (r *EventRecorder) newGeoEvent(ctx *chain.Context, bt BlockType, ruleHit string) *ShieldEvent {
+	ev := newEvent(ctx, bt, ruleHit)
+	if r.geo != nil {
+		ev.Country, ev.City = r.geo.Lookup(ev.ClientIP)
+	}
+	return ev
 }
 
 // Stats 观测计数（admin 输出用）。
