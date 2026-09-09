@@ -225,7 +225,7 @@ rockctl script rollback             # 回滚上一版本
 
 **查询**：`GET /admin/metrics` 返回 QPS / P50 / P95 / P99 / 错误率；`GET /admin/logs` 按时间范围（精确到分）+ path 精确/模糊过滤返回 JSONL（详见 webui-api.md §3.11）；`GET /admin/logs/storage` 返回日志库占用（access_log 表 + 索引，WebUI 日志页顶部展示）。
 
-**流量统计报表**（读侧聚合端点，实现 `plugins/obs/traffic.go` + `traffic_cache.go`）：`GET /admin/obs/traffic/summary`（指标标量+率）、`GET /admin/obs/traffic/series`（访问/拦截时间桶趋势，hour/day 缺省自适应）、`GET /admin/obs/traffic/geo`（Top 国家分布，含 `geo_ready` 就绪信号）——数据为 `access_log` ∪ `shield_event` 两表 SQL 聚合（GeoIP 写时解析提供 country/city 列），服务端 singleflight+TTL 缓存（`OBS_TRAFFIC_CACHE_TTL`）；obs 未启用 503 引导降级、拦截事件记录关闭时拦截侧字段 null。指标闭合口径与响应契约见 `docs/webui-api.md` §3.20。
+**流量统计报表**（读侧聚合端点，实现 `plugins/obs/traffic.go` + `traffic_cache.go`）：`GET /admin/obs/traffic/summary`（指标标量+率）、`GET /admin/obs/traffic/series`（访问/拦截时间桶趋势，hour/day 缺省自适应）、`GET /admin/obs/traffic/geo`（地区分布，source=access/blocked × level=country/province 双维切换，含 `geo_ready` 就绪信号）——数据为 `access_log` ∪ `shield_event` 两表 SQL 聚合（GeoIP 写时解析提供 country/city 列），服务端 singleflight+TTL 缓存（`OBS_TRAFFIC_CACHE_TTL`）；obs 未启用 503 引导降级、拦截事件记录关闭时拦截侧字段 null。指标闭合口径与响应契约见 `docs/webui-api.md` §3.20。
 
 **GeoIP 写时解析**：装配注入共享 `internal/geoip` 解析器（见 §2.7），写 `access_log` 日志行时解析客户端 `country`/`city`；未配置 mmdb 时列落空串（统计计「未知」）。
 

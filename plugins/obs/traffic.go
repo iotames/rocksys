@@ -3,7 +3,9 @@
 // 端点（cmd/rocksys 装配时经 adminapi.RegisterPlugin 注入）：
 //   - GET /admin/obs/traffic/summary?from=&to=           指标标量 + 率 + computed_at/cache_ttl
 //   - GET /admin/obs/traffic/series?from=&to=&bucket=    访问/拦截时间桶趋势（hour|day，缺省自适应）
-//   - GET /admin/obs/traffic/geo?from=&to=&source=       Top 国家分布（access|blocked）
+//   - GET /admin/obs/traffic/geo?from=&to=&source=       地区分布（access|blocked）
+//     level=country（缺省）→ 按国家聚合，输出 {country,cnt}（ISO 码）；
+//     level=province → 只统计 country='CN' 按省聚合（city 列「省/市」前缀），输出 {region,cnt}。
 //
 // 指标口径（闭合定义见 PLAN §3.4，验收"数字互洽"以此为准）：
 //
@@ -217,8 +219,9 @@ func (h *AdminHandler) TrafficSeries(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Geo GET /admin/obs/traffic/geo?from=&to=&source=access|blocked。
-// 按 country GROUP BY 计数倒序；空串计「未知」且参与排序（读侧映射，不悄悄丢量）。
+// Geo GET /admin/obs/traffic/geo?from=&to=&source=access|blocked&level=country|province。
+// level=country（缺省）：按 country GROUP BY 计数倒序，空串计「未知」参与排序（读侧映射，不悄悄丢量）。
+// level=province：只统计 country='CN'，按 city 前缀（首个 "/" 前的省名）聚合（详见 traffic_geo_province_top.sql 头注释）。
 func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 	o := h.obsReady(w)
 	if o == nil {
@@ -242,27 +245,43 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "source 参数非法（可选 access/blocked）", http.StatusBadRequest)
 		return
 	}
+	level := q.Get("level")
+	if level == "" {
+		level = "country"
+	}
+	if level != "country" && level != "province" {
+		http.Error(w, "level 参数非法（可选 country/province）", http.StatusBadRequest)
+		return
+	}
+	script := "traffic_geo_top.sql"
+	if level == "province" {
+		script = "traffic_geo_province_top.sql"
+	}
 	ttl := o.trafficTTL()
-	key := fmt.Sprintf("geo|%d|%d|%s", from.UnixMilli(), to.UnixMilli(), source)
+	key := fmt.Sprintf("geo|%d|%d|%s|%s", from.UnixMilli(), to.UnixMilli(), source, level)
 	data, cached, err := o.tcache.do(key, ttl, func() (any, error) {
 		// 占位符方言差异：PG 占位符可复用传 5 参；sqlite/mysql 的 ? 不可复用（UNION 两分支各带 from/to/source），传 7 参
 		args := []any{from, to, source, from, to, source, geoTopLimit}
 		if o.dataDB.Driver() == "postgres" {
 			args = []any{from, to, source, source, geoTopLimit}
 		}
-		rows, err := o.trafficQuery("traffic_geo_top.sql", args...)
+		rows, err := o.trafficQuery(script, args...)
 		if err != nil {
 			return nil, err
 		}
+		nameKey := "country"
+		if level == "province" {
+			nameKey = "region"
+		}
 		out := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
-			country, _ := row["country"].(string)
-			if country == "" {
-				country = "未知" // 空串计「未知」参与排序（PLAN §3.4 口径）
+			region, _ := row[nameKey].(string)
+			if region == "" {
+				region = "未知" // 空串计「未知」参与排序（PLAN §3.4 口径）
 			}
 			out = append(out, map[string]any{
-				"country": country,
-				"cnt":     int64(trafficAsF(row["cnt"])),
+				nameKey: region,
+				"cnt":   int64(trafficAsF(row["cnt"])),
 			})
 		}
 		return out, nil
@@ -274,6 +293,7 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{
 		"source":    source,
+		"level":     level,
 		"geo":       data,
 		"cache_hit": cached,
 		// geo 数据就绪信号（D17 引导卡判定）：未装配 mmdb 或加载失败时为 false，

@@ -1435,3 +1435,11 @@ tr.dt-row-clickable.is-error td { background: var(--row-error); }
 .geo-row .geo-bar { flex: 1; height: 10px; border-radius: 5px; background: var(--bg, rgba(127,127,127,.15)); overflow: hidden; }
 .geo-row .geo-bar > span { display: block; height: 100%; border-radius: 5px; background: var(--primary, #3b82f6); }
 .geo-row .geo-cnt { width: 80px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── 概览页 · 地理位置卡片：世界/中国热力地图 + Top 排名联动 ── */
+.geo-card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.geo-toggles { display: flex; align-items: center; gap: 6px; }
+.geo-toggles .geo-toggle-gap { width: 10px; }
+.geo-panels { display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap; }
+.geo-panels .geo-map-box { flex: 1 1 420px; min-width: 320px; }
+.geo-panels .geo-rank { flex: 0 1 340px; min-width: 260px; max-height: 340px; overflow: auto; }

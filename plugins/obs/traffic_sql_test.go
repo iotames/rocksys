@@ -72,10 +72,10 @@ func trafficSeed(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 	edb := d.EasyDB()
 	ph := func(i int) string { return trafficPh(d.Driver(), i) }
 
-	// 列：time(1) trace_id(2) path(3) method(4) client_ip(5) status_code(6) user_agent(7) country(8)
+	// 列：time(1) trace_id(2) path(3) method(4) client_ip(5) status_code(6) user_agent(7) country(8) city(9)
 	accIns := fmt.Sprintf(
-		"INSERT INTO %s (time, trace_id, path, method, client_ip, status_code, user_agent, country, extra) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'{}')",
-		accessTable, ph(1), ph(2), ph(3), ph(4), ph(5), ph(6), ph(7), ph(8))
+		"INSERT INTO %s (time, trace_id, path, method, client_ip, status_code, user_agent, country, city, extra) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'{}')",
+		accessTable, ph(1), ph(2), ph(3), ph(4), ph(5), ph(6), ph(7), ph(8), ph(9))
 	accRows := []struct {
 		at    time.Time
 		trace string
@@ -84,40 +84,42 @@ func trafficSeed(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 		code  int
 		ua    string
 		ctry  string
+		city  string
 	}{
-		{trafficTestBase.Add(5 * time.Minute), "t1", "/api/order/1", "1.1.1.1", 200, "UA-A", "CN"},
-		{trafficTestBase.Add(15 * time.Minute), "t2", "/api/user/list", "1.1.1.1", 404, "UA-B", "CN"},
-		{trafficTestBase.Add(65 * time.Minute), "t3", "/api/z", "1.1.1.1", 500, "", ""},
-		{trafficTestBase.Add(20 * time.Minute), "t4", "/static/app.js", "2.2.2.2", 200, "UA-A", "US"},
-		{trafficTestBase.Add(70 * time.Minute), "t5", "/img/logo.png", "2.2.2.2", 200, "UA-A", "CN"},
-		{trafficTestBase.Add(90 * time.Minute), "t6", "/api/w", "3.3.3.3", 502, "UA-C", "US"},
+		{trafficTestBase.Add(5 * time.Minute), "t1", "/api/order/1", "1.1.1.1", 200, "UA-A", "CN", "广东省/深圳市"},
+		{trafficTestBase.Add(15 * time.Minute), "t2", "/api/user/list", "1.1.1.1", 404, "UA-B", "CN", "广东省/广州市"},
+		{trafficTestBase.Add(65 * time.Minute), "t3", "/api/z", "1.1.1.1", 500, "", "", ""},
+		{trafficTestBase.Add(20 * time.Minute), "t4", "/static/app.js", "2.2.2.2", 200, "UA-A", "US", "California/Irvine"},
+		{trafficTestBase.Add(70 * time.Minute), "t5", "/img/logo.png", "2.2.2.2", 200, "UA-A", "CN", "江苏省/南京市"},
+		{trafficTestBase.Add(90 * time.Minute), "t6", "/api/w", "3.3.3.3", 502, "UA-C", "US", ""},
 		// 静态资源：大写后缀 + 查询串（验证 LOWER 与 '?' 前路径段匹配）
-		{trafficTestBase.Add(110 * time.Minute), "t7", "/assets/app.CSS?ver=1", "4.4.4.4", 200, "UA-D", ""},
+		{trafficTestBase.Add(110 * time.Minute), "t7", "/assets/app.CSS?ver=1", "4.4.4.4", 200, "UA-D", "", ""},
 	}
 	for _, r := range accRows {
-		if _, err := edb.Exec(accIns, r.at, r.trace, r.path, "GET", r.ip, r.code, r.ua, r.ctry); err != nil {
+		if _, err := edb.Exec(accIns, r.at, r.trace, r.path, "GET", r.ip, r.code, r.ua, r.ctry, r.city); err != nil {
 			t.Fatalf("插入 access 行 %s: %v", r.trace, err)
 		}
 	}
 
-	// 列：time(1) block_type(2) client_ip(3) path(4) status_code(5) country(6)
+	// 列：time(1) block_type(2) client_ip(3) path(4) status_code(5) country(6) city(7)
 	// （path/extra 在 MySQL 方言无默认值，必须显式给值）
-	shIns := fmt.Sprintf("INSERT INTO %s (time, block_type, client_ip, path, status_code, country, extra) VALUES (%s,%s,%s,'/x',%s,%s,'{}')",
-		shieldTable, ph(1), ph(2), ph(3), ph(4), ph(5))
+	shIns := fmt.Sprintf("INSERT INTO %s (time, block_type, client_ip, path, status_code, country, city, extra) VALUES (%s,%s,%s,'/x',%s,%s,%s,'{}')",
+		shieldTable, ph(1), ph(2), ph(3), ph(4), ph(5), ph(6))
 	shRows := []struct {
 		at   time.Time
 		btyp int
 		ip   string
 		code int
 		ctry string
+		city string
 	}{
-		{trafficTestBase.Add(10 * time.Minute), 1, "9.9.9.9", 403, "CN"},
-		{trafficTestBase.Add(80 * time.Minute), 7, "9.9.9.9", 403, "CN"},
-		{trafficTestBase.Add(100 * time.Minute), 2, "8.8.8.8", 429, ""},
-		{trafficTestBase.Add(40 * time.Minute), 3, "7.7.7.7", 403, "US"},
+		{trafficTestBase.Add(10 * time.Minute), 1, "9.9.9.9", 403, "CN", "四川省/成都市"},
+		{trafficTestBase.Add(80 * time.Minute), 7, "9.9.9.9", 403, "CN", "四川省/绵阳市"},
+		{trafficTestBase.Add(100 * time.Minute), 2, "8.8.8.8", 429, "", ""},
+		{trafficTestBase.Add(40 * time.Minute), 3, "7.7.7.7", 403, "US", ""},
 	}
 	for _, r := range shRows {
-		if _, err := edb.Exec(shIns, r.at, r.btyp, r.ip, r.code, r.ctry); err != nil {
+		if _, err := edb.Exec(shIns, r.at, r.btyp, r.ip, r.code, r.ctry, r.city); err != nil {
 			t.Fatalf("插入 shield 行 %s: %v", r.ip, err)
 		}
 	}
@@ -265,6 +267,31 @@ func trafficAssert(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 	if !hasEmpty {
 		t.Error("geo(access) 结果应包含空串 country（计「未知」，不丢量）")
 	}
+
+	// ④ geo_province_top：只统计 country='CN'，按 city 首段（省名）聚合。
+	// access 侧 CN=3：广东省 2 / 江苏省 1（无空 city，无「未知」）；blocked 侧 CN=2：四川省 2。
+	runProv := func(source string, wantTotal int64, wantFirst string, wantFirstCnt int64) {
+		provArgs := []any{from, to, source, from, to, source, 10}
+		if d.Driver() == "postgres" {
+			provArgs = []any{from, to, source, source, 10}
+		}
+		rows := trafficQuery(t, d, trafficScript(t, d, "traffic_geo_province_top.sql", accessTable, shieldTable),
+			provArgs...)
+		var total int64
+		for i, r := range rows {
+			region, _ := r["region"].(string)
+			cnt := trafficAsInt(t, r["cnt"])
+			total += cnt
+			if i == 0 && (region != wantFirst || cnt != wantFirstCnt) {
+				t.Errorf("geo_province(%s) 首行 = (%q,%d), want (%q,%d)", source, region, cnt, wantFirst, wantFirstCnt)
+			}
+		}
+		if total != wantTotal {
+			t.Errorf("geo_province(%s) 各行计数之和 = %d, want %d", source, total, wantTotal)
+		}
+	}
+	runProv("access", 3, "广东省", 2)
+	runProv("blocked", 2, "四川省", 2)
 }
 
 // dropTrafficTables 建表前先 DROP 残留（历史失败运行可能遗留带数据的表，污染计数断言）。

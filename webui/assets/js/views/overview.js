@@ -31,9 +31,14 @@
   let metricsWindow = '1m'; // 实时窗口桶宽（METRICS_WINDOW）：1m/5m/15m/1h，缺省 1m
   let trafficPreset = '24h'; // 当前预设：'24h' | 'today' | '7d' | '30d' | 'custom'
   let trafficQuery = { fromDate: '', fromTime: '00:00', toDate: '', toTime: '23:59' }; // 自定义范围（本地时间）
-  let traffic = null; // { summary, series, geo } 拉取结果
+  let traffic = null; // { summary, series } 拉取结果
   let trafficErr = null; // 行内错误兜底（toast 按 UX 红线在 loadTraffic 里弹）
   let trafficOff = false; // obs 未启用（503 引导态）
+  // 地理位置卡片状态：scope=世界/中国地图切换，source=访问/总拦截切换（联动地图热力与 Top 排名）
+  let geoScope = 'china'; // 'world' | 'china'
+  let geoSource = 'access'; // 'access' | 'blocked'
+  let geo = null; // 拉取结果 { level, source, geo:[{country|region,cnt}], geo_ready }
+  let geoErr = null; // 行内错误兜底（toast 按 UX 红线在 loadGeo 里弹）
 
   // 小黑屋数据缓存（切页签/静默重载时刷新；拉取失败保留旧数据 + 行内提示）
   let jailRows = [];
@@ -293,12 +298,11 @@
     try {
       const spanMs = new Date(range.to.replace('T', ' ')) - new Date(range.from.replace('T', ' '));
       const bucket = spanMs <= 48 * 3600 * 1000 ? 'hour' : 'day';
-      const [summary, series, geo] = await Promise.all([
+      const [summary, series] = await Promise.all([
         api.get('/admin/obs/traffic/summary?' + qs),
         api.get('/admin/obs/traffic/series?' + qs + '&bucket=' + bucket),
-        api.get('/admin/obs/traffic/geo?' + qs + '&source=access'),
       ]);
-      traffic = { summary, series, geo, bucket };
+      traffic = { summary, series, bucket };
       trafficErr = null;
     } catch (e) {
       if (e.status === 503) { trafficOff = true; } // obs 未启用：页内引导态（豁免 toast 红线②）
@@ -310,12 +314,41 @@
       }
     }
     renderTrafficBody();
+    loadGeo({ silent: true });
+  }
+
+  // 地理位置：按当前 scope/source 拉取（scope 决定聚合 level：中国=province，世界=country），
+  // 只重绘地理位置卡片，不打断流量统计其他区块。
+  async function loadGeo(opts) {
+    if (!traffic) return; // 流量区未就绪（obs 未启用等），不单独拉
+    const range = currentTrafficRange();
+    if (!range) return;
+    const level = geoScope === 'china' ? 'province' : 'country';
+    const source = geoSource;
+    const stale = function () { // 期间已切换 scope/source → 本次结果已过时，丢弃（由最新请求负责渲染）
+      return level !== (geoScope === 'china' ? 'province' : 'country') || source !== geoSource;
+    };
+    const qs = 'from=' + encodeURIComponent(range.from) + '&to=' + encodeURIComponent(range.to) +
+      '&source=' + source + '&level=' + level;
+    try {
+      const res = await api.get('/admin/obs/traffic/geo?' + qs);
+      if (res.level !== level || res.source !== source || stale()) return;
+      geo = res;
+      geoErr = null;
+    } catch (e) {
+      if (stale()) return;
+      geoErr = e.message || '加载失败';
+      if (!opts.silent && e.status !== 0 && e.status !== 503) {
+        toast('地理位置分布加载失败：' + geoErr + '，可点页内「刷新」重试', 'error');
+      }
+    }
+    renderGeoCard();
     maybeGeoToast();
   }
 
   // D17：依赖 geo 的页面会话内首次进入且 geo 未就绪时弹一次统一警告 toast（sessionStorage 标记防刷屏）
   function maybeGeoToast() {
-    if (!traffic || !traffic.geo || traffic.geo.geo_ready) return;
+    if (!geo || geo.geo_ready) return;
     if (sessionStorage.getItem('rock-geo-warned')) return;
     sessionStorage.setItem('rock-geo-warned', '1');
     toast('地理位置数据未加载：未找到 mmdb 文件，统计中地区将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效。下载直链见页内引导卡', 'error');
@@ -349,16 +382,100 @@
       (sm.computed_at ? '<div class="form-hint">统计时刻 ' + esc(sm.computed_at.replace('T', ' ').slice(0, 19)) + ' UTC · 服务端缓存 10 分钟（可配置）</div>' : '');
   }
 
-  function trafficGeoHTML(geo) {
-    if (!geo || !geo.geo || !geo.geo.length) return Rock.comp.empty.message({ text: '所选范围暂无数据' });
-    const max = geo.geo[0].cnt || 1;
-    const rows = geo.geo.map(g => {
+  // 地理位置卡片：世界/中国热力地图 + Top 地区排名（scope/source 切换联动地图与排名）
+  const GEO_GUIDE = '<div class="empty" style="padding:16px 8px;text-align:left">' +
+    '<div><b>地理位置数据未加载</b>：未找到 mmdb 文件，地区统计显示为「未知」。</div>' +
+    '<div class="form-hint">下一步：下载 GeoLite2 的 GeoLite2-City.mmdb / GeoLite2-Country.mmdb，' +
+    '放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/，或工作目录、~/geoip 任一处），重启服务后生效。</div>' +
+    '<div class="form-hint">下载直链（GitHub，P3TERX/GeoLite.mmdb）：<br>' +
+    '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-City.mmdb" target="_blank" rel="noopener">GeoLite2-City.mmdb</a><br>' +
+    '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-Country.mmdb" target="_blank" rel="noopener">GeoLite2-Country.mmdb</a></div></div>';
+
+  function geoTogglesHTML() {
+    const chip = (act, key, label, cur) =>
+      '<button class="btn btn-sm' + (cur === key ? ' btn-primary' : '') + '" data-act="' + act + '" data-key="' + key + '">' + label + '</button>';
+    return '<div class="geo-toggles">' +
+      chip('geo-scope', 'world', '世界', geoScope) + chip('geo-scope', 'china', '中国', geoScope) +
+      '<span class="geo-toggle-gap"></span>' +
+      chip('geo-source', 'access', '访问', geoSource) + chip('geo-source', 'blocked', '总拦截', geoSource) +
+      '</div>';
+  }
+
+  // 排名地区显示名：世界=ISO 码转中文国名（浏览器内建本地化），中国=省名原样
+  function geoDisplayName(name) {
+    if (!name || name === '未知') return '未知';
+    return geoScope === 'world' ? Rock.comp.geoMap.isoToCn(name) : name;
+  }
+
+  function geoRankHTML(rows) {
+    if (!rows.length) return Rock.comp.empty.message({ text: '所选范围暂无数据' });
+    const max = rows[0].cnt || 1;
+    const rowsHtml = rows.map(function (g) {
+      const name = g.region || g.country || '';
       const pct = Math.max(2, Math.round((g.cnt / max) * 100));
-      return '<div class="geo-row"><span class="geo-name">' + esc(g.country || '未知') + '</span>' +
+      return '<div class="geo-row"><span class="geo-name" title="' + esc(geoDisplayName(name)) + '">' + esc(geoDisplayName(name)) + '</span>' +
         '<span class="geo-bar"><span style="width:' + pct + '%"></span></span>' +
         '<span class="geo-cnt">' + esc(Rock.util.fmtInt(g.cnt)) + '</span></div>';
     }).join('');
-    return '<div class="geo-list">' + rows + '</div>';
+    return '<div class="geo-list">' + rowsHtml + '</div>';
+  }
+
+  function geoCardHTML() {
+    const srcLabel = geoSource === 'blocked' ? '总拦截' : '访问';
+    const scopeLabel = geoScope === 'world' ? '世界' : '中国';
+    let body;
+    if (!traffic) {
+      body = '';
+    } else if (geo && geo.geo_ready === false) {
+      body = GEO_GUIDE;
+    } else if (geoErr && !geo) {
+      body = Rock.comp.empty.emptyCard({ text: '地理位置分布加载失败：' + geoErr, br: true,
+        action: '<button class="btn btn-sm btn-primary" data-act="geo-retry">重试</button>' });
+    } else if (!geo) {
+      body = Rock.comp.empty.message({ text: '加载中…' });
+    } else {
+      body = '<div class="geo-panels">' +
+        '<div class="geo-map-box" style="height:320px"><div id="geo-map" style="width:100%;height:100%"></div></div>' +
+        '<div class="geo-rank"><div class="card-title" style="margin-bottom:6px">Top 地区 <span class="card-sub">' +
+        srcLabel + '口径 · ' + scopeLabel + '</span></div>' + geoRankHTML(geo.geo || []) + '</div>' +
+        '</div>';
+    }
+    return '<div class="card" style="margin-top:16px"><div class="geo-card-head"><div class="card-title">地理位置 <span class="card-sub">按范围查库聚合 · 地图与排名联动</span></div>' +
+      geoTogglesHTML() + '</div>' + body + '</div>';
+  }
+
+  // 地理位置卡片局部渲染（切换 scope/source / 拉取完成后调用，不整页重绘）
+  function renderGeoCard() {
+    const host = $('#page-overview .geo-slot');
+    if (!host || ovActiveTab !== 'overview') return;
+    const oldMap = $('#geo-map');
+    if (oldMap && window.echarts && echarts.getInstanceByDom) echarts.dispose(oldMap); // 旧实例随 DOM 重建而销毁，防泄漏
+    host.innerHTML = geoCardHTML();
+    drawGeoMap();
+  }
+
+  // 地图热力绘制：懒加载注册地图（会话内一次）后喂入当前 geo 数据；
+  // 「未知」不进地图（无地理坐标），只留在排名列表。
+  function drawGeoMap() {
+    if (!geo || geo.geo_ready === false || !$('#geo-map')) return;
+    const scope = geoScope;
+    Rock.comp.geoMap.ensureMap(scope).then(function () {
+      if (!$('#geo-map') || scope !== geoScope || !geo) return; // 期间已切换/重绘
+      const data = (geo.geo || []).filter(function (g) {
+        const name = g.region || g.country || '';
+        return name && name !== '未知';
+      }).map(function (g) {
+        const name = g.region || g.country || '';
+        return { name: scope === 'china' ? (Rock.comp.geoMap.chinaShort[name] || name) : name, value: g.cnt };
+      });
+      Rock.comp.geoMap.heat($('#geo-map'), scope, data, {
+        mode: geoSource === 'blocked' ? '拦截' : '访问',
+        fmtName: scope === 'world' ? Rock.comp.geoMap.isoToCn : function (n) { return n; },
+      });
+    }).catch(function (err) {
+      const box = $('#geo-map');
+      if (box) box.innerHTML = '<div class="empty" style="padding:16px">' + esc(err.message || '地图加载失败') + '</div>';
+    });
   }
 
   function trafficBodyHTML() {
@@ -384,16 +501,6 @@
       body = Rock.comp.empty.message({ text: '加载中…' });
     } else {
       const sm = traffic.summary || {};
-      const geoReady = !traffic.geo || traffic.geo.geo_ready;
-      const geoCard = geoReady
-        ? trafficGeoHTML(traffic.geo)
-        : '<div class="empty" style="padding:16px 8px;text-align:left">' +
-          '<div><b>地理位置数据未加载</b>：未找到 mmdb 文件，地区统计显示为「未知」。</div>' +
-          '<div class="form-hint">下一步：下载 GeoLite2 的 GeoLite2-City.mmdb / GeoLite2-Country.mmdb，' +
-          '放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/，或工作目录、~/geoip 任一处），重启服务后生效。</div>' +
-          '<div class="form-hint">下载直链（GitHub，P3TERX/GeoLite.mmdb）：<br>' +
-          '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-City.mmdb" target="_blank" rel="noopener">GeoLite2-City.mmdb</a><br>' +
-          '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-Country.mmdb" target="_blank" rel="noopener">GeoLite2-Country.mmdb</a></div></div>';
       body = '<div style="margin-bottom:10px">' + chips + '</div>' +
         (trafficPreset === 'custom' ? '<div style="margin-bottom:10px">' + custom + '</div>' : '') +
         trafficTilesHTML(sm) +
@@ -402,9 +509,7 @@
         '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-ok"></canvas></div></div>' +
         '<div><div class="card-title" style="margin-bottom:6px">拦截趋势 <span class="card-sub">blocked · UTC 桶</span></div>' +
         '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-blocked"></canvas></div></div>' +
-        '</div>' +
-        '<div style="margin-top:12px"><div class="card-title" style="margin-bottom:6px">地理位置 <span class="card-sub">按国家（访问口径）</span></div>' +
-        geoCard + '</div>';
+        '</div>';
     }
     return '<div class="card" style="margin-top:16px"><div class="card-title">流量统计 <span class="card-sub">按时间范围查库聚合 · 与运行指标（实时内存）口径不同</span></div>' +
       body + '</div>';
@@ -514,6 +619,7 @@
       '</div>' +
 
       '<div class="traffic-slot" style="margin-top:16px">' + trafficBodyHTML() + '</div>' +
+      '<div class="geo-slot"></div>' +
 
       '<div class="card" style="margin-top:16px"><div class="card-title">HTTP 数据流 <span class="card-sub">组件按链路顺序执行 · 开关即启停 · 点击名称进入详情（关闭即降级）</span></div>' +
       Rock.comp.dataflow.renderHTML(store.switches) +
@@ -637,6 +743,26 @@
         };
         loadTraffic({ manual: true });
       },
+      // 地理位置：世界/中国切换（scope 决定聚合 level，地图与排名联动重拉）
+      'geo-scope': function (el) {
+        const key = el.getAttribute('data-key') || 'china';
+        if (key === geoScope) return;
+        geoScope = key === 'world' ? 'world' : 'china';
+        geo = null; geoErr = null; // 清空旧维度数据，避免切换间隙用旧口径渲染新标签
+        renderGeoCard();
+        loadGeo({ silent: true });
+      },
+      // 地理位置：访问/总拦截切换（source 变更，地图与排名联动重拉）
+      'geo-source': function (el) {
+        const key = el.getAttribute('data-key') || 'access';
+        if (key === geoSource) return;
+        geoSource = key === 'blocked' ? 'blocked' : 'access';
+        geo = null; geoErr = null;
+        renderGeoCard();
+        loadGeo({ silent: true });
+      },
+      // 地理位置：失败重试
+      'geo-retry': function () { loadGeo({ manual: true }); },
       // 页签切换：总览 / 小黑屋（切到小黑屋时拉取最新在押数据）
       'overview-tab': function (el) {
         const tab = el.getAttribute('data-tab') || 'overview';

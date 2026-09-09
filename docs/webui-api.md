@@ -75,7 +75,7 @@
 | 47 | GET | `/admin/shield/total` | WAF 拦截事件落库总数（查库 COUNT 全范围，受保留期影响） |
 | 48 | GET | `/admin/obs/traffic/summary` | 流量统计指标标量 + 率（概览页流量统计区数据源） |
 | 49 | GET | `/admin/obs/traffic/series` | 流量统计访问/拦截时间桶趋势（hour/day，缺省自适应） |
-| 50 | GET | `/admin/obs/traffic/geo` | 流量统计 Top 国家分布（access/blocked 切换，含 geo_ready） |
+| 50 | GET | `/admin/obs/traffic/geo` | 流量统计地区分布（access/blocked × country/province 切换，含 geo_ready） |
 
 ---
 
@@ -686,7 +686,7 @@ SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_byte
 |------|------|
 | `GET /admin/obs/traffic/summary` | query `from`/`to`（`YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`，必传）；响应见下 |
 | `GET /admin/obs/traffic/series` | query `from`/`to` + `bucket=hour\|day`（缺省自适应：跨度 ≤48h 用 hour，否则 day；非法值 400）；响应 `{bucket,series:[{bucket,ok_count,blocked_count}],cache_hit,cache_ttl_sec}`，`series[].bucket` 为 UTC 时间标签 |
-| `GET /admin/obs/traffic/geo` | query `from`/`to` + `source=access\|blocked`（缺省 access；非法值 400）；按 country 计数倒序取 Top 10；响应 `{source,geo:[{country,cnt}],cache_hit,geo_ready}`；`geo_ready`=GeoIP 是否就绪（未装配 mmdb 或加载失败为 false，前端据此显示常驻警告引导卡） |
+| `GET /admin/obs/traffic/geo` | query `from`/`to` + `source=access\|blocked`（缺省 access）+ `level=country\|province`（缺省 country；非法值 400）；country 级按国家计数倒序取 Top 10；province 级只统计 `country='CN'` 按 city 列「省/市」前缀聚合（中国地图专用）；响应 `{source,level,geo:[{country\|region,cnt}],cache_hit,geo_ready}`；`geo_ready`=GeoIP 是否就绪（未装配 mmdb 或加载失败为 false，前端据此显示常驻警告引导卡） |
 
 **`GET /admin/obs/traffic/summary` 响应 200**：
 

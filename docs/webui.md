@@ -44,6 +44,7 @@ RockSys 磐石是"**永不宕机的反向代理**"，其能力由多个可热开
 |----|------|
 | 界面风格 | **ElementUI 风格**（中后台经典样式，观感与 ElementUI 组件一致） |
 | 实现方式 | 纯静态单页：HTML + CSS + 原生 JavaScript，**不引入 Vue 等前端框架**、无构建链 |
+| 唯一 vendor 依赖 | **Apache ECharts**（地理位置热力地图用）：`webui/assets/vendor/echarts.min.js` v5.6.0（Apache-2.0），下载直链 `https://registry.npmmirror.com/echarts/5.6.0/files/dist/echarts.min.js`（npmmirror 为 npm 官方包的国内镜像），升级时手工替换文件。地图数据 `webui/assets/geo/{world,china}.json` 取自 echarts v4.9.0 包内 `map/json/`（ECharts 5 起不再随包发行地图），直链 `https://registry.npmmirror.com/echarts/4.9.0/files/map/json/world.json` 与 `https://registry.npmmirror.com/echarts/4.9.0/files/map/json/china.json`；其中 world.json 已做预处理——区划名 `name` 由英文改为 ISO 3166-1 alpha-2 码（原名保留在 `name_en`），与后端 access_log.country 列直连 |
 | 交互还原 | 内置 ElementUI 主题样式（静态资源），按钮 / 表格 / 弹窗 / 开关等交互由原生 JS 实现，视觉与交互贴近 ElementUI |
 | 交付形态 | 双模式：**生产**全部静态资源内嵌进 rocksys 单二进制（`go:embed`），随网关一起分发，不额外部署、不依赖外网；**开发**（`-tags dev` 编译）实时读 `webui/` 源码目录，改前端文件后刷新浏览器即见、免重新编译 |
 | 界面入口 | 网关管理地址（如 `127.0.0.1:19527`），浏览器直接打开控制台 |
