@@ -110,16 +110,33 @@
 
   // ── 数据加载 ────────────────────────────────────────────────────────
 
+  // 实时窗口桶宽（TRAFFIC_ANALYSIS D13）：1m/5m/15m/1h，缺省 1m 兼容现状
+  let metricsWindow = '1m';
+  let writtenTotal = null; // 落库总数（查库口径，进页查一次，不随窗口刷新）
+
   // 实时计数：DB 未配置也返回（counter 在内存），失败仅置错误标记
   async function loadMetrics(opts) {
     opts = opts || {};
     try {
-      store.wafMetrics = await api.get('/admin/shield/metrics');
+      store.wafMetrics = await api.get('/admin/shield/metrics?window=' + metricsWindow);
       store.wafMetricsError = null;
     } catch (e) {
       store.wafMetrics = store.wafMetrics || null;
       store.wafMetricsError = e.message || '加载失败';
       if (!opts.silent && e.status !== 0) toast('拦截统计加载失败：' + e.message, 'error');
+    }
+  }
+
+  // 落库总数（D13 新瓦片）：查库 COUNT 全范围（受保留期影响），进页查一次
+  async function loadTotal(opts) {
+    try {
+      const r = await api.get('/admin/shield/total');
+      writtenTotal = (r && r.total != null) ? r.total : null;
+    } catch (e) {
+      writtenTotal = null;
+      if (!opts.silent && e.status !== 0 && e.status !== 503) {
+        toast('落库总数查询失败：' + (e.message || '未知错误') + '，瓦片将显示为—', 'error');
+      }
     }
   }
 
@@ -170,7 +187,7 @@
     if (!store.wafLoaded && host && !host.innerHTML.trim()) {
       host.innerHTML = skeletonHTML(5);
     }
-    await Promise.all([loadMetrics(opts), loadStats(opts), loadEvents(opts)]);
+    await Promise.all([loadMetrics(opts), loadStats(opts), loadEvents(opts), loadTotal(opts)]);
     store.wafLoaded = true;
     render();
   }
@@ -196,10 +213,15 @@
     const chips = Object.keys(byType).sort((a, b) => byType[b] - byType[a]).map(k =>
       '<span class="waf-chip"><b>' + esc(k) + '</b> ' + fmtInt(byType[k]) + '</span>'
     ).join('');
-    return '<div class="waf-tiles">' +
-      '<div class="waf-tile"><div class="waf-tile-v">' + fmtInt(m.total) + '</div><div class="waf-tile-k">近 1 分钟拦截</div></div>' +
-      '<div class="waf-tile"><div class="waf-tile-v">' + fmtInt(m.written) + '</div><div class="waf-tile-k">累计落库</div></div>' +
-      '<div class="waf-tile"><div class="waf-tile-v">' + fmtInt(m.dropped) + '</div><div class="waf-tile-k">累计丢弃（通道满降级）</div></div>' +
+    const winChips = ['1m', '5m', '15m', '1h'].map(w =>
+      '<button class="btn btn-sm' + (metricsWindow === w ? ' btn-primary' : '') + '" data-act="waf-window" data-window="' + w + '">' + w + '</button>'
+    ).join('');
+    return '<div style="margin-bottom:8px">' + winChips + '<span class="form-hint"> 内存窗口数据重启后从零重新累计</span></div>' +
+      '<div class="waf-tiles">' +
+      '<div class="waf-tile"><div class="waf-tile-v">' + fmtInt(m.total) + '</div><div class="waf-tile-k">实时拦截（' + esc(metricsWindow) + '）</div></div>' +
+      '<div class="waf-tile"><div class="waf-tile-v">' + fmtInt(m.written) + '</div><div class="waf-tile-k">本次运行落库（重启清零）</div></div>' +
+      '<div class="waf-tile"><div class="waf-tile-v">' + fmtInt(m.dropped) + '</div><div class="waf-tile-k">本次运行丢弃（通道满降级）</div></div>' +
+      '<div class="waf-tile"><div class="waf-tile-v">' + (writtenTotal == null ? '—' : fmtInt(writtenTotal)) + '</div><div class="waf-tile-k">落库总数（查库 · 受保留期影响）</div></div>' +
       '</div>' +
       (chips ? '<div class="waf-chips">' + chips + '</div>' : '<div class="empty">窗口内暂无拦截</div>');
   }
@@ -639,6 +661,12 @@
     typeName,
     actions: {
       'waf-reload': function () { load({ manual: true }); },
+      // 实时窗口桶宽切换（D13）：只重拉 metrics，不动其他区块
+      'waf-window': function (el) {
+        metricsWindow = el.getAttribute('data-window') || '1m';
+        render();
+        loadMetrics({ silent: true });
+      },
       'waf-query': function () { queryEvents(); },
       'waf-reset': function () { resetFilter(); },
       'waf-prune-events': function () { pruneEvents(); },

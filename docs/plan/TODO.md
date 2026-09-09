@@ -23,7 +23,7 @@
 | 5 | TRAFFIC_ANALYSIS/STEP5_shield窗口与落库总数.md | 实时窗口 1h=60 桶 + window 参数（1m/5m/15m/1h）、落库总数端点、Top IP geo 查询时解析 | 2 | 待实施 |
 | 6 | TRAFFIC_ANALYSIS/STEP6_启动缺列检测.md | 启动检测两表缺列打 warning（D16） | 1 | 已实施 |
 | 7 | TRAFFIC_ANALYSIS/STEP7_概览流量统计区.md | overview.js 流量统计区：时间范围/指标卡/趋势/geo 卡 + 降级引导（D17） | 2,4 | 已实施 |
-| 8 | TRAFFIC_ANALYSIS/STEP8_waf与topIPs前端.md | waf.js 实时卡桶宽切换+落库总数瓦片+标签更正、topIPs.js 地区列、geo 警告 toast | 5,7 | 待实施 |
+| 8 | TRAFFIC_ANALYSIS/STEP8_waf与topIPs前端.md | waf.js 实时卡桶宽切换+落库总数瓦片+标签更正、topIPs.js 地区列、geo 警告 toast | 5,7 | 已实施 |
 | 9 | TRAFFIC_ANALYSIS/STEP9_文档同步与终验.md | §3.6 文档清单、bin/hotscripts/sql 同步、全量终验 | 1-8 | 待实施 |
 
 ## §2 执行期红线（自仓库法摘录，冲突时以仓库法原文为准）

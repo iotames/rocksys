@@ -1,6 +1,6 @@
 # STEP8：WAF 实时卡改造 + topIPs 地区列 + geo 警告 toast（前端）
 
-状态：待实施
+状态：已实施
 
 ## 目标
 按 PLAN §3.5：
@@ -13,9 +13,9 @@
 - geo 状态检测公用小工具（实施时定：components 或 utils 下，新增文件需重启 dev 一次）
 
 ## 实施步骤（完成一项立即勾选保存）
-- [ ] waf 桶宽切换 + 瓦片改造
-- [ ] topIPs 地区列
-- [ ] geo toast 统一检测（sessionStorage）✓（浏览器实测）
+- [x] waf 桶宽切换 + 瓦片改造 ✓（浏览器实测：15m 切换高亮、四瓦片含落库总数 39,381、副标注）
+- [x] topIPs 地区列 ✓（geo 未加载显示「未知」+ 页内引导 hint；有 mmdb 时展示 country/city）
+- [x] geo toast 统一检测（sessionStorage）✓（浏览器实测：跨页面共用同一标记只弹一次）
 
 ## 验证
 - 接手核实命令：`grep -n "本次运行落库\|落库总数" webui/assets/js/views/waf.js | head`
@@ -27,7 +27,8 @@
 - 浏览器实测全过；toast 不刷屏；文案三要素。
 
 ## 实施回填区
-### 产物锚点清单（拆步时预写）
-- 改动视图：waf.js、topIPs.js
+### 产物锚点清单（实施后核实）
+- 改动视图：webui/assets/js/views/waf.js（metricsWindow/loadTotal/waf-window action）、views/topIPs.js（geoText/geoMissing/maybeGeoToast/地区列）
 ### 偏差与现场记录
-- （无）
+- 浏览器对 dev 静态 JS 有缓存：改前端后需强刷（清 caches + reload）才见新代码——验收时注意，非代码缺陷。
+- 落库总数 503（DB 未配置）时不弹 toast（豁免 silent 语义：瓦片显示—，页头已有 DB 降级提示）。

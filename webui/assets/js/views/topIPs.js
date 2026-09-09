@@ -24,6 +24,15 @@
 
   const TOP_N_OPTIONS = [['10', '10'], ['20', '20'], ['30', '30'], ['50', '50'], ['100', '100']];
 
+  // D17：依赖 geo 的页面会话内首次进入且 geo 未就绪时弹一次统一警告 toast
+  // （与概览页共用同一 sessionStorage 标记，防跨页面重复刷屏）
+  function maybeGeoToast(rows) {
+    if (!geoMissing(rows)) return;
+    if (sessionStorage.getItem('rock-geo-warned')) return;
+    sessionStorage.setItem('rock-geo-warned', '1');
+    toast('地理位置数据未加载：未找到 mmdb 文件，地区列将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效', 'error');
+  }
+
   // 模块状态：统计数据 / Top N / 宿主 hooks
   let stats = null;      // 最近一次 /admin/shield/stats 响应
   let addable = false;   // DB 黑名单可用（决定勾选列与批量按钮是否渲染）
@@ -66,16 +75,31 @@
         ? '<span class="tag tag-red">在黑名单</span>'
         : '<span class="tag tag-gray">否</span>') + '</td>',
     },
-    // 地区：TODO 待接入 IP 归属地库，先占位展示
-    { label: '地区（TODO）', render: () => '<td>—</td>' },
+    // 地区（TRAFFIC_ANALYSIS D12）：后端查询时 geo 解析（StatsTopIP 逐行填 country/city）；
+    // mmdb 未加载时字段缺失/空串 → 占位「未知」并在卡片头部给引导（见 html() 内 geoHint）
+    {
+      label: '地区',
+      render: r => '<td>' + esc(geoText(r)) + '</td>',
+    },
   ];
 
   // ── 渲染 ────────────────────────────────────────────────────────────
+
+  // 地区文案：country/city 任一非空即拼展示；全空计「未知」（mmdb 未加载时后端不下发字段）
+  function geoText(r) {
+    const parts = [String(r.country || '').trim(), String(r.city || '').trim()].filter(Boolean);
+    return parts.length ? parts.join(' / ') : '未知';
+  }
+  // geo 是否未就绪：有行但全部行没有 country 字段（后端 Resolver 未加载时不下发）
+  function geoMissing(rows) {
+    return rows.length > 0 && rows.every(r => r.country === undefined);
+  }
 
   function html() {
     if (!stats) return '';
     const rows = stats.top_ips || [];
     if (!rows.length) return '';
+    maybeGeoToast(rows);
     const cols = COLUMNS.filter(c => !c.when || c.when());
     const head = addable
       ? '<th style="width:36px"><input type="checkbox" id="waf-topip-all" title="全选（已在黑名单的行不可选）"></th>'
@@ -95,6 +119,9 @@
       '</select><span class="card-sub" style="margin-left:8px">近 ' + esc(String(stats.days)) +
       ' 天 · 按拦截次数（聚合查询无分页）</span></span>' +
       '<span class="comp-actions">' + actions + '</span></div>' +
+      (geoMissing(rows)
+        ? '<div class="form-hint" style="margin-bottom:6px">地理位置数据未加载：未找到 mmdb 文件，地区列显示为「未知」。下一步：下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效。</div>'
+        : '') +
       '<div class="table-wrap"><table class="table"><thead><tr>' + head +
       cols.map(c => '<th' + (c.width ? ' style="width:' + esc(c.width) + '"' : '') + '>' + esc(c.label) + '</th>').join('') +
       '</tr></thead><tbody>' + body + '</tbody></table></div></div>';
