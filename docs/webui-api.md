@@ -317,19 +317,25 @@
 
 > 脚本为**内存态**：网关重启后全部脚本与历史清空，需重新发布。前端应明示此提示。
 
-### 3.10 GET /admin/metrics — 运行指标快照
+### 3.10 GET /admin/metrics — 运行指标快照（窗口可切）
+
+**查询参数**（可选）：`window=1m|5m|15m|1h`——实时窗口桶宽（内存窗口固定 1 小时 = 60×1 分钟桶，按所选窗口整分钟桶聚合零误差），缺省 `1m` 兼容现状；非法值 400。
 
 **响应 200**：
 
 ```json
-{ "qps": 1204.5, "p50_ms": 12, "p95_ms": 48, "p99_ms": 92, "error_rate": 0.0002 }
+{ "qps": 1204.5, "error_rate": 0.0002, "window": "15m", "window_seconds": 900 }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| qps | float | 每秒请求数（最近 1 分钟窗口） |
-| p50_ms / p95_ms / p99_ms | int | 延迟分位（毫秒），窗口内无样本时为 0 |
+| qps | float | 每秒请求数（所选窗口总量 / 窗口秒数） |
 | error_rate | float | 错误率（4xx/5xx 占比，0~1） |
+| window / window_seconds | string / int | 回显窗口名与窗口秒数 |
+
+> **变更记录（METRICS_WINDOW）**：p50/p95/p99 延迟分位数自本版起不再随本端点输出（内存窗口跨桶分位数只能近似），
+> 拆分至 `GET /admin/obs/traffic/summary` 的 `lat_p50/lat_p95/lat_p99/lat_avg`——基于 access_log.total_ms
+> 在所选时间范围内**精确**统计（PG percentile_cont / MySQL·sqlite PERCENT_RANK 最近秩）。
 
 **失败 `503`**：观测组件（`obs`）未注册/未启用，响应体文本 `obs 未注册`。前端应显示"观测未开启"并引导到组件页开启。
 
@@ -665,6 +671,8 @@ SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_byte
 - `req_pv` = `req_ok` 去静态资源后缀（`.js .css .map .ico .png .jpg .jpeg .gif .svg .webp .woff .woff2 .ttf .eot`）；
 - `uv` = `COUNT(DISTINCT client_ip, user_agent)`（历史数据 UA 为空串时退化为纯 IP 口径）；
 - geo 空串计「未知」且参与排序（不悄悄丢量）。
+
+**延迟字段（METRICS_WINDOW）**：`lat_avg / lat_p50 / lat_p95 / lat_p99`（毫秒，int）——范围内 access_log.total_ms 的平均与分位数精确统计；范围内无行时为 `null`（前端显示"—"）。
 
 **缓存语义**：服务端 singleflight + TTL 缓存（key = 端点 + from + to + bucket/source），TTL 由 `OBS_TRAFFIC_CACHE_TTL`（秒，缺省 600，0=禁用，支持热更）控制；命中时 `computed_at` 保持首次计算时刻，`cache_ttl_sec` 回传当前 TTL、`cache_hit` 标记是否命中。实时 QPS（`/admin/metrics`）不参与缓存。
 

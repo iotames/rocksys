@@ -12,6 +12,7 @@ package obs
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"sort"
 	"strconv"
 	"sync"
@@ -31,31 +32,40 @@ import (
 // 默认配置（§14）。
 const defaultLogPruneDays = 7 // access_log 表默认保留天数（自动清理开启后生效）
 
-// 指标窗口：1 分钟滑动窗口 × 100 桶（每桶 0.6s）。
+// 指标窗口：1 小时滑动窗口 × 60 桶（每桶 1 分钟，METRICS_WINDOW）。
+// 窗口可切 1m/5m/15m/1h（/admin/metrics?window=），整分钟桶聚合：
+//   - QPS/错误率 = 纯计数跨桶相加，零误差；
+//   - 延迟分位数 = 各桶水库采样样本合并后最近秩分位（每桶上限 reservoirCap 个均匀样本，
+//     60 桶 × 200 ≈ 96KB 内存上界），近精确且无直方图桶界误差——小窗口可即时发现慢请求。
+//
+// 长期（所选范围）的延迟分布由流量统计区按 SQL 精确统计，两者互补。
 const (
-	metricsWindow   = time.Minute
-	metricsBuckets  = 100
-	metricsBucketMs = int64(metricsWindow) / int64(time.Millisecond) / metricsBuckets // 600
+	metricsWindow   = time.Hour
+	metricsBuckets  = 60
+	metricsBucketMs = int64(metricsWindow) / int64(time.Millisecond) / metricsBuckets // 60000 = 1 分钟
+	reservoirCap    = 200
 )
 
 // Snapshot 指标快照（admin /admin/metrics 输出）。
 type Snapshot struct {
-	QPS       float64 // 每秒请求数（窗口总量 / 60s）
-	P50       int64   // 耗时中位数（ms）
+	QPS       float64 // 每秒请求数（窗口总量 / 窗口秒数）
+	P50       int64   // 耗时 P50（ms，合并水库样本近似精确）
 	P95       int64   // 耗时 P95（ms）
 	P99       int64   // 耗时 P99（ms）
 	ErrorRate float64 // 错误率（4xx/5xx 占比）
 }
 
-// metricsBucket 单桶：覆盖 0.6s 时间段（slot = UnixMilli/600）。
+// metricsBucket 单桶：覆盖 1 分钟时间段（slot = UnixMilli/60000）。
+// 样本采集用水库抽样：该分钟请求量超上限后，新样本以 count/容量 概率等概率替换旧样本。
 type metricsBucket struct {
 	slot       int64
 	count      int64
 	errorCount int64
-	latencies  []int64
+	seen       int64   // 本桶已见请求数（水库抽样计数）
+	latencies  []int64 // 水库样本（len ≤ reservoirCap）
 }
 
-// Metrics 1 分钟滑动窗口指标聚合（§14）。
+// Metrics 滑动窗口指标聚合（§14），互斥锁保护（Add/Snapshot 频度低，锁成本可忽略）。
 type Metrics struct {
 	mu      sync.Mutex
 	buckets [metricsBuckets]*metricsBucket
@@ -64,11 +74,11 @@ type Metrics struct {
 // NewMetrics 创建空指标窗口。
 func NewMetrics() *Metrics { return &Metrics{} }
 
-// Add 记录一次请求：按 now 定位桶，统计耗时（ms）与错误码（>=400 计入错误）。
+// Add 记录一次请求：按 now 定位桶，错误码（>=400）计入错误，延迟进水库样本。
 func (m *Metrics) Add(now time.Time, latencyMs int64, code int) {
 	slot := now.UnixMilli() / metricsBucketMs
 	m.mu.Lock()
-	idx := slot % metricsBuckets
+	idx := int(slot % metricsBuckets)
 	b := m.buckets[idx]
 	if b == nil || b.slot != slot {
 		b = &metricsBucket{slot: slot}
@@ -78,18 +88,36 @@ func (m *Metrics) Add(now time.Time, latencyMs int64, code int) {
 	if code >= 400 {
 		b.errorCount++
 	}
-	b.latencies = append(b.latencies, latencyMs)
+	// 水库抽样：未满直接收；满了以 seen/容量 概率等概率替换（每条请求入选概率恒为 容量/总数）
+	b.seen++
+	if int64(len(b.latencies)) < reservoirCap {
+		b.latencies = append(b.latencies, latencyMs)
+	} else if j := fastrandn(b.seen); j < int64(reservoirCap) {
+		b.latencies[j] = latencyMs
+	}
 	m.mu.Unlock()
 }
 
-// Snapshot 计算窗口内聚合值：仅统计最近 60s 内的桶。
-func (m *Metrics) Snapshot(now time.Time) Snapshot {
+// fastrandn 返回 [0,n) 伪随机数（水库抽样用；指标采样不需要密码学强度）。
+func fastrandn(n int64) int64 {
+	return rand.Int64N(n)
+}
+
+// Snapshot 计算窗口内聚合值（window 须为分钟整数倍且 ≤ metricsWindow）。
+func (m *Metrics) Snapshot(now time.Time, window time.Duration) Snapshot {
 	nowSlot := now.UnixMilli() / metricsBucketMs
+	winSlots := int64(window / time.Minute)
+	if winSlots < 1 {
+		winSlots = 1
+	}
+	if winSlots > metricsBuckets {
+		winSlots = metricsBuckets
+	}
 	m.mu.Lock()
 	var total, errs int64
 	var lat []int64
 	for _, b := range m.buckets {
-		if b == nil || b.slot > nowSlot || nowSlot-b.slot >= metricsBuckets {
+		if b == nil || b.slot > nowSlot || nowSlot-b.slot >= winSlots {
 			continue
 		}
 		total += b.count
@@ -100,7 +128,7 @@ func (m *Metrics) Snapshot(now time.Time) Snapshot {
 
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
 	s := Snapshot{
-		QPS:       float64(total) / metricsWindow.Seconds(),
+		QPS:       float64(total) / window.Seconds(),
 		P50:       percentile(lat, 0.50),
 		P95:       percentile(lat, 0.95),
 		P99:       percentile(lat, 0.99),

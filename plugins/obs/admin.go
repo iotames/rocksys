@@ -28,21 +28,33 @@ func NewAdminHandler(mgr *hotswap.Manager) *AdminHandler {
 	return h
 }
 
-// Metrics GET /admin/metrics → {"qps":...,"p95_ms":...,"error_rate":...}（§14 Admin API）。
+// metricsWindows 实时窗口可选桶宽（METRICS_WINDOW）：窗口名 → 分钟数。
+var metricsWindows = map[string]int{"1m": 1, "5m": 5, "15m": 15, "1h": 60}
+
+// Metrics GET /admin/metrics?window=1m|5m|15m|1h → 实时 QPS/错误率（内存窗口，缺省 1m 兼容现状）。
+// 延迟分位数已拆分至 /admin/obs/traffic/summary（SQL 精确口径），不再随本端点输出。
 func (h *AdminHandler) Metrics(w http.ResponseWriter, r *http.Request) {
 	if h.obs == nil {
 		http.Error(w, "obs 未注册", http.StatusServiceUnavailable)
 		return
 	}
-	s := h.obs.Metrics().Snapshot(time.Now())
+	winName := r.URL.Query().Get("window")
+	if winName == "" {
+		winName = "1m"
+	}
+	minutes, ok := metricsWindows[winName]
+	if !ok {
+		http.Error(w, "window 参数非法（可选 1m/5m/15m/1h）", http.StatusBadRequest)
+		return
+	}
+	s := h.obs.Metrics().Snapshot(time.Now(), time.Duration(minutes)*time.Minute)
 	dropCount, consecutiveFails := h.obs.StoreStats()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"qps":               s.QPS,
-		"p95_ms":            s.P95,
-		"p50_ms":            s.P50,
-		"p99_ms":            s.P99,
 		"error_rate":        s.ErrorRate,
+		"window":            winName,
+		"window_seconds":    minutes * 60,
 		"drop_count":        dropCount,
 		"consecutive_fails": consecutiveFails,
 	})

@@ -103,8 +103,13 @@ func (h *AdminHandler) TrafficSummary(w http.ResponseWriter, r *http.Request) {
 	ttl := o.trafficTTL()
 	key := fmt.Sprintf("summary|%d|%d", from.UnixMilli(), to.UnixMilli())
 	data, cached, err := o.tcache.do(key, ttl, func() (any, error) {
-		rows, err := o.trafficQuery("traffic_summary.sql",
-			from, to, from, to, from, to, from, to, from, to, from, to, from, to, from, to, from, to)
+		// 26 参（from,to ×13，与 sql/*/traffic_summary.sql 头注释一一对应）：
+		// 原 9 组标量 + 延迟 4 组（lat_avg / lat_p50 / lat_p95 / lat_p99）。三方言统一。
+		args := make([]any, 0, 26)
+		for i := 0; i < 13; i++ {
+			args = append(args, from, to)
+		}
+		rows, err := o.trafficQuery("traffic_summary.sql", args...)
 		if err != nil {
 			return nil, err
 		}
@@ -128,6 +133,10 @@ func (h *AdminHandler) TrafficSummary(w http.ResponseWriter, r *http.Request) {
 			"err4xx_rate":   safeRate(n("err4xx"), total),
 			"err5xx_rate":   safeRate(n("err5xx"), total),
 			"block4xx_rate": safeRate(n("block4xx"), blockTotal),
+			"lat_avg":       trafficNumField(row["lat_avg"]),
+			"lat_p50":       trafficNumField(row["lat_p50"]),
+			"lat_p95":       trafficNumField(row["lat_p95"]),
+			"lat_p99":       trafficNumField(row["lat_p99"]),
 			"computed_at":   time.Now().UTC().Format(time.RFC3339),
 			"from":          from.Format(time.RFC3339),
 			"to":            to.Format(time.RFC3339),
@@ -321,6 +330,14 @@ func trafficAsF(v any) float64 {
 	default:
 		return 0
 	}
+}
+
+// trafficNumField 可空数值字段：NULL（范围内无行）透传 nil，数值归一 int64（ms）。
+func trafficNumField(v any) any {
+	if v == nil {
+		return nil
+	}
+	return int64(trafficAsF(v))
 }
 
 // writeJSON 统一 JSON 输出。

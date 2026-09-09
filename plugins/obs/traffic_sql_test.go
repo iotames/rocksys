@@ -169,7 +169,8 @@ func trafficAssert(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 
 	// ① summary：期望值见 trafficSeed 注释。
 	sum := trafficQuery(t, d, trafficScript(t, d, "traffic_summary.sql", accessTable, shieldTable),
-		from, to, from, to, from, to, from, to, from, to, from, to, from, to, from, to, from, to)
+		from, to, from, to, from, to, from, to, from, to, from, to, from, to,
+		from, to, from, to, from, to, from, to, from, to, from, to)
 	if len(sum) != 1 {
 		t.Fatalf("summary 应返回 1 行，实际 %d", len(sum))
 	}

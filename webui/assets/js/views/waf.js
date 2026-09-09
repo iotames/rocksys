@@ -508,71 +508,15 @@
   // dataTable 分页控件在持久 host 上只绑一次（renderStatsPage 重渲染 innerHTML 不影响委托）
   let eventsTableBound = false;
 
-  // ── Canvas 按日柱状图（颜色取 CSS 变量，主题自适应）─────────────────
+  // ── Canvas 按日柱状图：绘图收敛到 components/chart.js（chart.bar），视图只喂数据 ──
   function drawDailyChart() {
-    const canvas = $('#waf-daily-chart');
-    if (!canvas) return;
-    const container = canvas.parentElement;
-    const W = container.clientWidth;
-    const H = container.clientHeight;
-    if (!W || !H) return;
-    const cssVar = Rock.comp.chart.cssVar;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, W, H);
-    const data = pivotDaily().daily;
-    if (data.length < 2) {
-      ctx.fillStyle = cssVar('--text-2');
-      ctx.font = '12px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('等待拦截数据…', W / 2, H / 2);
-      return;
-    }
-    const padL = 46, padR = 12, padT = 14, padB = 26;
-    const iw = W - padL - padR;
-    const ih = H - padT - padB;
-    if (iw <= 0 || ih <= 0) return;
-    let max = 10;
-    data.forEach(p => { if (p.cnt > max) max = p.cnt; });
-    max = max * 1.15;
-    const n = data.length;
-    const bw = Math.max(2, (iw / n) * 0.6);
-    // 横向网格 + Y 轴刻度
-    ctx.strokeStyle = cssVar('--text-2') + '66';
-    ctx.fillStyle = cssVar('--text-2');
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'right';
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 4; i++) {
-      const y = padT + ih - (ih * i) / 4;
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(W - padR, y);
-      ctx.stroke();
-      const v = (max * i) / 4;
-      ctx.fillText(v >= 1000 ? fmtInt(v) : String(Math.round(v)), padL - 6, y + 4);
-    }
-    // 柱体 + X 轴日期刻度（首/中/尾）
-    ctx.textAlign = 'center';
-    [0, 0.5, 1].forEach(f => {
-      const idx = Math.min(n - 1, Math.round((n - 1) * f));
-      const x = padL + ((idx + 0.5) / n) * iw;
-      ctx.fillText(String(data[idx].day).slice(5), x, H - 8);
+    const daily = pivotDaily().daily.map(p => ({ t: p.day, value: p.cnt })); // 组件取 t/value 键
+    Rock.comp.chart.bar($('#waf-daily-chart'), {
+      data: daily,
+      value: p => p.value,
+      fmtX: t => String(t).slice(5), // MM-DD
+      emptyText: '等待拦截数据…',
     });
-    const primary = cssVar('--primary');
-    data.forEach((p, i) => {
-      const x = padL + ((i + 0.5) / n) * iw - bw / 2;
-      const h = (p.cnt / max) * ih;
-      ctx.fillStyle = primary;
-      ctx.globalAlpha = p.cnt > 0 ? 0.85 : 0.25; // 零值日淡柱，日期对齐不失真
-      ctx.fillRect(x, padT + ih - h, bw, Math.max(p.cnt > 0 ? 1 : 0, h));
-    });
-    ctx.globalAlpha = 1;
   }
 
   // ── 交互动作 ────────────────────────────────────────────────────────

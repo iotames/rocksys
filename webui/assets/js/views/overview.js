@@ -28,6 +28,7 @@
   let ovActiveTab = 'overview'; // 'overview' | 'jail'
 
   // ── 流量统计区状态（TRAFFIC_ANALYSIS D10/D14：页面局部区块，与运行指标区口径互不替代）──
+  let metricsWindow = '1m'; // 实时窗口桶宽（METRICS_WINDOW）：1m/5m/15m/1h，缺省 1m
   let trafficPreset = '24h'; // 当前预设：'24h' | 'today' | '7d' | '30d' | 'custom'
   let trafficQuery = { fromDate: '', fromTime: '00:00', toDate: '', toTime: '23:59' }; // 自定义范围（本地时间）
   let traffic = null; // { summary, series, geo } 拉取结果
@@ -94,7 +95,7 @@
     if (baseOk) {
       try {
         // system 与 metrics 无依赖，并行拉取缩短首屏（systemP 内部已容错，不会 reject）
-        const [m] = await Promise.all([api.get('/admin/metrics'), systemP]);
+        const [m] = await Promise.all([api.get('/admin/metrics?window=' + metricsWindow), systemP]);
         store.metrics = normalizeMetrics(m);
         store.metricsError = null;
         if (store.metrics) {
@@ -106,7 +107,7 @@
             p99: store.metrics.p99_ms,
             err: store.metrics.error_rate,
           });
-          if (store.metricsHistory.length > 240) store.metricsHistory.shift();
+          if (store.metricsHistory.length > 720) store.metricsHistory.shift(); // 5s×720 = 覆盖 1h 窗口
         }
         noteUpdated();
       } catch (e) {
@@ -114,6 +115,7 @@
         else if (!opts.silent && e.status !== 0) { toast('指标加载失败：' + e.message, 'error'); }
       }
     }
+    ensureSampler(); // 实时区 5s 静默采样（METRICS_WINDOW：让窗口曲线有连续样本）
     loadTraffic(opts); // 流量统计区：异步拉取后局部重渲染（不阻塞首屏）
     render();
     // 小黑屋页签随首页静默重载联动刷新（手动刷新/开关操作触发，总览页签不受影响）
@@ -213,8 +215,9 @@
       '</div>';
   }
 
-  // 资源监控卡：机器 CPU / 内存进度条 + 进程级占用（数据来自 /admin/system；系统级仅 Linux 可得）
-  function resourceCardHTML() {
+  // 资源信息条（METRICS_WINDOW 重排：资源监控并入运行状态卡，消除两卡高度差）：
+  // 机器 CPU / 内存进度条 + 进程级占用（数据来自 /admin/system；系统级仅 Linux 可得）。
+  function resourceRowsHTML() {
     const sys = store.system;
     let body;
     if (!sys) {
@@ -253,7 +256,7 @@
         ' MB · Goroutines ' + esc(Rock.util.fmtInt(sys.goroutines)) +
         ' · 核心数 ' + esc(Rock.util.fmtInt(sys.num_cpu)) + '</div>';
     }
-    return '<div class="card"><div class="card-title">资源监控 <span class="card-sub">机器 CPU / 内存 · 进程占用</span></div>' + body + '</div>';
+    return body;
   }
 
   // ── 流量统计区（TRAFFIC_ANALYSIS）────────────────────────────────
@@ -338,6 +341,10 @@
       tile('4xx', n(sm.err4xx), '错误率 ' + fmtRate(sm.err4xx_rate)) +
       tile('4xx 拦截', n(sm.block4xx), '拦截率 ' + fmtRate(sm.block4xx_rate)) +
       tile('5xx', n(sm.err5xx), '错误率 ' + fmtRate(sm.err5xx_rate)) +
+      tile('延迟 P50', n(sm.lat_p50), '毫秒 · 范围内精确统计') +
+      tile('延迟 P95', n(sm.lat_p95), '毫秒') +
+      tile('延迟 P99', n(sm.lat_p99), '毫秒') +
+      tile('平均延迟', n(sm.lat_avg), '毫秒') +
       '</div>' +
       (sm.computed_at ? '<div class="form-hint">统计时刻 ' + esc(sm.computed_at.replace('T', ' ').slice(0, 19)) + ' UTC · 服务端缓存 10 分钟（可配置）</div>' : '');
   }
@@ -423,39 +430,87 @@
     drawTrafficCharts();
   }
 
-  function overviewBodyHTML() {
-    // ---- 运行指标卡（含趋势图，指标页合并至此；运行时间来自 /admin/system）----
-    const metricsOff = store.metricsError === 'obs';
+  // 实时区（chips + 瓦片 + QPS 曲线）局部渲染单元：自动采样每 5s 静默更新此区块
+  function metricsSlotHTML(metricsOff) {
     const uptime = store.system && store.system.uptime_seconds != null ? store.system.uptime_seconds : null;
-    let metricsBody;
+    let body;
     if (metricsOff) {
-      metricsBody =
+      body =
         '<div class="empty" style="padding:24px 8px">' +
         '<div>观测组件未开启，无法获取运行指标</div>' +
         '<button class="btn btn-sm btn-primary" data-act="go-obs">去组件页开启观测</button>' +
         '</div>';
     } else if (!store.metrics) {
-      metricsBody = Rock.comp.empty.message({ text: '暂无指标数据', padding: '24px 8px' });
+      body = Rock.comp.empty.message({ text: '暂无指标数据', padding: '24px 8px' });
     } else {
-      metricsBody = Rock.comp.metrics.metricTiles({
-        metrics: store.metrics,
-        history: store.metricsHistory,
-        uptime: uptime,
-      });
+      const chips = ['1m', '5m', '15m', '1h'].map(w =>
+        '<button class="btn btn-sm' + (metricsWindow === w ? ' btn-primary' : '') + '" data-act="metrics-window" data-window="' + w + '">' + w + '</button>'
+      ).join('');
+      body = '<div style="margin-bottom:10px">' + chips +
+        '<span class="form-hint"> 内存窗口数据重启后从零重新累计</span></div>' +
+        Rock.comp.metrics.metricTiles({
+          metrics: store.metrics,
+          history: store.metricsHistory,
+          uptime: uptime,
+          windowLabel: metricsWindow,
+        });
     }
     const chartBody = metricsOff
       ? ''
-      : '<div class="chart-box" style="height:150px;margin-top:12px"><canvas id="overview-chart"></canvas></div>' +
+      : '<div class="card-title" style="margin-top:12px;margin-bottom:6px">QPS <span class="card-sub">每秒请求 · 采样趋势 · 近 ' + esc(metricsWindow) + '（样本随页面刷新累积）</span></div>' +
+        '<div class="chart-box" style="height:150px"><canvas id="overview-chart"></canvas></div>' +
         (store.metricsHistory.length < 2 ? '<div class="empty">等待采样数据…（每次刷新自动累积趋势采样）</div>' : '');
+    return body + chartBody;
+  }
+
+  // 静默采样器：概览页可见期间每 5s 拉一次 /admin/metrics 并局部更新实时区，
+  // 使 5m/15m/1h 窗口的 QPS 曲线有连续样本（离开概览页自动停采，页签隐藏时跳过）。
+  let sampleTimer = null;
+  function ensureSampler() {
+    if (sampleTimer) return;
+    sampleTimer = setInterval(function () {
+      if (!location.hash.startsWith('#/overview') || document.hidden) return;
+      api.get('/admin/metrics?window=' + metricsWindow).then(function (m) {
+        store.metrics = normalizeMetrics(m);
+        store.metricsError = null;
+        if (store.metrics) {
+          store.metricsHistory.push({
+            t: Date.now(),
+            qps: store.metrics.qps,
+            p50: store.metrics.p50_ms,
+            p95: store.metrics.p95_ms,
+            p99: store.metrics.p99_ms,
+            err: store.metrics.error_rate,
+          });
+          if (store.metricsHistory.length > 720) store.metricsHistory.shift();
+        }
+        const slot = document.querySelector('.metrics-slot');
+        if (slot && ovActiveTab === 'overview') {
+          slot.innerHTML = metricsSlotHTML(store.metricsError === 'obs');
+          drawChart();
+        }
+      }).catch(function () { /* 静默采样失败忽略，下轮再试 */ });
+    }, 5000);
+  }
+
+  function overviewBodyHTML() {
+    // ---- 运行指标卡（含趋势图，指标页合并至此；运行时间来自 /admin/system）----
+    const metricsOff = store.metricsError === 'obs';
+    const uptime = store.system && store.system.uptime_seconds != null ? store.system.uptime_seconds : null;
+    const metricsBody = '<div class="metrics-slot">' + metricsSlotHTML(metricsOff) + '</div>';
 
     // ---- 独立服务 ----
     const services = store.switches.filter(s => s.kind === 'component');
 
     return gatewayBarHTML() +
 
-      '<div class="grid grid-2" style="margin-top:16px">' +
-      '<div class="card"><div class="card-title">运行指标 <span class="card-sub">实时 · 趋势</span></div>' + metricsBody + chartBody + '</div>' +
-      resourceCardHTML() +
+      // 运行状态卡（METRICS_WINDOW 重排：运行指标 + 资源监控合并，实时切片口径；
+      // 延迟分位数已拆分至流量统计区的 SQL 精确口径）
+      '<div class="card" style="margin-top:16px"><div class="card-title">运行状态 <span class="card-sub">实时 · 趋势 · 资源</span></div>' +
+      metricsBody +
+      (metricsOff ? '' : '<div style="border-top:1px solid rgba(127,127,127,.15);margin-top:12px;padding-top:10px">' +
+        '<div class="card-title" style="margin-bottom:6px">资源 <span class="card-sub">机器 CPU / 内存 · 进程占用</span></div>' +
+        resourceRowsHTML() + '</div>') +
       '</div>' +
 
       '<div class="traffic-slot" style="margin-top:16px">' + trafficBodyHTML() + '</div>' +
@@ -537,9 +592,13 @@
     if (wrap) wrap.innerHTML = jailInnerHTML();
   }
 
-  // 趋势折线图（main.js resize 钩子调用）
+  // 趋势折线图（main.js resize 钩子调用）：按所选窗口过滤采样点，
+  // 与瓦片的窗口口径一致（METRICS_WINDOW 修订：曲线跟随窗口，不再全量展示）
   function drawChart() {
-    Rock.comp.chart.line($('#overview-chart'), { data: store.metricsHistory, value: p => p.qps });
+    const winSec = (store.metrics && store.metrics.window_seconds) || 60;
+    const since = Date.now() - winSec * 1000;
+    const data = store.metricsHistory.filter(p => p.t >= since);
+    Rock.comp.chart.line($('#overview-chart'), { data: data, value: p => p.qps });
   }
 
   window.Rock.views.overview = {
@@ -551,6 +610,16 @@
     tabsHTML,
     actions: {
       'overview-reload': function () { load({ manual: true }); },
+      // 实时窗口桶宽切换（METRICS_WINDOW）：只重拉 metrics，不动其他区块
+      'metrics-window': function (el) {
+        metricsWindow = el.getAttribute('data-window') || '1m';
+        render();
+        api.get('/admin/metrics?window=' + metricsWindow).then(function (m) {
+          store.metrics = normalizeMetrics(m);
+          store.metricsError = null;
+          render();
+        }).catch(function () { /* 重拉失败保留旧数据，不打断页面 */ });
+      },
       // 流量统计：预设时间范围切换（立即拉取）
       'traffic-range': function (el) {
         trafficPreset = el.getAttribute('data-preset') || '24h';

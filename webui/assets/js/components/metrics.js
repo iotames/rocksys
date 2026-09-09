@@ -47,17 +47,18 @@
     return d > 0 ? { value: String(d), unit: '天 ' + hms } : { value: hms, unit: '' };
   }
 
-  // 运行时间瓦片：数据来自 /admin/system，不可得（uptime 为 null）时不占位
-  function metricTiles({ metrics, history, uptime }) {
+  // 实时瓦片（METRICS_WINDOW：纯计数口径，延迟分位数已拆分至流量统计区）。
+  // opts：{ metrics, history, uptime, windowLabel }（windowLabel 如 "1m"，缺省 1m）。
+  function metricTiles({ metrics, history, uptime, windowLabel }) {
     const m = metrics;
     if (!m) return '<div class="empty" style="padding:24px 8px">暂无指标数据</div>';
     const d = delta(history);
     const tiles = [
-      { label: '每秒请求', value: fmtQps(m.qps), unit: '请求/秒', delta: d.delta },
-      { label: '延迟 50%', value: fmtInt(m.p50_ms), unit: '毫秒', delta: null },
-      { label: '延迟 95%', value: fmtInt(m.p95_ms), unit: '毫秒', delta: null },
-      { label: '延迟 99%', value: fmtInt(m.p99_ms), unit: '毫秒', delta: null },
-      { label: '错误率', value: fmtRate(m.error_rate), unit: '', delta: null },
+      { label: '请求速率（' + (windowLabel || '1m') + '）', value: fmtQps(m.qps), unit: '请求/秒', delta: d.delta },
+      { label: '错误率（' + (windowLabel || '1m') + '）', value: fmtRate(m.error_rate), unit: '', delta: null },
+      { label: '延迟 P50（' + (windowLabel || '1m') + '）', value: fmtInt(m.p50_ms), unit: '毫秒', delta: null },
+      { label: '延迟 P95（' + (windowLabel || '1m') + '）', value: fmtInt(m.p95_ms), unit: '毫秒', delta: null },
+      { label: '延迟 P99（' + (windowLabel || '1m') + '）', value: fmtInt(m.p99_ms), unit: '毫秒', delta: null },
     ];
     if (uptime != null) {
       const up = fmtUptime(uptime);

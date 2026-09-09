@@ -1,7 +1,9 @@
 -- 流量总览汇总：一次查询输出全部标量指标（access_log 放行 + shield_event 拦截两侧）。
 -- 参数顺序：from, to 依次重复 9 次（共 18 个 ?），对应输出列顺序：
 --   req_ok(1,2) req_pv(3,4) uv(5,6) ip_all(7,8) block_total(9,10)
---   attack_ips(11,12) err4xx(13,14) err5xx(15,16) block4xx(17,18)。
+--   attack_ips(11,12) err4xx(13,14) err5xx(15,16) block4xx(17,18) lat_avg(19,20)
+--   lat_p50(21,22) lat_p95(23,24) lat_p99(25,26)（PERCENT_RANK 窗口函数，≤ 分位取最大值）。
+--   延迟口径：total_ms 的 AVG / 最近秩分位数（METRICS_WINDOW 拆分项，随所选范围精确统计）；无行时为 NULL。
 -- 口径说明（UTC，边界 time >= from AND time <= to，保证与 series 各桶之和可对账）：
 --   req_ok     = 放行请求总数（含静态资源、含放行后 4xx/5xx 响应）；请求次数 = req_ok + block_total。
 --   req_pv     = req_ok 去静态资源。静态后缀清单硬编码（.js .css .map .ico .png .jpg .jpeg
@@ -39,4 +41,14 @@ SELECT
   (SELECT COUNT(*) FROM {table} WHERE time >= ? AND time <= ?
      AND status_code >= 500 AND status_code <= 599) AS err5xx,
   (SELECT COUNT(*) FROM {table2} WHERE time >= ? AND time <= ?
-     AND status_code >= 400 AND status_code <= 499) AS block4xx
+     AND status_code >= 400 AND status_code <= 499) AS block4xx,
+  (SELECT AVG(total_ms) FROM {table} WHERE time >= ? AND time <= ?) AS lat_avg,
+  (SELECT MAX(total_ms) FROM
+     (SELECT total_ms, PERCENT_RANK() OVER (ORDER BY total_ms) AS pr
+      FROM {table} WHERE time >= ? AND time <= ?) d WHERE pr <= 0.50) AS lat_p50,
+  (SELECT MAX(total_ms) FROM
+     (SELECT total_ms, PERCENT_RANK() OVER (ORDER BY total_ms) AS pr
+      FROM {table} WHERE time >= ? AND time <= ?) d WHERE pr <= 0.95) AS lat_p95,
+  (SELECT MAX(total_ms) FROM
+     (SELECT total_ms, PERCENT_RANK() OVER (ORDER BY total_ms) AS pr
+      FROM {table} WHERE time >= ? AND time <= ?) d WHERE pr <= 0.99) AS lat_p99

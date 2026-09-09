@@ -170,10 +170,10 @@ func TestOnResponseMultipleLines(t *testing.T) {
 	}
 }
 
-// Metrics 聚合：注入若干耗时/状态码，校验 QPS/分位/错误率。
+// Metrics 聚合：注入若干状态码，校验窗口 QPS/错误率（纯计数口径；延迟分位数已拆分至流量统计）。
 func TestMetricsAggregation(t *testing.T) {
 	m := NewMetrics()
-	base := time.Now()
+	base := time.Now().Truncate(time.Minute).Add(30 * time.Second) // 分钟桶对齐（30s 处，-1s 仍在同桶）
 	for i := 0; i < 10; i++ {
 		code := 200
 		if i == 0 {
@@ -181,7 +181,7 @@ func TestMetricsAggregation(t *testing.T) {
 		}
 		m.Add(base.Add(time.Duration(i)*time.Millisecond), int64((i+1)*10), code)
 	}
-	s := m.Snapshot(base.Add(time.Second))
+	s := m.Snapshot(base.Add(time.Second), time.Minute)
 	// 10 条 / 60s
 	if got := s.QPS; got < 0.16 || got > 0.17 {
 		t.Errorf("QPS = %v，期望 ≈ 0.1667", got)
@@ -190,29 +190,23 @@ func TestMetricsAggregation(t *testing.T) {
 	if s.ErrorRate != 0.1 {
 		t.Errorf("错误率 = %v，期望 0.1", s.ErrorRate)
 	}
-	// 耗时 [10..100]：P50=60, P95=100, P99=100
-	if s.P50 != 60 {
-		t.Errorf("P50 = %d，期望 60", s.P50)
-	}
-	if s.P95 != 100 || s.P99 != 100 {
-		t.Errorf("P95/P99 = %d/%d，期望 100/100", s.P95, s.P99)
+	// 样本 [10..100]：P50=60, P95=100, P99=100（水库 200 ≥ 10 条，全量精确）
+	if s.P50 != 60 || s.P95 != 100 || s.P99 != 100 {
+		t.Errorf("P50/P95/P99 = %d/%d/%d，期望 60/100/100", s.P50, s.P95, s.P99)
 	}
 }
 
-// 窗口滑动：超过 60s 的旧桶数据不参与聚合。
+// 窗口滑动与可选桶宽：1m 窗口不含上一分钟桶；5m 窗口纳入。
 func TestMetricsWindowSlides(t *testing.T) {
 	m := NewMetrics()
-	old := time.Now().Add(-2 * time.Minute)
-	m.Add(old, 10, 200)
-	m.Add(old.Add(time.Second), 10, 200)
-	now := time.Now()
+	now := time.Now().Truncate(time.Minute).Add(2*time.Minute + 30*time.Second)
+	m.Add(now.Add(-2*time.Minute), 10, 200) // 上一分钟桶：1m 滑出、5m 计入
 	m.Add(now, 50, 200)
-	s := m.Snapshot(now)
-	if s.QPS < 1.0/60.0-1e-9 {
-		t.Errorf("旧窗口数据不应计入，QPS = %v", s.QPS)
+	if got := m.Snapshot(now, time.Minute).QPS; got < 1.0/60.0-1e-9 {
+		t.Errorf("1m 窗口 QPS = %v，期望 ≈ 1/60", got)
 	}
-	if s.P50 != 50 {
-		t.Errorf("P50 = %d，期望 50（仅当前窗口）", s.P50)
+	if got := m.Snapshot(now, 5*time.Minute).QPS; got < 2.0/300.0-1e-9 {
+		t.Errorf("5m 窗口 QPS = %v，期望 ≈ 2/300", got)
 	}
 }
 
@@ -309,7 +303,7 @@ func TestAsyncStoreQueueFullDrops(t *testing.T) {
 	}
 }
 
-// /admin/metrics 输出 qps/p95_ms/error_rate。
+// /admin/metrics 输出 qps/error_rate。
 func TestAdminMetrics(t *testing.T) {
 	o, _ := newTestObs(t)
 	now := time.Now()
@@ -327,8 +321,8 @@ func TestAdminMetrics(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("metrics 响应非 JSON: %v, body=%q", err, rec.Body.String())
 	}
-	if got["qps"] == nil || got["p95_ms"] == nil || got["error_rate"] == nil {
-		t.Errorf("metrics 应含 qps/p95_ms/error_rate，实际 %v", got)
+	if got["qps"] == nil || got["error_rate"] == nil || got["window"] == nil {
+		t.Errorf("metrics 应含 qps/error_rate/window，实际 %v", got)
 	}
 	if v := got["error_rate"].(float64); v != 0.5 {
 		t.Errorf("error_rate = %v，期望 0.5", v)

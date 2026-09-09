@@ -189,6 +189,8 @@
       p95_ms: Number(m.p95_ms) || 0,
       p99_ms: Number(m.p99_ms) || 0,
       error_rate: Number(m.error_rate) || 0,
+      window: m.window || '1m',
+      window_seconds: Number(m.window_seconds) || 60,
     };
   }
 
