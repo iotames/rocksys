@@ -9,8 +9,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"rocksys/internal/chain"
 	"rocksys/internal/catalog"
+	"rocksys/internal/chain"
 	"rocksys/internal/conf"
 	"rocksys/internal/hotswap"
 

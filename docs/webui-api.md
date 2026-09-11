@@ -67,8 +67,8 @@
 | 41 | GET | `/admin/db/schema` | 表结构检查（期望 = 运行期 SQL 源脚本，实际 = 当前数据连接 catalog；返回 A-F 分级差异与自动项生成 SQL） |
 | 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；每条语句落 `sql_exec_log` 审计留痕；danger 级危险操作，服务端不做语句白名单） |
 | 43 | GET | `/admin/db/execlog` | SQL 执行历史查询（`sql_exec_log` 表，时间倒序 + offset 服务端分页） |
-| 44 | GET | `/admin/db/size` | 数据库空间占用统计（表名/备注/精确条数/占用空间 + 总空间；三方言） |
-| 45 | POST | `/admin/db/geoip_sync` | GeoIP 历史回填（对 access_log / shield_event「有 IP 但 country/city 缺失」的行按已加载 mmdb 批量回填；单趟每表上限 5000 个去重 IP，未完可重复执行续填；geo 未就绪 503；批量耗时随缺失量增长，前端请求超时放宽 60 秒） |
+| 44 | GET | `/admin/db/size` | 数据库空间占用统计（表名/备注/精确条数 + 库级总空间；逐表占用含数据/索引拆分，只取缓存，未计算返回 `bytes_known=false`）；`GET /admin/db/table_size?table=` 单表精确占用按需计算（白名单校验 + 10 分钟缓存） |
+| 45 | POST | `/admin/db/geoip_sync` | GeoIP 历史回填（对 access_log / shield_event「有 IP 但 country/city 缺失」的行按已加载 mmdb 批量回填；**分批 + 断点续填 + 服务端硬超时**：发现阶段按 id 主键游标分块增量扫描、回填写侧分批 UPDATE 逐条提交；单趟受固定 20 秒预算（代码常量）与请求上下文双重约束，到点或客户端断开即在块/批边界收工并返回已完成进度（响应含 `budget_stopped`），已提交批次保留，再次点击从断点续填（游标只在回填未被中断时推进，中断则保持原值、下趟重扫该区间——已回填行因 `country` 非空被发现阶段过滤，代价可忽略；否则"已发现未回填"的行会被跳过）；未扫完返回 `done=false`；上一趟进行中返回 `ok:false` 拒绝并发；geo 未就绪 503；前端等待上限 30 秒仅作兜底） |
 | 43 | POST | `/admin/shield/blacklist/sync_file` | 从外挂规则文件 `rules/ip_blacklist.txt` 同步 IP 入库（block_type=11，幂等） |
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
 | 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的全部封禁条目（含永久；首页页签数据源） |
@@ -549,7 +549,7 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 |------|------|
 | `GET /admin/db/schema` | 逐表比对期望与实际结构，返回差异项与自动项生成 SQL；无差异时 `items:[]`、`sql:""` |
 | `POST /admin/db/exec` | body `{sql}`；拆句（分号切分，感知字符串字面量与注释内分号）逐条执行、**遇错即停**（DDL 无跨方言统一事务语义），返回已执行到的位置；进程内互斥（已有执行在途回 409） |
-| `POST /admin/db/geoip_sync` | 无 body；同步回填并返回 `{ok,text,tables:[{table,ips,rows_updated,skipped,ip_sample}]}`（`text` 为人读报告文案）；geo 未就绪（mmdb 缺失/未加载）回 503，响应文本为引导文案 |
+| `POST /admin/db/geoip_sync` | 无 body；同步回填并返回 `{ok,text,tables:[{table,ips,rows_updated,skipped,ip_sample,scanned,done,budget_stopped}]}`（`text` 为人读报告文案；`done=false` 表示该表仍有缺失行、再次点击从断点续填；`budget_stopped=true` 表示本轮因单趟预算到点/客户端断开提前收工，已完成部分已写入）；geo 未就绪（mmdb 缺失/未加载）回 503，响应文本为引导文案；上一趟进行中返回 `ok:false`（已提交批次不受影响） |
 
 **`GET /admin/db/schema` 响应 200**：
 
@@ -645,19 +645,42 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 
 - `503`：数据连接未装配；`500`：查询或计数失败（响应文本含原因）。
 
-**`GET /admin/db/size` 响应 200**（只读统计，不落库）：
+**`GET /admin/db/size` 响应 200**（只读统计，不落库；逐表占用只取缓存，毫秒级返回）：
 
 ```json
 {
   "driver": "sqlite", "total_bytes": 27541504,
-  "tables": [{"name": "access_log", "comment": "", "rows": 49187, "bytes": 6807552}]
+  "tables": [{"name": "access_log", "comment": "", "rows": 49187, "bytes": 6807552,
+              "data_bytes": 2641920, "index_bytes": 4165632, "bytes_known": true}]
 }
 ```
 
-口径：`rows` 为精确值（逐表动态 `COUNT(*)`；MySQL/PG 系统表行数为估算故不采用）；
-`bytes` 为数据+索引合计（MySQL `DATA_LENGTH+INDEX_LENGTH`、PG `pg_total_relation_size`；
-SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_bytes` 取 `page_count×page_size`
-（库级含空闲页，与逐表 SUM 可能不一致）。`503` 数据连接未装配；`500` 查询失败。
+口径：`rows` 为精确值（逐表动态 `COUNT(*)`，走覆盖索引；MySQL/PG 系统表行数为估算故不采用）；
+`total_bytes` 为库级总占用（SQLite `page_count×page_size` 毫秒级，含空闲页；MySQL/PG 系统表合计）；
+`bytes`/`data_bytes`/`index_bytes`/`bytes_known` 为**逐表**占用（合计及其数据/索引拆分）与是否已计算——
+SQLite 无逐表空间系统表，逐表占用必须走 `dbstat` 按页聚合（遍历整库页树，大库首次秒级~数十秒），
+故**默认不算**（`bytes=0, bytes_known=false`，前端显示「计算」按钮），仅返回进程内缓存（10 分钟）中已有的值；
+MySQL/PG 由系统表直接给出，`bytes_known` 恒为 `true`。`503` 数据连接未装配；`500` 查询失败。
+
+**占用空间拆分口径**（`data_bytes` = 数据，`index_bytes` = 索引，`bytes` = 合计）：
+
+| 方言 | 数据 | 索引 | 合计 | 未纳入项 |
+|---|---|---|---|---|
+| SQLite | 表 B-tree 页（leaf/internal，含大字段溢出页） | 该表全部索引 B-tree（含主键/唯一约束的 `sqlite_autoindex_*`）之和 | 数据 + 索引 | 库级 `freelist`（空闲页，计入 `total_bytes`） |
+| MySQL/InnoDB | `DATA_LENGTH`（聚簇索引即数据本体，含主键） | `INDEX_LENGTH`（二级索引合计） | 数据 + 索引 | `DATA_FREE`（碎片/空闲页） |
+| PostgreSQL | `pg_relation_size`（表堆主体） | `pg_indexes_size`（该表全部索引） | `pg_total_relation_size`（含 TOAST） | —（TOAST 计入合计，故合计可能略大于两列之和） |
+
+**`GET /admin/db/table_size?table=<表名>` 响应 200**（单表精确占用，按需计算 + 进程内缓存 10 分钟）：
+
+```json
+{"table": "access_log", "bytes": 443244544, "data_bytes": 192868352, "index_bytes": 250376192, "cached": false}
+```
+
+`table` 须为库内实际表名（服务端按表清单白名单校验）：缺参数 `400`、表不存在/非法表名 `404`
+（拒绝任意标识符拼接入 SQL）；`cached=true` 表示命中服务端缓存（表空间变化缓慢，10 分钟内复用）。
+SQLite 下为**两次** `dbstat` 过滤遍历（表数据一次、该表索引合并为一条 `IN` 查询一次；实测带 `name=?`
+过滤比全量 `GROUP BY name` 快约 6 倍，故不做单次全量聚合）；MySQL/PG 各为一条系统表查询。
+方言口径：SQLite `dbstat` 按页聚合、MySQL `DATA_LENGTH+INDEX_LENGTH`、PG `pg_total_relation_size`。
 
 ---
 
@@ -672,17 +695,21 @@ SQLite 走 dbstat 聚合，虚表不可用时逐表为 0）；SQLite `total_byte
 - `req_ok` = 放行总数（**含静态资源、含放行后的 4xx/5xx**）；请求次数 = `req_ok + block_total`；
 - `req_pv` = `req_ok` 去静态资源后缀（`.js .css .map .ico .png .jpg .jpeg .gif .svg .webp .woff .woff2 .ttf .eot`）；
 - `uv` = `COUNT(DISTINCT client_ip, user_agent)`（历史数据 UA 为空串时退化为纯 IP 口径）；
-- geo 空串计「未知」且参与排序（不悄悄丢量）。
+- geo 空串的展示兜底链「市空退省/省空退国」只做在读侧显示（库列保持真实语义）：country 级空串计「未知」、province 级空串显示「中国」（该查询已限定 country='CN'），均参与排序不悄悄丢量。
 
 **延迟字段（METRICS_WINDOW）**：`lat_avg / lat_p50 / lat_p95 / lat_p99`（毫秒，int）——范围内 access_log.total_ms 的平均与分位数精确统计；范围内无行时为 `null`（前端显示"—"）。
 
 **缓存语义**：服务端 singleflight + TTL 缓存（key = 端点 + from + to + bucket/source），TTL 由 `OBS_TRAFFIC_CACHE_TTL`（秒，缺省 900=15 分钟，0=禁用，支持热更）控制；`POST /admin/obs/traffic/cache_clear` 可清空全部统计缓存条目（在途计算不受影响）；命中时 `computed_at` 保持首次计算时刻，`cache_ttl_sec` 回传当前 TTL、`cache_hit` 标记是否命中。实时 QPS（`/admin/metrics`）不参与缓存。
 
+**范围取整与缓存命中**：三个端点统一把 from/to 按跨度取整后参与查询与缓存 key——跨度 ≤48h 对齐整小时、更大对齐 UTC 整天。「近 24 小时」一小时内重复查询、「近 7 天/30 天」一天内重复查询直接命中同一缓存 key，命中率不再随分钟漂移归零；代价是统计范围末端最多回退一个取整粒度（当前不完整的小时/天不计入）。**跨度不足一个取整粒度时不取整**（如「今日」在 00:00–00:59 内的范围、同小时自定义范围）：两端会被截到同一整点导致区间退化为零宽、查询命中不到任何行，此时保持原区间。
+
+**超时防护**：统计 SQL 受固定 25 秒超时约束（代码常量，非配置项），超时后数据库侧终止执行（`QueryContext` 下推取消），返回 500 与「可缩小时间范围或稍后重试」文案，防慢查询占用连接。查询上下文与调用方解耦（剥离请求取消信号后叠加固定预算）：结果缓存会把同 key 并发请求合并为一次共享计算，若绑定单个调用方，该请求断开将导致所有搭车请求一起失败——故客户端断开只结束它自己的等待，共享计算的产物照常入缓存。
+
 **降级**：
 
 - obs 未注册 / `OBS_ENABLED=false` → `503` 文本引导态（前端按「功能未开启」页内引导卡渲染，豁免 toast 红线②）；
 - `SHIELD_EVENT_LOG_ENABLED=false` → 拦截侧字段（`block_total`/`attack_ips`/`block4xx`/`block4xx_rate`/`blocked_count`）输出 `null`（前端显示「—」）；
-- DB 数据访问层未就绪 → `503`；时间参数非法 / `from` 晚于 `to` → `400`。
+- DB 数据访问层未就绪 → `503`（响应文本含「数据访问层」）：与上一条的降级语义不同，引导用户去开启观测是错误出路，前端须按**普通错误**弹 error toast + 行内说明（指出 `DB_DRIVER`/`DB_DSN` 未配置），不得渲染「功能未开启」引导卡；时间参数非法 / `from` 晚于 `to` → `400`。
 
 | 端点 | 说明 |
 |------|------|

@@ -41,6 +41,9 @@
   function enterConsole() {
     $('#auth-view').classList.add('hidden');
     document.body.classList.remove('auth-mode');
+    // 顶栏管理地址由全局模块供数（解耦红线）：鉴权部署下启动时 /admin/config 必 401，
+    // 登录成功（已获得 token）后需补拉一次，否则重试窗口过后顶栏会一直显示「—」。
+    if (Rock.main && Rock.main.fetchBaseInfo) Rock.main.fetchBaseInfo();
     Rock.main.renderPage(Rock.main.currentRoute());
   }
 

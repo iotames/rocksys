@@ -38,9 +38,9 @@ const adminUsersTable = "admin_users"
 
 // adminUser 管理接口超级管理员用户记录（超管仅一个）。
 type adminUser struct {
-	ID           int64  `db:"id"`
-	Username     string `db:"username"`
-	PasswordHash string `db:"password_hash"`
+	ID           int64     `db:"id"`
+	Username     string    `db:"username"`
+	PasswordHash string    `db:"password_hash"`
 	CreatedAt    time.Time `db:"created_at"`
 	UpdatedAt    time.Time `db:"updated_at"`
 }

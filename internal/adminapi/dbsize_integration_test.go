@@ -73,6 +73,9 @@ func testDBSize(t *testing.T, d *db.DB) {
 	if st.Bytes <= 0 {
 		t.Errorf("占用空间应 > 0（系统表统计），got %d", st.Bytes)
 	}
+	if !st.BytesKnown {
+		t.Errorf("MySQL/PG 有系统表可直接读逐表占用，bytes_known 应为 true")
+	}
 	if st.Comment != "集成测试表" {
 		t.Errorf("表备注应为「集成测试表」，got %q", st.Comment)
 	}

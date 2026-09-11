@@ -227,7 +227,7 @@ rockctl script rollback             # 回滚上一版本
 
 **流量统计报表**（读侧聚合端点，实现 `plugins/obs/traffic.go` + `traffic_cache.go`）：`GET /admin/obs/traffic/summary`（指标标量+率）、`GET /admin/obs/traffic/series`（访问/拦截时间桶趋势，hour/day 缺省自适应）、`GET /admin/obs/traffic/geo`（地区分布，source=access/blocked × level=country/province 双维切换，含 `geo_ready` 就绪信号）——数据为 `access_log` ∪ `shield_event` 两表 SQL 聚合（GeoIP 写时解析提供 country/city 列），服务端 singleflight+TTL 缓存（`OBS_TRAFFIC_CACHE_TTL`）；obs 未启用 503 引导降级、拦截事件记录关闭时拦截侧字段 null。指标闭合口径与响应契约见 `docs/webui-api.md` §3.20。
 
-**GeoIP 写时解析**：装配注入共享 `internal/geoip` 解析器（见 §2.7），写 `access_log` 日志行时解析客户端 `country`/`city`；未配置 mmdb 时列落空串（统计计「未知」）。
+**GeoIP 写时解析**：装配注入共享 `internal/geoip` 解析器（见 §2.7），写 `access_log` 日志行时解析客户端 `country`/`city`；未配置 mmdb 时列落空串（统计计「未知」）。名称解析取值优先 zh-CN、缺失回落 en。**列保持真实语义**：解析不出省市时 city 照实落空串，不做入库级兜底；「市空退省/省空退国」只做在读侧最终展示（traffic geo 读端点：province 级 region 空串显示「中国」，country 级空串无父级可退计「未知」）。GeoLite2 免费库对部分 IP（尤其中国大陆）只有国家级精度，这类在省级视图归入「中国」而非「未知」。mmdb 归位前已写入的历史空串行经 `/admin/db/geoip_sync` 回填。
 
 ### 3.6 copy — 请求抄送（转发链中间件，Tail + ResponseHook）
 

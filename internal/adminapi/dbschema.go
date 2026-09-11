@@ -26,10 +26,11 @@ import (
 
 // 数据库表结构同步端点路径（§8.1 表）。
 const (
-	PathDBSchema  = "/admin/db/schema"
-	PathDBExec    = "/admin/db/exec"
-	PathDBExecLog = "/admin/db/execlog"
-	PathDBSize    = "/admin/db/size"
+	PathDBSchema    = "/admin/db/schema"
+	PathDBExec      = "/admin/db/exec"
+	PathDBExecLog   = "/admin/db/execlog"
+	PathDBSize      = "/admin/db/size"
+	PathDBTableSize = "/admin/db/table_size" // 单表精确占用（按需计算）
 )
 
 // SetTableSpecs 注入数据连接与表清单（装配处单一事实来源，cmd/rocksys/main.go 调用）。

@@ -20,8 +20,8 @@ import (
 	"github.com/iotames/easyserver/httpsvr"
 	"github.com/iotames/easyserver/log"
 
-	"rocksys/internal/conf"
 	"rocksys/internal/catalog"
+	"rocksys/internal/conf"
 	"rocksys/internal/db"
 	"rocksys/internal/hotswap"
 )
@@ -60,26 +60,26 @@ var errNilHandler = errors.New("adminapi: nil path or handler")
 
 // AdminServer 管理接口服务器（§8.1.0）。
 type AdminServer struct {
-	srv          *easyserver.Server // 独立 easyserver 实例（回环地址）
-	confMgr      conf.Manager       // ★ 用于内建 PUT /admin/config（调用 conf.Manager.Set）
-	hotswapMgr   *hotswap.Manager   // ★ 用于内建 /admin/switch/on|off|list
-	initialized  *bool              // ADMIN_INITIALIZED 配置指针（热更可读）
-	jwtSecret    *string            // ADMIN_JWT_SECRET 配置指针（登录 JWT 签名密钥）
-	adminToken   *string            // ROCKSYS_ADMIN_TOKEN 配置指针（静态预共享令牌）
-	edb          *easydb.EasyDb     // 用户存储数据库连接（dataDB.EasyDB()，可 nil）
-	sqls         db.SQLSource       // 用户存储 SQL 脚本源（dataDB，可 nil）
-	dataDB       *db.DB             // 表结构同步数据连接（SetTableSpecs 注入，可 nil = 功能不可用）
-	tableSpecs   []db.TableSpec     // 表结构同步表清单（装配处单一事实来源，SetTableSpecs 注入）
-	execLogOnce  sync.Once          // SQL 执行审计存储惰性构造（跟随 dataDB 生命周期）
-	execLog      *execLogStore      // SQL 执行审计存储（可 nil = 审计不可用）
-	execMu       sync.Mutex         // /admin/db/exec 执行互斥：防并发 DDL 交叉执行产生不可预期状态
-	users        *userStore         // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
-	auth         *adminAuth         // 管理接口鉴权器
-	loginLimiter *loginLimiter      // 登录失败限流器（按 IP）
-	autoMap      map[string]string  // 挂件自动开关映射：中间件名 → XXX_ENABLED 配置键（switch on/off 时持久化）
-	version      string             // 构建期版本号（与 --version 同源，经 SetVersionInfo 注入）
-	buildTime    string             // 构建时间
-	goVersion    string             // 编译用 Go 版本
+	srv          *easyserver.Server  // 独立 easyserver 实例（回环地址）
+	confMgr      conf.Manager        // ★ 用于内建 PUT /admin/config（调用 conf.Manager.Set）
+	hotswapMgr   *hotswap.Manager    // ★ 用于内建 /admin/switch/on|off|list
+	initialized  *bool               // ADMIN_INITIALIZED 配置指针（热更可读）
+	jwtSecret    *string             // ADMIN_JWT_SECRET 配置指针（登录 JWT 签名密钥）
+	adminToken   *string             // ROCKSYS_ADMIN_TOKEN 配置指针（静态预共享令牌）
+	edb          *easydb.EasyDb      // 用户存储数据库连接（dataDB.EasyDB()，可 nil）
+	sqls         db.SQLSource        // 用户存储 SQL 脚本源（dataDB，可 nil）
+	dataDB       *db.DB              // 表结构同步数据连接（SetTableSpecs 注入，可 nil = 功能不可用）
+	tableSpecs   []db.TableSpec      // 表结构同步表清单（装配处单一事实来源，SetTableSpecs 注入）
+	execLogOnce  sync.Once           // SQL 执行审计存储惰性构造（跟随 dataDB 生命周期）
+	execLog      *execLogStore       // SQL 执行审计存储（可 nil = 审计不可用）
+	execMu       sync.Mutex          // /admin/db/exec 执行互斥：防并发 DDL 交叉执行产生不可预期状态
+	users        *userStore          // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
+	auth         *adminAuth          // 管理接口鉴权器
+	loginLimiter *loginLimiter       // 登录失败限流器（按 IP）
+	autoMap      map[string]string   // 挂件自动开关映射：中间件名 → XXX_ENABLED 配置键（switch on/off 时持久化）
+	version      string              // 构建期版本号（与 --version 同源，经 SetVersionInfo 注入）
+	buildTime    string              // 构建时间
+	goVersion    string              // 编译用 Go 版本
 	components   []catalog.Component // 组件/服务元数据（经 SetCatalog 注入，/admin/meta 返回）
 	services     []catalog.Service
 }
@@ -219,6 +219,7 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodPost, PathDBExec, check(func(ctx httpsvr.Context) { s.handleDBExec(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodGet, PathDBExecLog, check(func(ctx httpsvr.Context) { s.handleDBExecLog(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodGet, PathDBSize, check(func(ctx httpsvr.Context) { s.handleDBSize(ctx.Writer, ctx.Request) }))
+	s.srv.AddHandler(http.MethodGet, PathDBTableSize, check(func(ctx httpsvr.Context) { s.handleDBTableSize(ctx.Writer, ctx.Request) }))
 }
 
 // RegisterWebUI 注册 WebUI 静态资源（管理控制台）。
@@ -250,6 +251,10 @@ func (s *AdminServer) RegisterWebUI(fsys fs.FS) error {
 				return
 			}
 			ctx.Writer.Header().Set("Content-Type", contentType)
+			// 静态资源统一协商缓存：内容每次请求实时读（dev 为磁盘、生产为内存），
+			// 必须发 no-cache 禁止浏览器启发式缓存——否则 dev 模式「改前端刷新即见」失效、
+			// 版本升级后仍执行旧 JS/CSS。资源体积小，重新校验开销可忽略。
+			ctx.Writer.Header().Set("Cache-Control", "no-cache")
 			ctx.Writer.WriteHeader(http.StatusOK)
 			_, _ = ctx.Writer.Write(data)
 		})

@@ -250,6 +250,10 @@ func buildServer(args []string) (*Server, error) {
 		return nil, fmt.Errorf("netutil.SubscribeHub: %w", err)
 	}
 
+	// GeoIP 历史回填（数据库页入口）服务端硬超时见 geoip_sync.go 的 geoSyncBudget 常量：
+	// 回填是大表批量读写，到点即在扫描块/更新批边界收工返回已完成进度（客户端断开同样立即停），
+	// 避免「前端早已超时、服务端仍在长时间读写占锁」。属实现细节，不做配置项。
+
 	// 2. 创建转发链（初始为空）
 	ch := chain.New()
 
@@ -431,7 +435,9 @@ func buildServer(args []string) (*Server, error) {
 				http.Error(w, "geoip: mmdb 未加载，无法回填；请放置 GeoLite2 mmdb（见概览页引导卡）并重启服务后重试", http.StatusServiceUnavailable)
 				return
 			}
-			reps, err := geoSyncAll(dataDB, geoRes)
+			// 绑定请求上下文 + 单趟时间预算：客户端断开或到点即在块/批边界收工，
+			// 已提交批次保留，互斥锁立即释放（不出现服务端脱离调用方长时间读写）。
+			reps, err := geoSyncAll(r.Context(), dataDB, geoRes, geoSyncBudget)
 			w.Header().Set("Content-Type", "application/json")
 			errText := ""
 			if err != nil {

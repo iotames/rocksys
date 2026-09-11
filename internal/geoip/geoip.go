@@ -183,6 +183,8 @@ func (r *Resolver) Lookup(ipStr string) GeoInfo {
 			info.City = ci.City
 		}
 	}
+	// 注意：这里不做"市空退省/省空退国"的兜底——country/city 列保持解析真实语义（该空则空），
+	// 兜底只做在读侧最终展示（traffic 读端点映射），避免污染数据层口径。
 	return info
 }
 

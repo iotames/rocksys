@@ -1,7 +1,9 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/overview.js 概览页
- * 页签「总览」：网关信息横条 + 流量统计区（TRAFFIC_ANALYSIS：时间范围筛选 + 指标瓦片 + 地理位置（并入卡内，
- * 紧接瓦片之下） + 访问/拦截趋势，按需 SQL 聚合、服务端缓存） + 运行状态卡（实时指标 + 资源监控） + HTTP 数据流图（组件节点带开关）
+ * 页签「总览」：网关信息横条 + 流量统计区（时间范围筛选 + 指标卡/地理位置/趋势图三区独立加载：
+ * 接口分离、谁先成功谁先显示、统一「数据加载中」提示——首查占位、有旧数据时叠加加载浮层，
+ * 同页多容器可同时显示 + 请求锁防连点，按需 SQL 聚合、服务端缓存）
+ * + 运行状态卡（实时指标 + 资源监控） + HTTP 数据流图（组件节点带开关）
  * + 服务状态总览；页签「小黑屋」：当前在押的限时封禁预览（IP_BLACKLIST_PLAN §3.7）。
  * 依赖 Rock.state / Rock.util / Rock.ui / Rock.api
  * / Rock.comp.{tabs,metrics,componentState,dataflow,chart,dataTable,empty}。
@@ -31,17 +33,19 @@
   let metricsWindow = '1m'; // 实时窗口桶宽（METRICS_WINDOW）：1m/5m/15m/1h，缺省 1m
   let trafficPreset = '24h'; // 当前预设：'24h' | 'today' | '7d' | '30d' | 'custom'
   let trafficQuery = { fromDate: '', fromTime: '00:00', toDate: '', toTime: '23:59' }; // 自定义范围（本地时间）
-  let traffic = null; // { summary, series } 拉取结果
-  let trafficErr = null; // 行内错误兜底（toast 按 UX 红线在 loadTraffic 里弹）
   let trafficOff = false; // obs 未启用（503 引导态）
-  let trafficLoading = false; // 统计拉取中（页面显示加载中提示，刷新时保留旧数据）
+  // 指标卡与趋势图分属两个接口（summary/series），各自独立加载、独立显示、独立吃缓存：
+  // 谁先成功谁先渲染，互不等待；loading 同时是请求锁（进行中拒绝重复触发，防慢 SQL 连点）。
+  let smState = { data: null, err: null, loading: false }; // 指标卡（/traffic/summary）
+  let seState = { data: null, bucket: 'hour', err: null, loading: false }; // 趋势图（/traffic/series）
   const trafficTimeoutMs = 30000; // 查库聚合是重操作，超时放宽到 30 秒（默认 5 秒易误报）
+  const TRAFFIC_LOADING_TEXT = '数据加载中，请耐心等待';
   // 地理位置卡片状态：scope=世界/中国地图切换，source=访问/总拦截切换（联动地图热力与 Top 排名）
   let geoScope = 'china'; // 'world' | 'china'
   let geoSource = 'access'; // 'access' | 'blocked'
   let geo = null; // 拉取结果 { level, source, geo:[{country|region,cnt}], geo_ready }
   let geoErr = null; // 行内错误兜底（toast 按 UX 红线在 loadGeo 里弹）
-  let geoLoading = false; // 地理分布拉取中
+  let geoLoading = false; // 地理分布拉取中（同样是请求锁）
 
   // 小黑屋数据缓存（切页签/静默重载时刷新；拉取失败保留旧数据 + 行内提示）
   let jailRows = [];
@@ -80,8 +84,7 @@
       store.switchesLoaded = true;
       baseOk = true;
       noteUpdated();
-      // 顶栏管理地址经全局 UI 接口供数（页面不直接操作全局栏 DOM）
-      Rock.ui.setAdminAddr(store.base.admin);
+      // 顶栏管理地址由全局模块（main.js）自取并供数，页面不再承担该职责（全局/局部解耦红线）
     } catch (e) {
       store.overviewFailed = !store.baseLoaded && !store.switchesLoaded;
       if (!opts.silent && e.status !== 0 && !e.obsDisabled) {
@@ -293,41 +296,111 @@
     return trafficRangeValue(trafficPreset);
   }
 
-  async function loadTraffic(opts) {
-    const range = currentTrafficRange();
-    if (!range) { trafficErr = '自定义时间范围不完整'; renderTrafficBody(); return; }
-    const qs = 'from=' + encodeURIComponent(range.from) + '&to=' + encodeURIComponent(range.to);
-    trafficOff = false;
-    trafficLoading = true;
-    renderTrafficBody(); // 立即给出加载中反馈（已有旧数据时保留旧内容+刷新中角标）
-    try {
-      const spanMs = new Date(range.to.replace('T', ' ')) - new Date(range.from.replace('T', ' '));
-      const bucket = spanMs <= 48 * 3600 * 1000 ? 'hour' : 'day';
-      // 查库聚合是重操作，数据量大时耗时秒级，超时放宽到 30 秒（默认 5 秒易误报）
-      const [summary, series] = await Promise.all([
-        api.get('/admin/obs/traffic/summary?' + qs, trafficTimeoutMs),
-        api.get('/admin/obs/traffic/series?' + qs + '&bucket=' + bucket, trafficTimeoutMs),
-      ]);
-      traffic = { summary, series, bucket };
-      trafficErr = null;
-    } catch (e) {
-      if (e.status === 503) { trafficOff = true; } // obs 未启用：页内引导态（豁免 toast 红线②）
-      else {
-        trafficErr = e.message || '加载失败';
-        if (!opts.silent && e.status !== 0) {
-          toast('流量统计加载失败：' + e.message + '，可点页内「刷新」重试；若数据库刚升级请先在「数据库」页完成表结构同步', 'error');
-        }
-      }
+  // 请求锁提示：任一流量统计接口在途时再触发操作，统一提示等待（防 0.5 秒连点发出多条慢 SQL）
+  function busyHint() {
+    toast('请求进行中，请耐心等待当前查询完成后再操作', 'info');
+  }
+  // 流量统计任一接口在途（指标卡/趋势图/地理位置；30 秒超时也算在途）
+  function trafficBusy() {
+    return smState.loading || seState.loading || geoLoading;
+  }
+
+  // 拉取流量统计：指标卡（summary）与趋势图（series）并行发起、各自独立加载与显示；
+  // 任一接口在途时整体拒绝重复触发（加锁防连点，30 秒超时也算结果）。
+  function loadTraffic(opts) {
+    if (trafficOff) return;
+    if (trafficBusy()) {
+      if (!opts.silent) busyHint();
+      return;
     }
-    trafficLoading = false;
-    renderTrafficBody();
+    loadSummary(opts);
+    loadSeries(opts);
     loadGeo({ silent: true });
+  }
+
+  // 503 分两类：obs 未注册（引导态，可豁免弹窗）；「数据访问层未就绪（DB_DRIVER/DB_DSN）」
+  // 是 DB 未配置——观测已开却缺数据库连接，引导用户去开观测是错误出路。
+  function obsOffErr(e) {
+    return e.status === 503 && (e.message || '').indexOf('数据访问层') < 0;
+  }
+
+  // 请求失败统一处理：obs 未注册 → 引导态；其余（含 DB 未就绪 503）→ 行内错误 + 统一 error toast
+  // （静默刷新/网络不可达豁免弹窗，UX 红线②③）。
+  function trafficLoadError(e, opts, state, label) {
+    if (obsOffErr(e)) { trafficOff = true; renderTrafficBody(); return; }
+    state.err = e.message || '加载失败';
+    if (!opts.silent && e.status !== 0) {
+      toast(label + '加载失败：' + state.err + '，可点「重试」或页内「刷新」重试', 'error');
+    }
+  }
+
+  // 指标卡：/admin/obs/traffic/summary（独立加载，成功即渲染，不等趋势图）
+  async function loadSummary(opts) {
+    const range = currentTrafficRange();
+    if (!range) {
+      smState = { data: null, err: '自定义时间范围不完整', loading: false };
+      renderSummaryArea();
+      return;
+    }
+    smState.loading = true;
+    smState.err = null;
+    renderSummaryArea();
+    try {
+      smState.data = await api.get('/admin/obs/traffic/summary?' + rangeQS(range), trafficTimeoutMs);
+    } catch (e) {
+      trafficLoadError(e, opts, smState, '流量统计');
+    }
+    smState.loading = false;
+    renderSummaryArea();
+  }
+
+  // 趋势图：/admin/obs/traffic/series（独立加载；桶宽按跨度自适应：≤48h 用小时桶）
+  async function loadSeries(opts) {
+    const range = currentTrafficRange();
+    if (!range) {
+      seState = { data: null, bucket: 'hour', err: '自定义时间范围不完整', loading: false };
+      renderSeriesArea();
+      return;
+    }
+    const bucket = (new Date(range.to.replace('T', ' ')) - new Date(range.from.replace('T', ' '))) <= 48 * 3600 * 1000 ? 'hour' : 'day';
+    seState.loading = true;
+    seState.err = null;
+    renderSeriesArea();
+    try {
+      const res = await api.get('/admin/obs/traffic/series?' + rangeQS(range) + '&bucket=' + bucket, trafficTimeoutMs);
+      seState.data = res;
+      seState.bucket = bucket;
+    } catch (e) {
+      trafficLoadError(e, opts, seState, '流量趋势');
+    }
+    seState.loading = false;
+    renderSeriesArea();
+  }
+
+  // 时间范围查询串（from/to 本地时间 → 服务端按 UTC 聚合）
+  function rangeQS(range) {
+    return 'from=' + encodeURIComponent(range.from) + '&to=' + encodeURIComponent(range.to);
+  }
+
+  // 统一加载提示：转圈动画 + 固定文案（首次加载/切换范围/重试/刷新四种场景完全同一呈现）
+  function loadingHTML() {
+    return '<div class="load-hint"><span class="load-spin"></span>' + esc(TRAFFIC_LOADING_TEXT) + '</div>';
+  }
+  // 加载浮层：已有旧数据时叠加在原内容上方（同一提示组件；纯 HTML/CSS，同页多个容器可同时显示）
+  function withLoadingHTML(inner, loading) {
+    if (!loading) return inner;
+    return '<div class="load-wrap">' + inner +
+      '<div class="load-overlay"><div class="load-hint"><span class="load-spin"></span>' + esc(TRAFFIC_LOADING_TEXT) + '</div></div></div>';
   }
 
   // 地理位置：按当前 scope/source 拉取（scope 决定聚合 level：中国=province，世界=country），
   // 只重绘地理位置卡片，不打断流量统计其他区块。
   async function loadGeo(opts) {
-    if (!traffic) return; // 流量区未就绪（obs 未启用等），不单独拉
+    if (trafficOff) return; // obs 未启用：引导态由主卡承担
+    if (geoLoading) {
+      if (!opts.silent) busyHint();
+      return; // 请求锁：上一次 geo 查询未出结果（含 30 秒超时）前拒绝重复触发
+    }
     const range = currentTrafficRange();
     if (!range) return;
     const level = geoScope === 'china' ? 'province' : 'country';
@@ -335,9 +408,9 @@
     const stale = function () { // 期间已切换 scope/source → 本次结果已过时，丢弃（由最新请求负责渲染）
       return level !== (geoScope === 'china' ? 'province' : 'country') || source !== geoSource;
     };
-    const qs = 'from=' + encodeURIComponent(range.from) + '&to=' + encodeURIComponent(range.to) +
-      '&source=' + source + '&level=' + level;
+    const qs = rangeQS(range) + '&source=' + source + '&level=' + level;
     geoLoading = true;
+    renderGeoCard();
     try {
       const res = await api.get('/admin/obs/traffic/geo?' + qs, trafficTimeoutMs);
       if (res.level !== level || res.source !== source || stale()) return;
@@ -346,8 +419,8 @@
     } catch (e) {
       if (stale()) return;
       geoErr = e.message || '加载失败';
-      if (!opts.silent && e.status !== 0 && e.status !== 503) {
-        toast('地理位置分布加载失败：' + geoErr + '，可点页内「刷新」重试', 'error');
+      if (!opts.silent && e.status !== 0 && !obsOffErr(e)) {
+        toast('地理位置分布加载失败：' + geoErr + '，可点「重试」再试', 'error');
       }
     }
     geoLoading = false;
@@ -435,7 +508,7 @@
     const srcLabel = geoSource === 'blocked' ? '总拦截' : '访问';
     const scopeLabel = geoScope === 'world' ? '世界' : '中国';
     let body;
-    if (!traffic) {
+    if (trafficOff) {
       body = '';
     } else if (geo && geo.geo_ready === false) {
       body = GEO_GUIDE;
@@ -443,13 +516,13 @@
       body = Rock.comp.empty.emptyCard({ text: '地理位置分布加载失败：' + geoErr, br: true,
         action: '<button class="btn btn-sm btn-primary" data-act="geo-retry">重试</button>' });
     } else if (!geo) {
-      body = Rock.comp.empty.message({ text: geoLoading ? '地理分布加载中…按范围查库聚合，请稍候' : '加载中…' });
+      body = loadingHTML(); // 统一加载提示（与指标卡/趋势图同一组件、同一文案）
     } else {
-      body = '<div class="geo-panels">' +
+      body = withLoadingHTML('<div class="geo-panels">' +
         '<div class="geo-map-box" style="height:380px"><div id="geo-map" style="width:100%;height:100%"></div></div>' +
         '<div class="geo-rank"><div class="card-title" style="margin-bottom:6px">Top 地区 <span class="card-sub">' +
         srcLabel + '口径 · ' + scopeLabel + '</span></div>' + geoRankHTML(geo.geo || []) + '</div>' +
-        '</div>';
+        '</div>', geoLoading);
     }
     // 并入流量统计卡内的分区样式（同运行状态卡「资源」分区的 border-top 风格）
     return '<div style="border-top:1px solid rgba(127,127,127,.15);margin-top:12px;padding-top:10px"><div class="geo-card-head"><div class="card-title">地理位置 <span class="card-sub">按范围查库聚合 · 地图与排名联动</span></div>' +
@@ -490,6 +563,37 @@
     });
   }
 
+  // 指标卡区（summary 接口独立状态：成功即渲染，失败可单独重试，加载中统一提示）
+  function summaryAreaHTML() {
+    if (smState.err && !smState.data) {
+      // emptyCard 内部已 esc(text)，此处传原文，勿再转义（否则 & < 等显示成实体）
+      return Rock.comp.empty.emptyCard({ text: '流量统计加载失败：' + smState.err, br: true,
+        action: '<button class="btn btn-sm btn-primary" data-act="traffic-summary-retry">重试</button>' });
+    }
+    if (!smState.data) return loadingHTML();
+    // 静默刷新失败（旧数据仍在）：不弹 toast，但行内必须更新，避免长期无感展示陈旧数据
+    const staleHint = smState.err ? '<div class="form-hint" style="color:var(--danger,#c0392b)">' +
+      '本次刷新失败（' + esc(smState.err) + '），以下为上次结果</div>' : '';
+    return staleHint + withLoadingHTML(trafficTilesHTML(smState.data), smState.loading);
+  }
+
+  // 趋势图区（series 接口独立状态：与指标卡谁先成功谁先显示）
+  function seriesAreaHTML() {
+    if (seState.err && !seState.data) {
+      return Rock.comp.empty.emptyCard({ text: '流量趋势加载失败：' + seState.err, br: true,
+        action: '<button class="btn btn-sm btn-primary" data-act="traffic-series-retry">重试</button>' });
+    }
+    if (!seState.data) return loadingHTML();
+    const staleHint = seState.err ? '<div class="form-hint" style="color:var(--danger,#c0392b)">' +
+      '本次刷新失败（' + esc(seState.err) + '），以下为上次结果</div>' : '';
+    return staleHint + withLoadingHTML('<div class="grid grid-2">' +
+      '<div><div class="card-title" style="margin-bottom:6px">访问趋势 <span class="card-sub">req_ok · UTC 桶</span></div>' +
+      '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-ok"></canvas></div></div>' +
+      '<div><div class="card-title" style="margin-bottom:6px">拦截趋势 <span class="card-sub">blocked · UTC 桶</span></div>' +
+      '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-blocked"></canvas></div></div>' +
+      '</div>', seState.loading);
+  }
+
   function trafficBodyHTML() {
     const presets = [['24h', '近 24 小时'], ['today', '今日'], ['7d', '近 7 天'], ['30d', '近 30 天']];
     const chips = presets.map(p =>
@@ -506,48 +610,44 @@
       body = '<div class="empty" style="padding:24px 8px">' +
         '<div>观测组件未开启，无法统计流量（数据由访问日志/拦截日志按需聚合而来）</div>' +
         '<button class="btn btn-sm btn-primary" data-act="go-obs">去组件页开启观测</button></div>';
-    } else if (trafficLoading && !traffic) {
-      // 首次加载：给出友好等待提示（查库聚合数据量大时可达秒级，超时已放宽 30 秒）
-      body = Rock.comp.empty.message({ text: '统计加载中…按时间范围查库聚合，数据量大时可能需要数秒，请稍候' });
-    } else if (trafficErr) {
-      body = Rock.comp.empty.emptyCard({ text: '流量统计加载失败：' + esc(trafficErr), br: true,
-        action: '<button class="btn btn-sm btn-primary" data-act="overview-reload">重试</button>' });
-    } else if (!traffic) {
-      body = Rock.comp.empty.message({ text: '加载中…' });
     } else {
-      const sm = traffic.summary || {};
       body = '<div style="margin-bottom:10px">' + chips + '</div>' +
         (trafficPreset === 'custom' ? '<div style="margin-bottom:10px">' + custom + '</div>' : '') +
-        trafficTilesHTML(sm) +
-        // 地理位置并入流量统计卡：紧接指标瓦片之下（异步拉取后经 renderGeoCard 填充）
-        '<div class="geo-slot"></div>' +
-        '<div class="grid grid-2" style="margin-top:12px">' +
-        '<div><div class="card-title" style="margin-bottom:6px">访问趋势 <span class="card-sub">req_ok · UTC 桶</span></div>' +
-        '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-ok"></canvas></div></div>' +
-        '<div><div class="card-title" style="margin-bottom:6px">拦截趋势 <span class="card-sub">blocked · UTC 桶</span></div>' +
-        '<div class="chart-box" style="height:140px"><canvas id="traffic-chart-blocked"></canvas></div></div>' +
-        '</div>';
+        '<div id="traffic-summary-area">' + summaryAreaHTML() + '</div>' +
+        // 地理位置并入流量统计卡：独立接口独立加载，经 renderGeoCard 局部填充
+        '<div class="geo-slot">' + geoCardHTML() + '</div>' +
+        '<div id="traffic-series-area" style="margin-top:12px">' + seriesAreaHTML() + '</div>';
     }
+    const busy = trafficBusy();
+    // 缓存时长以服务端实值为准（OBS_TRAFFIC_CACHE_TTL 可配置）：写死数值会与统计行/实际配置矛盾
+    const ttlSec = (smState.data && smState.data.cache_ttl_sec) || (seState.data && seState.data.cache_ttl_sec) || 0;
+    const cacheSub = ttlSec > 0 ? ' · 服务端缓存 ' + Math.round(ttlSec / 60) + ' 分钟' : '';
     return '<div class="card" style="margin-top:16px"><div class="card-title" style="display:flex;align-items:center;gap:8px">流量统计' +
-      (trafficLoading && traffic ? ' <span class="tag tag-blue">刷新中…</span>' : '') +
-      ' <span class="card-sub">按时间范围查库聚合 · 服务端缓存 15 分钟</span>' +
+      (busy ? ' <span class="tag tag-blue">刷新中…</span>' : '') +
+      ' <span class="card-sub">按时间范围查库聚合' + cacheSub + '</span>' +
       '<span style="flex:1"></span>' +
-      '<button class="btn btn-sm" data-act="traffic-cache-clear"' + (trafficLoading ? ' disabled' : '') +
-      ' title="清空服务端统计缓存，下次查询强制重新聚合">清空缓存</button></div>' +
+      // 观测未开启（引导态）时不提供必然失败的操作入口
+      (trafficOff ? '' : '<button class="btn btn-sm" data-act="traffic-cache-clear"' + (busy ? ' disabled' : '') +
+        ' title="清空服务端统计缓存，下次查询强制重新聚合">清空缓存</button>') + '</div>' +
       body + '</div>';
   }
 
   // 流量趋势两图（render 后调用；桶标签为 UTC 原样，仅格式化显示）
   function drawTrafficCharts() {
-    if (!traffic || !traffic.series) return;
-    const rows = traffic.series.series || [];
+    if (!seState.data) return;
+    const rows = seState.data.series || [];
     const toPoint = key => rows.map(r => ({ t: String(r.bucket).replace(' ', 'T') + 'Z', value: r[key] }));
     const dayFmt = t => { const d = Rock.util.toDate(t); return d ? (d.getUTCMonth() + 1) + '-' + d.getUTCDate() : ''; };
     const hourFmt = t => { const d = Rock.util.toDate(t); return d ? (d.getUTCMonth() + 1) + '-' + d.getUTCDate() + ' ' + Rock.util.pad2(d.getUTCHours()) + ':00' : ''; };
-    const fmtX = traffic.bucket === 'day' ? dayFmt : hourFmt;
+    const fmtX = seState.bucket === 'day' ? dayFmt : hourFmt;
     Rock.comp.chart.line($('#traffic-chart-ok'), { data: toPoint('ok_count'), value: p => p.value, fmtX: fmtX });
     Rock.comp.chart.line($('#traffic-chart-blocked'), { data: toPoint('blocked_count'), value: p => p.value, fmtX: fmtX });
   }
+
+  // 各区接口完成/失败后的局部重绘：只重绘流量统计卡（含忙态角标/按钮联动），
+  // 不整页重绘；各区状态独立，谁先成功谁先显示。
+  function renderSummaryArea() { renderTrafficBody(); }
+  function renderSeriesArea() { renderTrafficBody(); }
 
   // 流量区局部重渲染（拉取完成后不整页重绘，避免打断其他区块）
   function renderTrafficBody() {
@@ -557,6 +657,7 @@
     if (oldMap && window.echarts && echarts.getInstanceByDom) echarts.dispose(oldMap);
     host.innerHTML = trafficBodyHTML();
     drawTrafficCharts();
+    drawGeoMap();
   }
 
   // 实时区（chips + 瓦片 + QPS 曲线）局部渲染单元：自动采样每 5s 静默更新此区块
@@ -746,16 +847,23 @@
           store.metrics = normalizeMetrics(m);
           store.metricsError = null;
           render();
-        }).catch(function () { /* 重拉失败保留旧数据，不打断页面 */ });
+        }).catch(function (e) {
+          // 用户主动切换窗口：失败必须提示（保留旧数据不阻断页面；网络不可达由全局横幅承载）
+          if (e.status !== 0) {
+            toast('指标加载失败：' + (e.message || '未知错误') + '，可稍后重试或切回上一窗口', 'error');
+          }
+        });
       },
-      // 流量统计：预设时间范围切换（立即拉取）
+      // 流量统计：预设时间范围切换（请求锁：任一统计接口在途时拒绝切换，防连点发多条慢 SQL）
       'traffic-range': function (el) {
+        if (trafficBusy()) { busyHint(); return; }
         trafficPreset = el.getAttribute('data-preset') || '24h';
         render();
         loadTraffic({ manual: true });
       },
-      // 流量统计：自定义范围应用（读当前输入值）
+      // 流量统计：自定义范围应用（读当前输入值；同样受请求锁约束）
       'traffic-apply': function () {
+        if (trafficBusy()) { busyHint(); return; }
         trafficPreset = 'custom';
         trafficQuery = {
           fromDate: ($('#traffic-from-date') || {}).value || trafficQuery.fromDate,
@@ -763,24 +871,35 @@
           toDate: ($('#traffic-to-date') || {}).value || trafficQuery.toDate,
           toTime: ($('#traffic-to-time') || {}).value || '23:59',
         };
+        renderTrafficBody();
         loadTraffic({ manual: true });
       },
+      // 指标卡 / 趋势图 / 地理位置：各自独立重试（只重拉失败的那块，其余不动）
+      'traffic-summary-retry': function () { loadSummary({ manual: true }); },
+      'traffic-series-retry': function () { loadSeries({ manual: true }); },
+      'geo-retry': function () { loadGeo({ manual: true }); },
       // 流量统计：清空服务端结果缓存（POST；成功后重新聚合当前范围，立见最新数据）
       'traffic-cache-clear': async function (el) {
+        if (trafficBusy()) { busyHint(); return; }
         el.disabled = true;
         try {
           const r = await api.post('/admin/obs/traffic/cache_clear', trafficTimeoutMs)();
           if (r && r.ok === false) throw new Error(r.err || '清空失败');
           toast(r && r.text || '缓存已清空', 'success');
-          traffic = null; geo = null; // 旧结果作废，强制重拉
-          await loadTraffic({ manual: true, silent: true });
+          smState = { data: null, err: null, loading: false }; // 旧结果作废，强制重拉
+          seState = { data: null, bucket: 'hour', err: null, loading: false };
+          geo = null; geoErr = null;
+          renderTrafficBody();
+          loadTraffic({ manual: true, silent: true });
         } catch (e) {
           toast('清空缓存失败：' + (e.message || '未知错误') + '，可稍后重试', 'error');
+          el.disabled = false;
+          renderTrafficBody();
         }
-        renderTrafficBody();
       },
-      // 地理位置：世界/中国切换（scope 决定聚合 level，地图与排名联动重拉）
+      // 地理位置：世界/中国切换（scope 决定聚合 level，地图与排名联动重拉；geo 在途时拒绝）
       'geo-scope': function (el) {
+        if (geoLoading) { busyHint(); return; }
         const key = el.getAttribute('data-key') || 'china';
         if (key === geoScope) return;
         geoScope = key === 'world' ? 'world' : 'china';
@@ -788,8 +907,9 @@
         renderGeoCard();
         loadGeo({ silent: true });
       },
-      // 地理位置：访问/总拦截切换（source 变更，地图与排名联动重拉）
+      // 地理位置：访问/总拦截切换（source 变更，地图与排名联动重拉；geo 在途时拒绝）
       'geo-source': function (el) {
+        if (geoLoading) { busyHint(); return; }
         const key = el.getAttribute('data-key') || 'access';
         if (key === geoSource) return;
         geoSource = key === 'blocked' ? 'blocked' : 'access';
@@ -797,8 +917,6 @@
         renderGeoCard();
         loadGeo({ silent: true });
       },
-      // 地理位置：失败重试
-      'geo-retry': function () { loadGeo({ manual: true }); },
       // 页签切换：总览 / 小黑屋（切到小黑屋时拉取最新在押数据）
       'overview-tab': function (el) {
         const tab = el.getAttribute('data-tab') || 'overview';

@@ -178,6 +178,26 @@
     }).catch(function () { /* 版本号不可用时保持空 */ });
   }
 
+  // 顶栏管理地址是否已取到：全局基础信息成功一次即可，避免启动重试与登录后补拉重复请求。
+  let baseInfoLoaded = false;
+
+  // 顶栏管理地址：由全局模块自行获取（GET /admin/config 的 admin 字段），不依赖任何业务页面供数
+  // ——直接进入/刷新非概览页（如 #/database）时顶栏同样有值。服务未就绪时有限次重试，
+  // 成功后停止；页面视图不得代替全局模块承担该数据的获取（全局/局部解耦红线）。
+  //
+  // 鉴权部署下启动时该接口必然 401（仅 /admin/auth/* 免鉴权），故登录成功后由 auth.js 经
+  // Rock.main.fetchBaseInfo 再触发一次；否则登录耗时超过重试窗口时顶栏会一直空着。
+  function fetchGlobalBaseInfo(retry) {
+    if (baseInfoLoaded) return;
+    Rock.api.get('/admin/config').then(function (base) {
+      baseInfoLoaded = true;
+      if (base && base.admin) Rock.ui.setAdminAddr(base.admin);
+    }).catch(function () {
+      if ((retry || 0) >= 10) return; // 约 50 秒内每 5 秒重试一次，仍失败则等登录后补拉/下次页面加载
+      setTimeout(function () { fetchGlobalBaseInfo((retry || 0) + 1); }, 5000);
+    });
+  }
+
   // 数据清理未开启警告（常驻置顶横幅，登录警告机制）：
   // 启动/登录后经 GET /admin/warnings 拉取（刷新页面不丢失、配置变更实时反映），
   // 与登录响应 warnings 同源。401（未登录）静默——登录流程成功后再渲染。
@@ -254,6 +274,7 @@
     bindSidebarToggle();
     initRoute();
     fetchVersion();
+    fetchGlobalBaseInfo(); // 顶栏管理地址（全局模块自取，与当前所在页面无关）
     loadPruneWarnings();
     // 主题切换：同步下拉框并绑定切换事件
     if (Rock.theme) Rock.theme.bind();
@@ -367,6 +388,7 @@
     parseHash,
     renderPage,
     refreshPage,
+    fetchBaseInfo: fetchGlobalBaseInfo, // 顶栏管理地址：登录成功后由 auth 视图补拉（全局模块单一供数入口）
     loadPruneWarnings,
     renderPruneBanner,
     dismissPruneBanner,

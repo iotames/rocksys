@@ -5,6 +5,8 @@
 SQLite 为默认零配置方言（`DB_DRIVER` 默认 `sqlite`，`DB_DSN` 默认 `rocksys.db`）。
 本目录是脚本对齐的基准方言：新增查询时先在 `sql/sqlite/` 落脚本，再按 `sql/mysql/README.md`、`sql/postgres/README.md` 中的差异表改写另外两份。
 
+> **开发期提示**：外置目录（默认 `bin/hotscripts/sql/`）运行时优先加载（外挂优先、内嵌兜底，详见 `internal/hotswap/script.go`）。**开发阶段不要放置该目录，发现残留即删除**——外挂旧脚本会掩盖内嵌更新；改本目录脚本后重新编译即生效（运行时找不到外挂自动走内嵌兜底）。该目录仅由 `make release`/`make zip` 打包生成，或部署方有意放置个性化覆盖（禁止盲目整体覆盖）。
+
 ## 脚本清单
 
 - `mq_*.sql`：RockMQ outbox 表（建表/索引/插入/轮询/标记结果/重试次数），8 个；

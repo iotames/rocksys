@@ -17,7 +17,9 @@
 package obs
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -62,17 +64,79 @@ func (o *Obs) trafficScript(name string) (string, error) {
 	return strings.ReplaceAll(txt, "{table2}", trafficShieldTable), nil
 }
 
-// trafficQuery 执行统计脚本返回平铺行。
-func (o *Obs) trafficQuery(name string, args ...any) ([]map[string]any, error) {
+// trafficQueryCtx 带超时的统计查询：经 QueryContext 下推取消到底层驱动，
+// 超时后数据库侧终止执行，慢 SQL 不再持续占用连接与算力（防过度占用系统资源）。
+// 超时阈值为代码常量 trafficQueryTimeoutConst（25 秒，非配置项）。
+//
+// 上下文与调用方解耦：结果缓存（tcache）会把同 key 并发请求合并为**一次**共享计算，
+// 若直接绑定某个调用方的请求上下文，该请求断开就会让所有搭车请求一起失败。
+// 故先用 WithoutCancel 剥离取消信号（仅保留值），再叠加固定预算——查询寿命只由预算决定，
+// 客户端断开只结束它自己的等待，共享计算的产物照常入缓存供后续命中。
+func (o *Obs) trafficQueryCtx(ctx context.Context, name string, args ...any) ([]map[string]any, error) {
 	sel, err := o.trafficScript(name)
 	if err != nil {
 		return nil, err
 	}
-	var rows []map[string]any
-	if err := o.dataDB.EasyDB().GetMany(sel, &rows, args...); err != nil {
+	if o.trafficQueryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), o.trafficQueryTimeout)
+		defer cancel()
+	}
+	rows, err := o.dataDB.EasyDB().GetSqlDB().QueryContext(ctx, sel, args...)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("obs: 统计查询 %s 超时（%s），可缩小时间范围或稍后重试: %w", name, o.trafficQueryTimeout, err)
+		}
 		return nil, fmt.Errorf("obs: 统计查询 %s 失败: %w", name, err)
 	}
-	return rows, nil
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("obs: 统计查询 %s 取列失败: %w", name, err)
+	}
+	out := make([]map[string]any, 0, 16)
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("obs: 统计查询 %s 扫描行失败: %w", name, err)
+		}
+		row := make(map[string]any, len(cols))
+		for i, c := range cols {
+			v := vals[i]
+			if b, ok := v.([]byte); ok { // 驱动以 []byte 返回的文本统一转 string（与 easydb 扫描口径一致）
+				v = string(b)
+			}
+			row[c] = v
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// roundTrafficRange 缓存友好取整：跨度 ≤48h 两端对齐到整小时，更大对齐到 UTC 整天。
+// 结果范围是查询入参的一部分（取整后参与 SQL），缓存 key 随之稳定：
+// 「近 24 小时」一小时内重复查询命中同一 key，「近 7 天/30 天」一天内命中，缓存命中率不再随分钟漂移归零。
+// 代价是统计范围末端最多回退一个取整粒度（当前不完整的小时/天不计入），属可接受的口径换稳。
+// 前提：取整不得把区间压成零宽——跨度不足一个粒度（如「今日」在 00:00–00:59 内、同小时自定义范围）
+// 时两端会截到同一整点，此时保持原区间不取整，避免查询命中不到任何行。
+func roundTrafficRange(from, to time.Time) (time.Time, time.Time) {
+	span := to.Sub(from)
+	granularity := 24 * time.Hour
+	if span <= 48*time.Hour {
+		granularity = time.Hour
+	}
+	if span < granularity {
+		return from, to
+	}
+	f, t := from.Truncate(granularity), to.Truncate(granularity)
+	if !t.After(f) { // 兜底：任何情况下都不产出零宽区间
+		return from, to
+	}
+	return f, t
 }
 
 // parseTrafficRange 解析 from/to（复用 logs 的时间解析，转 UTC 口径）。
@@ -105,16 +169,13 @@ func (h *AdminHandler) TrafficSummary(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	from, to = roundTrafficRange(from, to) // 取整参与查询与缓存 key：一小时/一天内重复查询直接命中缓存
 	ttl := o.trafficTTL()
 	key := fmt.Sprintf("summary|%d|%d", from.UnixMilli(), to.UnixMilli())
 	data, cached, err := o.tcache.do(key, ttl, func() (any, error) {
-		// 26 参（from,to ×13，与 sql/*/traffic_summary.sql 头注释一一对应）：
-		// 原 9 组标量 + 延迟 4 组（lat_avg / lat_p50 / lat_p95 / lat_p99）。三方言统一。
-		args := make([]any, 0, 26)
-		for i := 0; i < 13; i++ {
-			args = append(args, from, to)
-		}
-		rows, err := o.trafficQuery("traffic_summary.sql", args...)
+		// 4 参（from,to ×2：access_log 与 shield_event 各一对），对应 sql/*/traffic_summary.sql
+		// CTE 单次扫描版（原 13 子查询 26 参已收敛，口径不变）。
+		rows, err := o.trafficQueryCtx(r.Context(), "traffic_summary.sql", from, to, from, to)
 		if err != nil {
 			return nil, err
 		}
@@ -153,8 +214,14 @@ func (h *AdminHandler) TrafficSummary(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// 缓存命中时保持首次 computed_at（在缓存值内），cache_hit 供前端/验收判断，不污染缓存值本身。
-	m := data.(map[string]any)
+	// 缓存命中时保持首次 computed_at（在缓存值内），cache_hit 供前端/验收判断。
+	// 用浅拷贝承载 cache_hit：缓存条目在多请求间共享，直接写会污染缓存值并在并发请求下
+	// 触发「并发写 map」（缓存契约是调用方只读）。
+	cached0 := data.(map[string]any)
+	m := make(map[string]any, len(cached0)+1)
+	for k, v := range cached0 {
+		m[k] = v
+	}
 	m["cache_hit"] = cached
 	writeJSON(w, m)
 }
@@ -176,6 +243,7 @@ func (h *AdminHandler) TrafficSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	from, to = roundTrafficRange(from, to)
 	bucket := q.Get("bucket")
 	if bucket == "" { // 自适应：跨度 ≤48h 用小时桶
 		if to.Sub(from) <= 48*time.Hour {
@@ -195,7 +263,7 @@ func (h *AdminHandler) TrafficSeries(w http.ResponseWriter, r *http.Request) {
 		if bucket == "day" {
 			script = "traffic_series_day.sql"
 		}
-		rows, err := o.trafficQuery(script, from, to, from, to)
+		rows, err := o.trafficQueryCtx(r.Context(), script, from, to, from, to)
 		if err != nil {
 			return nil, err
 		}
@@ -224,7 +292,8 @@ func (h *AdminHandler) TrafficSeries(w http.ResponseWriter, r *http.Request) {
 
 // Geo GET /admin/obs/traffic/geo?from=&to=&source=access|blocked&level=country|province。
 // level=country（缺省）：按 country GROUP BY 计数倒序，空串计「未知」参与排序（读侧映射，不悄悄丢量）。
-// level=province：只统计 country='CN'，按 city 前缀（首个 "/" 前的省名）聚合（详见 traffic_geo_province_top.sql 头注释）。
+// level=province：只统计 country='CN'，按 city 前缀（首个 "/" 前的省名）聚合（详见 traffic_geo_province_top.sql 头注释）；
+// 展示兜底链"市空退省/省空退国"只做在读侧显示（region 空串显示「中国」），库列保持真实语义。
 func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 	o := h.obsReady(w)
 	if o == nil {
@@ -240,6 +309,7 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	from, to = roundTrafficRange(from, to)
 	source := q.Get("source")
 	if source == "" {
 		source = "access"
@@ -268,7 +338,7 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 		if o.dataDB.Driver() == "postgres" {
 			args = []any{from, to, source, source, geoTopLimit}
 		}
-		rows, err := o.trafficQuery(script, args...)
+		rows, err := o.trafficQueryCtx(r.Context(), script, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -279,8 +349,16 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 		out := make([]map[string]any, 0, len(rows))
 		for _, row := range rows {
 			region, _ := row[nameKey].(string)
+			// 展示兜底链（只做在最终显示，库列保持真实语义）：
+			//   市→省：city 列存「省/市」，市缺失时列值即「省」，无需映射；
+			//   省→国：province 级查询已限定 country='CN'，region 空串展示为「中国」；
+			//   country 级空串无父级可退，计「未知」参与排序（不悄悄丢量）。
 			if region == "" {
-				region = "未知" // 空串计「未知」参与排序（PLAN §3.4 口径）
+				if level == "province" {
+					region = "中国"
+				} else {
+					region = "未知"
+				}
 			}
 			out = append(out, map[string]any{
 				nameKey: region,

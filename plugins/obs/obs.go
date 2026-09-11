@@ -32,6 +32,11 @@ import (
 // 默认配置（§14）。
 const defaultLogPruneDays = 7 // access_log 表默认保留天数（自动清理开启后生效）
 
+// 流量统计 SQL 超时（固定 25 秒，不做配置项）：统计聚合是大表重操作，超时后数据库侧终止
+// 执行（QueryContext 下推取消）防慢查询占用连接；前端等待上限 30 秒，留 5 秒余量让后端先返回
+// 超时说明。属实现细节而非用户可调策略，写死以免增加配置心智负担。
+const trafficQueryTimeoutConst = 25 * time.Second
+
 // 指标窗口：1 小时滑动窗口 × 60 桶（每桶 1 分钟，METRICS_WINDOW）。
 // 窗口可切 1m/5m/15m/1h（/admin/metrics?window=），整分钟桶聚合：
 //   - QPS/错误率 = 纯计数跨桶相加，零误差；
@@ -162,7 +167,12 @@ type Obs struct {
 
 	// 流量统计（TRAFFIC_ANALYSIS D1）：TTL 秒数注册进配置中心（0=禁用），结果缓存常驻。
 	trafficCacheTTL int // *int 注册：OBS_TRAFFIC_CACHE_TTL
-	tcache          *trafficCache
+
+	tcache *trafficCache
+
+	// 统计 SQL 超时（防慢查询无限占用连接）：经 QueryContext 下推取消。
+	// 固定 25 秒（见 trafficQueryTimeoutConst）：前端等待上限 30 秒，留 5 秒余量让后端先返回超时说明。
+	trafficQueryTimeout time.Duration
 
 	// access_log 自动清理（DB 后端专用，数据保留见 DATA_DICT 维护约定）：
 	// 默认不开启，未开启时登录管理后台有警告提示。
@@ -208,6 +218,7 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	if err := cfgMgr.Register(&o.trafficCacheTTL, "OBS_TRAFFIC_CACHE_TTL", "900", "流量统计结果缓存 TTL（秒；缺省 900=15 分钟，0=禁用缓存）", "统计为按需 SQL 聚合，缓存防大表重复聚合拖库；命中时响应 computed_at 保持首次计算时刻；可在 WebUI 流量统计卡「清空缓存」手动失效"); err != nil {
 		log.Warn("obs: 注册配置项失败", "name", "OBS_TRAFFIC_CACHE_TTL", "err", err)
 	}
+	o.trafficQueryTimeout = trafficQueryTimeoutConst
 	o.tcache = newTrafficCache()
 	o.sink.Store(NewAsyncStore(o.buildStore()))
 	return o

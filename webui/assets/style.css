@@ -1394,11 +1394,12 @@ tr.dt-row-clickable.is-error td { background: var(--row-error); }
   font-size: 13px;
 }
 .db-statusbar .mono { font-size: 14px; }
+/* 数据/索引列的占比条：各自按本列已统计合计为分母（数据列按数据合计、索引列按索引合计） */
 .db-size-bar {
   width: 100%; max-width: 220px; height: 6px; margin-top: 4px;
   background: var(--panel-2); border-radius: 3px; overflow: hidden;
 }
-.db-size-bar-fill { height: 100%; background: #4c8bf5; border-radius: 3px; }
+.db-size-bar-fill { height: 100%; background: var(--primary); border-radius: 3px; }
 
 /* ---------- 31. 全局配置搜索工具栏 ---------- */
 .cfg-searchbar { padding: 10px 14px; }
@@ -1443,3 +1444,44 @@ tr.dt-row-clickable.is-error td { background: var(--row-error); }
 .geo-panels { display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap; }
 .geo-panels .geo-map-box { flex: 1 1 420px; min-width: 320px; }
 .geo-panels .geo-rank { flex: 0 1 340px; min-width: 260px; max-height: 340px; overflow: auto; }
+
+/* ---------- 统一加载提示（耗时接口请求中：首次加载/切换范围/重试/刷新同一呈现） ---------- */
+.load-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 28px 8px;
+  color: var(--text-2);
+  font-size: 14px;
+}
+.load-spin {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: loadSpin .8s linear infinite;
+}
+@keyframes loadSpin { to { transform: rotate(360deg); } }
+/* 加载浮层：有旧数据时叠加在原内容上方的加载中呈现（与 load-hint 同一提示组件，
+   纯 HTML/CSS 结构，同一页面可在多个视图容器中同时显示）。外层须为 .load-wrap。 */
+.load-wrap { position: relative; }
+.load-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+  border-radius: 8px;
+}
+.load-overlay .load-hint {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 18px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .08);
+}

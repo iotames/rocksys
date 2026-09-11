@@ -5,7 +5,7 @@
 //  2. 公开路径：/admin/auth/status|login|register|reset 免鉴权（handler 内部校验前置条件）；
 //  3. 静态预共享 token（ROCKSYS_ADMIN_TOKEN，供 rockctl/脚本使用）；
 //  4. 登录 JWT（已初始化时校验）；
-//  非回环地址下静态 token 与 JWT 双轨并行，任一通过即放行；未初始化且无静态 token → 拒绝（仅注册引导可用）。
+//     非回环地址下静态 token 与 JWT 双轨并行，任一通过即放行；未初始化且无静态 token → 拒绝（仅注册引导可用）。
 package adminapi
 
 import (

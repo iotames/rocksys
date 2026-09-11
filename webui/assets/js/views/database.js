@@ -35,6 +35,7 @@
   const state = {
     loaded: false,      // 首次进入拉取后为 true（路由往返走缓存渲染，手动刷新才重拉）
     checking: false,    // 检查请求进行中（按钮防重）
+    executing: false,   // 执行 SQL 请求进行中（danger DDL 防抖：不可回滚，禁止并发下发）
     driver: '',         // 数据方言（后端返回，如 sqlite/mysql/postgres）
     items: [],          // 差异列表（level A-F）
     sql: '',            // 后端按自动项生成的 SQL（预填编辑器）
@@ -42,10 +43,12 @@
     tab: 'schema',      // 当前页签：'schema' 表同步 | 'overview' 表概览 | 'history' SQL历史
     hist: {             // 执行历史（服务端分页）
       loaded: false, loading: false,
+      failed: false, err: '',   // 失败态与空态区分：加载失败不得渲染成「暂无执行记录」
       items: [], total: 0, offset: 0,
     },
     size: {             // 空间占用（公共状态区 + 数据表概览页签共用）
-      loaded: false, loading: false,
+      loaded: false, loading: false, failed: false,
+      calcTable: '',    // 正在按需计算占用的表名（逐表精确占用，避免全库页遍历）
       totalBytes: 0, tables: [],
     },
     geo: {              // GeoIP 历史回填（TRAFFIC_ANALYSIS 增量：两表 country/city 缺失行批量补齐）
@@ -154,13 +157,21 @@
       { key: 'name', label: '表名', cls: 'mono', render: r => '<span class="log-path" title="' + esc(r.name) + '">' + esc(truncate(r.name, 40)) + '</span>' },
       { key: 'comment', label: '表备注', render: r => esc(r.comment || '—') },
       { key: 'rows', label: '数据条数', cls: 'mono', render: r => esc(fmtIntNA(r.rows)) },
-      { key: 'bytes', label: '占用空间', render: r => {
-          if (!r.bytes) return '<span class="muted">—</span>';
-          const pct = state.size.totalBytes > 0 ? Math.min(100, (r.bytes / state.size.totalBytes) * 100) : 0;
-          return '<span class="mono">' + esc(fmtBytes(r.bytes)) + '</span>' +
-            '<div class="db-size-bar" title="占库内总空间 ' + (pct >= 1 ? pct.toFixed(1) : '<1') + '%">' +
-            '<div class="db-size-bar-fill" style="width:' + pct + '%"></div></div>';
+      // 占用空间拆两列：数据 / 索引（SQLite 表 B-tree 含溢出页；MySQL 聚簇索引与二级索引；PG 表堆与索引）。
+      // 未计算的表在两列统一以「计算」按钮呈现（SQLite 逐表占用需遍历页树，约数秒~数十秒）。
+      // 占比条各自同口径：数据列按「已统计数据合计」、索引列按「已统计索引合计」，两列不共用分母。
+      { key: 'data_bytes', label: '数据', render: r => {
+          if (!r.bytes_known) {
+            // 计算是全局串行的（一次只允许一张表在算）：任何一行在算时其余行一并禁用，
+            // 否则点击被静默忽略，用户以为页面卡死。
+            const calc = state.size.calcTable;
+            const me = calc === r.name;
+            return '<button class="btn btn-sm" data-act="db-table-size" data-table="' + esc(r.name) + '"' +
+              (calc ? ' disabled' : '') + '>' + (me ? '计算中…' : '计算') + '</button>';
+          }
+          return sizeCellHTML(r.data_bytes, 'data_bytes', r, '数据');
         } },
+      { key: 'index_bytes', label: '索引', render: r => r.bytes_known ? sizeCellHTML(r.index_bytes, 'index_bytes', r, '索引') : '<span class="muted">—</span>' },
     ],
     paging: { mode: 'client' },
     emptyText: '库内暂无业务表',
@@ -170,6 +181,24 @@
   function fmtIntNA(n) {
     n = Number(n) || 0;
     return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  // 数据/索引单元格：数值 + 各自口径的占比条。
+  // 分母按列同口径求和（数据列=已统计表的数据合计，索引列=已统计表的索引合计），
+  // 且只统计 bytes_known 的表——未计算的表不计入分母，避免把「未统计」当成小表。
+  function sizeCellHTML(part, key, r, label) {
+    const known = (state.size.tables || []).filter(t => t.bytes_known);
+    const denom = known.reduce((s, t) => s + (Number(t[key]) || 0), 0);
+    const pct = denom > 0 ? Math.min(100, (Number(part) / denom) * 100) : 0;
+    const total = Number(r.bytes) || 0;
+    const share = total > 0 ? (Number(part) / total * 100) : 0;
+    const title = label + ' ' + fmtBytes(part) +
+      '：占已统计 ' + known.length + ' 张表的' + label + '合计（' + fmtBytes(denom) + '）的 ' +
+      (pct >= 1 ? pct.toFixed(1) : '<1') + '%；占该表合计（' + fmtBytes(total) + '）的 ' +
+      (share >= 1 ? share.toFixed(1) : '<1') + '%';
+    return '<span class="mono">' + esc(fmtBytes(part)) + '</span>' +
+      '<div class="db-size-bar" title="' + esc(title) + '">' +
+      '<div class="db-size-bar-fill" style="width:' + pct.toFixed(2) + '%"></div></div>';
   }
 
   // 首次进入挂分页控件事件（页容器为持久元素）
@@ -216,8 +245,8 @@
     return '<div class="comp-actions" style="margin-bottom:12px">' +
       '<button class="btn btn-primary" data-act="db-check"' + (state.checking ? ' disabled' : '') + '>' +
       (state.checking ? '检查中…' : '表结构检查') + '</button>' +
-      '<button class="btn btn-danger" data-act="db-exec"' + (hasSQL ? '' : ' disabled') +
-      ' title="执行编辑器中的 SQL 语句（直接作用于当前数据库）">执行SQL</button>' +
+      '<button class="btn btn-danger" data-act="db-exec"' + (hasSQL && !state.executing ? '' : ' disabled') +
+      ' title="执行编辑器中的 SQL 语句（直接作用于当前数据库）">' + (state.executing ? '执行中…' : '执行SQL') + '</button>' +
       '</div>';
   }
 
@@ -233,7 +262,8 @@
         '<div class="card-title">SQL 预览与执行' +
         '<span class="comp-actions">' +
         '<button class="btn btn-sm" data-act="db-copy-sql">复制</button>' +
-        '<button class="btn btn-sm btn-danger" data-act="db-exec"' + (state.sql.trim() ? '' : ' disabled') + '>执行SQL</button>' +
+        '<button class="btn btn-sm btn-danger" data-act="db-exec"' + (state.sql.trim() && !state.executing ? '' : ' disabled') + '>' +
+        (state.executing ? '执行中…' : '执行SQL') + '</button>' +
         '</span></div>' +
         codeEditor.html(EDITOR_ID, { lang: 'sql', height: '320px', value: state.sql }) +
         '<div class="form-hint" style="margin-top:8px">已按自动差异（缺表 / 缺列 / 缺索引）预填生成 SQL，可自由编辑（如只保留部分语句、手工补写救急语句）；非自动差异（PK/UNIQUE/自增列、类型不一致、多余对象）不自动生成，请参考差异表建议人工处理。</div>' +
@@ -274,7 +304,7 @@
         onChange: function (src) {
           state.sql = src;
           const btn = document.querySelector('#page-database [data-act="db-exec"]');
-          if (btn) btn.disabled = !src.trim();
+          if (btn) btn.disabled = state.executing || !src.trim();
         },
       });
     }
@@ -283,22 +313,54 @@
   // ── 空间占用：公共状态区（页签上方，总空间常驻）+ 数据表概览页签 ─────────┐
 
   // 拉取空间占用统计（GET /admin/db/size，只读；页面加载与概览页签刷新共用）
+  // 该端点为精确统计（大库 COUNT(*) 秒级~十秒级），显式放宽超时到 60 秒，避免被默认 5 秒误掐断。
+  // force=true 表示用户主动触发（点「加载」/「⟳」）：失败必须给出统一报错提示；
+  // 自动加载（页面进入）失败仅在服务端有响应时提示，网络不可达静默并由状态栏占位承载。
   async function loadSize(force) {
     if (state.size.loading) return;
     if (state.size.loaded && !force) { render(); return; }
     state.size.loading = true;
     render();
     try {
-      const res = await api.get('/admin/db/size');
+      const res = await api.get('/admin/db/size', 60000);
       state.size.totalBytes = Number(res.total_bytes) || 0;
       state.size.tables = Array.isArray(res.tables) ? res.tables : [];
       state.size.loaded = true;
+      state.size.failed = false;
     } catch (e) {
-      if (e.status !== 0) {
-        toast('空间统计查询失败：' + e.message + '。请确认数据连接正常后重试', 'error');
+      state.size.failed = true;
+      if (force || e.status !== 0) {
+        toast('空间统计查询失败：' + e.message + '。请确认数据连接正常后点「重试」', 'error');
       }
     }
     state.size.loading = false;
+    render();
+  }
+
+  // 单表精确占用按需计算（GET /admin/db/table_size）：SQLite 下逐表占用需遍历全库页树
+  // （大库首次数秒~数十秒），故不随页面默认统计；用户点「计算」时才触发，结果服务端缓存 10 分钟。
+  async function calcTableSize(table) {
+    if (!table || state.size.calcTable) return;
+    state.size.calcTable = table;
+    render();
+    try {
+      const res = await api.get('/admin/db/table_size?table=' + encodeURIComponent(table), 120000);
+      const bytes = Number(res && res.bytes) || 0;
+      const data = Number(res && res.data_bytes) || 0;
+      const idx = Number(res && res.index_bytes) || 0;
+      let hit = false;
+      (state.size.tables || []).forEach(function (t) {
+        if (t.name === table) {
+          t.bytes = bytes; t.data_bytes = data; t.index_bytes = idx; t.bytes_known = true; hit = true;
+        }
+      });
+      if (!hit) loadSize(true); // 表清单已变化，重拉一次保证一致
+      toast(table + ' 占用空间：数据 ' + fmtBytes(data) + ' + 索引 ' + fmtBytes(idx) + ' = ' + fmtBytes(bytes) +
+        (res && res.cached ? '（服务端缓存）' : ''), 'success');
+    } catch (e) {
+      toast('「' + table + '」占用空间计算失败：' + e.message + '。可稍后点「计算」重试', 'error');
+    }
+    state.size.calcTable = '';
     render();
   }
 
@@ -306,11 +368,14 @@
   function sizeBarHTML() {
     const sz = state.size;
     let inner;
-    if (!sz.loaded && !sz.loading) {
+    if (sz.loading) {
+      inner = '<span class="muted">空间统计中…</span>';
+    } else if (sz.failed) {
+      inner = '<span class="muted">空间占用：加载失败</span>' +
+        '<button class="btn btn-sm" data-act="db-size-refresh">重试</button>';
+    } else if (!sz.loaded) {
       inner = '<span class="muted">空间占用：未加载</span>' +
         '<button class="btn btn-sm" data-act="db-size-refresh">加载</button>';
-    } else if (sz.loading) {
-      inner = '<span class="muted">空间统计中…</span>';
     } else {
       inner = '<span>数据库占用总空间：<b class="mono">' + esc(fmtBytes(sz.totalBytes)) + '</b></span>' +
         '<span class="tag tag-blue">' + sz.tables.length + ' 张业务表</span>' +
@@ -324,10 +389,27 @@
     const sz = state.size;
     let html = '<div class="card"><div class="card-title">数据表概览' +
       '<span class="comp-actions"><button class="btn btn-sm" data-act="db-size-refresh"' +
-      (sz.loading ? ' disabled' : '') + '>⟳ 刷新</button></span></div>' +
-      '<div class="form-hint" style="margin-bottom:8px">数据条数为精确统计（动态 COUNT(*)）；占用空间为数据+索引合计，' +
-      (state.driver === 'mysql' ? 'MySQL 下为 InnoDB 估算（以系统表为准）' : '取自数据库系统表') + '。</div>' +
-      overviewTable.html(sz.loaded || sz.tables.length ? sz.tables : []);
+      (sz.loading ? ' disabled' : '') + '>' + (sz.loaded ? '⟳ 刷新' : '加载') + '</button></span></div>' +
+      '<div class="form-hint" style="margin-bottom:8px">数据条数为精确统计（动态 COUNT(*)）；总占用取自数据库系统表。' +
+      '占用空间按「数据 + 索引」两列拆分：' +
+      (state.driver === 'sqlite'
+        ? 'SQLite 表数据为表 B-tree 页（含大字段溢出页），索引为各索引 B-tree 之和；逐表占用需遍历全库页树（大库首次数秒~数十秒），故按需点「计算」触发，结果服务端缓存 10 分钟。'
+        : state.driver === 'mysql'
+          ? 'MySQL/InnoDB 数据取 DATA_LENGTH（聚簇索引即数据本体），索引取 INDEX_LENGTH（二级索引）；碎片页 DATA_FREE 不计入。'
+          : 'PostgreSQL 数据取表堆主体，索引取该表全部索引；不含 TOAST（合计口径含 TOAST，故可能略大于两列之和）。') + '</div>';
+    // 三态区分（避免把「尚未加载」误报成「库里没有表」）：
+    // 未加载 → 引导加载；加载失败 → 行内错误 + 重试；已加载且为空 → 才是真的无业务表。
+    if (sz.loading) {
+      html += '<div class="load-hint"><span class="load-spin"></span>空间统计中，大库首次统计需数秒</div>';
+    } else if (sz.failed) {
+      html += Rock.comp.empty.emptyCard({ text: '空间占用统计加载失败（表清单与占用空间暂不可用）', br: true,
+        action: '<button class="btn btn-sm btn-primary" data-act="db-size-refresh">重试</button>' });
+    } else if (!sz.loaded) {
+      html += Rock.comp.empty.emptyCard({ text: '尚未加载空间占用（表清单、数据条数与占用空间按需统计，避免打开页面即对大库做全量统计）', br: true,
+        action: '<button class="btn btn-sm btn-primary" data-act="db-size-refresh">加载</button>' });
+    } else {
+      html += overviewTable.html(sz.tables);
+    }
     html += '</div>';
     html += geoSyncHTML();
     return html;
@@ -352,7 +434,10 @@
       '<span class="tag tag-blue">维护工具</span></div>' +
       '<div class="form-hint" style="margin-bottom:8px">对 access_log / shield_event 中「有 IP 但国家/城市缺失」的历史行，' +
       '按当前已加载的 mmdb 数据批量回填 country / city。只补缺失行，不影响已有值；' +
-      '私网/回环等无地理信息的 IP 会跳过并计数。回填后流量统计的地理位置分布即覆盖历史数据。</div>' +
+      '私网/回环等无地理信息的 IP 会跳过并计数。回填分批执行（断点续填）：每趟有服务端时间上限' +
+      '（约 20 秒），到点返回已完成进度；再次点击即从断点继续，' +
+      '多趟累计完成全量回填。' +
+      '回填后流量统计的地理位置分布即覆盖历史数据。</div>' +
       body + '</div>';
   }
 
@@ -369,8 +454,8 @@
     state.geo.running = true;
     render();
     try {
-      // 批量回填耗时随缺失数据量增长，放宽到 60 秒（默认 5 秒会误报超时）
-      const r = await api.post('/admin/db/geoip_sync', 60000)();
+      // 单趟时间上限由服务端固定 20 秒预算控制（到点即返回已完成进度），前端等待上限 30 秒仅作兜底。
+      const r = await api.post('/admin/db/geoip_sync', 30000)();
       if (r && r.ok === false) throw new Error(r.err || '回填失败');
       state.geo.result = r || { text: '完成' };
       state.geo.error = null;
@@ -379,7 +464,8 @@
     } catch (e) {
       state.geo.error = e.message || '回填失败';
       // mmdb 提示仅在服务端真返回 503（geo 未就绪）时附带，避免误导
-      const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务' : '';
+      const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务'
+        : '。回填分批执行，已完成的批次已写入，稍候再次点击即从断点继续';
       toast('GeoIP 回填失败：' + state.geo.error + hint, 'error');
     }
     state.geo.running = false;
@@ -400,9 +486,13 @@
       state.hist.items = Array.isArray(res.items) ? res.items : [];
       state.hist.total = Number(res.total) || 0;
       state.hist.loaded = true;
+      state.hist.failed = false;
+      state.hist.err = '';
     } catch (e) {
+      state.hist.failed = true;
+      state.hist.err = e.message || '未知错误';
       if (e.status !== 0) {
-        toast('执行历史查询失败：' + e.message + '。请确认数据连接正常后点「⟳ 刷新」重试', 'error');
+        toast('执行历史查询失败：' + state.hist.err + '。请确认数据连接正常后点「⟳ 刷新」重试', 'error');
       }
     }
     state.hist.loading = false;
@@ -411,10 +501,23 @@
 
   function histHTML() {
     const h = state.hist;
+    // 三态区分（加载失败 ≠ 没有记录，审计场景不得误导）：失败且无数据 → 错误卡 + 重试出口；
+    // 失败但有旧页数据 → 展示旧数据并标注本次刷新失败；成功无记录 → 空态文案。
+    if (h.failed && !h.items.length) {
+      return '<div class="card"><div class="card-title">SQL 执行历史</div>' +
+        Rock.comp.empty.message({
+          text: '执行历史加载失败' + (h.err ? '：' + h.err : '') +
+            '。这不代表没有执行记录，请确认数据库连接正常后重试',
+          br: true,
+          action: '<button class="btn btn-sm btn-primary" data-act="db-hist-refresh">重试</button>',
+        }) + '</div>';
+    }
     let html = '<div class="card"><div class="card-title">SQL 执行历史' +
       '<span class="tag tag-gray">每条语句一行 · 完整留痕</span>' +
       '<span class="comp-actions"><button class="btn btn-sm" data-act="db-hist-refresh"' +
       (h.loading ? ' disabled' : '') + '>⟳ 刷新</button></span></div>' +
+      (h.failed ? '<div class="form-hint" style="color:var(--danger,#c0392b)">本次刷新失败（' +
+        esc(h.err) + '），以下为上次结果</div>' : '') +
       '<div class="form-hint" style="margin-bottom:8px">记录「执行SQL」的每条语句：时间、批次、原文、结果与耗时，永久保留，可审计追溯。</div>' +
       histTable.html(h.loaded || h.items.length ? h.items : []);
     if (h.total > HIST_PAGE_SIZE) {
@@ -463,6 +566,7 @@
 
   // 「执行SQL」：danger 强确认 → POST /admin/db/exec → 逐条结果（失败标红 + 常驻 toast 引导复核）
   async function execSQL() {
+    if (state.executing) return; // 防抖：上一批 DDL 未返回前拒绝重复下发（不可回滚，二次下发是事故）
     const sql = codeEditor.value(EDITOR_ID).trim();
     if (!sql) { toast('编辑器内容为空：请先执行「表结构检查」生成 SQL，或手工输入要执行的语句', 'warning'); return; }
     const n = countStatements(sql);
@@ -476,6 +580,9 @@
       width: 480,
     });
     if (!ok) return;
+    // 确认后到响应返回之间按钮必须保持禁用（防连点二次下发）
+    state.executing = true;
+    render();
     try {
       const res = await api.post('/admin/db/exec')({ sql: sql });
       state.exec = {
@@ -498,8 +605,11 @@
       }
     } catch (e) {
       toast('SQL 执行请求失败：' + e.message + '。请确认服务可达后重试', 'error');
+      state.executing = false;
+      render();
       return;
     }
+    state.executing = false;
     state.hist.loaded = false;  // 执行后失效缓存：下次进执行历史页签重拉（含本次留痕）
     state.size.loaded = false; // 表结构可能已变（建表/加列）：空间统计一并失效
     render();
@@ -535,13 +645,14 @@
         if (tab === state.tab) return;
         state.tab = tab;
         if (tab === 'history' && !state.hist.loaded) loadHist();
-        else if (tab === 'overview' && !state.size.loaded) loadSize();
+        else if (tab === 'overview' && (!state.size.loaded || state.size.failed)) loadSize();
         else render();
       },
       'db-check': function () { check(); },
       'db-exec': function () { execSQL(); },
       'db-copy-sql': function () { copySQL(); },
       'db-size-refresh': function () { loadSize(true); },
+      'db-table-size': function (el) { calcTableSize(el.getAttribute('data-table') || ''); },
       'db-geoip-sync': function () { runGeoSync(); },
       'db-hist-refresh': function () { state.hist.offset = 0; loadHist({ force: true }); },
       'db-hist-prev': function () {
