@@ -3,7 +3,7 @@
 -- 参数顺序：from, to, path, path, path_like, path_like, trace_id, trace_id,
 --           status_group, status_group, only_error, sort_code, sort_code, limit, offset
 SELECT id, time, trace_id, tenant_id, path, method, client_ip, status_code, upstream,
-       shield_ms, biz_ms, total_ms, egress_ms, req_bytes, resp_bytes, extra
+       shield_ms, biz_ms, total_ms, egress_ms, req_bytes, resp_bytes, user_agent, country, city, extra
 FROM {table}
 WHERE time >= ? AND time <= ?
   AND (? = '' OR path = ?)

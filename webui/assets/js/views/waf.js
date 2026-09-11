@@ -83,6 +83,8 @@
         { key: 'time', label: '时间', render: r => esc(fmtDateTime(r.time)) },
         { key: 'trace_id', label: '链路 ID' },
         { key: 'client_ip', label: '来源 IP' },
+        { key: 'country', label: '来源国家', render: r => esc(r.country || '未知') },
+        { key: 'city', label: '来源省市', render: r => esc(r.city || '未知') },
         { key: 'method', label: '方法' },
         { key: 'path', label: '路径', pre: true, copy: true },
         { key: 'status_code', label: '状态码' },

@@ -198,6 +198,13 @@ func (h *AdminHandler) Events(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	if len(rows) == 0 {
+		// 空结果也须显式提交响应：EasyServer 链尾以「是否调用过 Write/WriteHeader」判定响应是否
+		// 已写，只设头不写体会被判为未处理而回退 404 JSON（HTTP 状态仍是 200），前端按 NDJSON
+		// 解析该 404 对象会渲染出一行幽灵明细。空结果应返回 200 + 空体（前端解析得空列表）。
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	enc := json.NewEncoder(w)
 	// 逐行附「是否在黑名单」标记（与 stats TOP 同源：内存快照 InBlacklist，支持 CIDR，零 DB 查询），
 	// 供 WebUI 拦截明细行内「IP封禁」按钮置灰（已在黑名单的行禁选）。

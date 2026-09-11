@@ -69,6 +69,7 @@
       { key: 'path', label: '路径', render: r => '<span class="log-path" title="' + esc(r.path) + '">' + esc(truncate(r.path, 60)) + '</span>' },
       { key: 'status_code', label: '状态', render: r => { const st = r.status_code; const cls = st >= 500 ? 'status-red' : (st >= 400 ? 'status-warn' : (st >= 300 ? 'status-info' : (st >= 200 ? 'status-ok' : ''))); return '<span class="status ' + cls + '">' + (st || '-') + '</span>'; } },
       { key: 'total_ms', label: '耗时', cls: 'mono', render: r => esc(r.total_ms) + 'ms' },
+      { key: 'geo', label: '地区', render: r => esc(geoText(r)) },
     ],
     rowClass: r => (Number(r.status_code) >= 400 ? 'is-error' : ''),
     rowKey: r => (r.time || '') + '|' + (r.trace_id || ''),
@@ -97,6 +98,9 @@
       egress_ms: Number(r.egress_ms) || 0,
       req_bytes: Number(r.req_bytes) || 0,
       resp_bytes: Number(r.resp_bytes) || 0,
+      user_agent: r.user_agent || '',
+      country: r.country || '',
+      city: r.city || '',
       extras: r, // 保留扩展维度（负载字段如 request_body），详情展开时平铺展示
     };
   }
@@ -179,7 +183,13 @@
   }
 
   // 详情字段：核心字段 + 扩展维度（extra 平铺字段，非核心字段自动列出）
-  const KNOWN = new Set(['time', 'trace_id', 'tenant_id', 'path', 'method', 'client_ip', 'status_code', 'upstream', 'shield_ms', 'biz_ms', 'total_ms', 'egress_ms', 'req_bytes', 'resp_bytes']);
+  const KNOWN = new Set(['time', 'trace_id', 'tenant_id', 'path', 'method', 'client_ip', 'status_code', 'upstream', 'shield_ms', 'biz_ms', 'total_ms', 'egress_ms', 'req_bytes', 'resp_bytes', 'user_agent', 'country', 'city']);
+
+  // 地区展示：国家（ISO 码）/省市 拼接；均空时占位「未知」（与 WAF 页 geo 缺失约定一致）
+  function geoText(r) {
+    const parts = [String(r.country || '').trim(), String(r.city || '').trim()].filter(Boolean);
+    return parts.length ? parts.join('/') : '未知';
+  }
 
   // 耗时分段条：入网（蓝）→ 转发（业务）（绿）→ 出网（橙），段宽 = 段耗时/总耗时；
   // 0ms 段不渲染，非零但不足 1px 的段由 CSS min-width:1px 保底；总耗时为 0 时整条置灰。
@@ -210,6 +220,9 @@
       { key: 'trace_id', label: '请求标识', copy: true },
       { key: 'tenant_id', label: '租户' },
       { key: 'client_ip', label: '请求来源', copy: true },
+      { key: 'country', label: '客户端国家', render: row => esc(row.country || '未知') },
+      { key: 'city', label: '客户端省市', render: row => esc(row.city || '未知') },
+      { key: 'user_agent', label: '客户端 User-Agent', pre: true, copy: true, render: row => esc(row.user_agent || '未知') },
       { key: 'method', label: '方法' },
       { key: 'path', label: '路径', pre: true, copy: true },
       { key: 'status_code', label: '状态码' },
