@@ -362,6 +362,58 @@ func TestAdminLogs(t *testing.T) {
 	}
 }
 
+// commitTrackingRecorder 记录 handler 是否显式提交过响应（是否调用过 WriteHeader/Write）。
+// 用途：EasyServer 链尾以 writtenWriter 的 Write/WriteHeader 调用判定「响应是否已写」，
+// 只设响应头不写体者会被判为未处理而回退 404 JSON（HTTP 状态仍是 200），前端按 NDJSON
+// 解析该 404 对象会渲染出一行幽灵日志（详见 TestAdminLogsEmptyResultCommitsResponse）。
+type commitTrackingRecorder struct {
+	httptest.ResponseRecorder
+	committed bool
+}
+
+func newCommitTrackingRecorder() *commitTrackingRecorder {
+	return &commitTrackingRecorder{ResponseRecorder: *httptest.NewRecorder()}
+}
+
+func (c *commitTrackingRecorder) WriteHeader(code int) {
+	c.committed = true
+	c.ResponseRecorder.WriteHeader(code)
+}
+
+func (c *commitTrackingRecorder) Write(b []byte) (int, error) {
+	c.committed = true
+	return c.ResponseRecorder.Write(b)
+}
+
+// 空结果回归：无匹配日志时 handler 必须显式提交响应（200 + 空体），不得被链尾回退为 404。
+func TestAdminLogsEmptyResultCommitsResponse(t *testing.T) {
+	o, _ := newTestObs(t)
+	if err := o.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mgr := hotswap.NewManager(chain.New(), nil)
+	mgr.RegisterMiddleware(o)
+	h := NewAdminHandler(mgr)
+
+	// 远离当前时间的历史区间 → 保证无匹配日志。
+	req := httptest.NewRequest(http.MethodGet, "/admin/logs?from=2000-01-01&to=2000-01-02", nil)
+	rec := newCommitTrackingRecorder()
+	h.Logs(rec, req)
+
+	if !rec.committed {
+		t.Fatal("空结果时 handler 未显式提交响应，会被 EasyServer 链尾回退为 404 JSON")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("空结果状态码 = %d，期望 200", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("空结果应返回空体，实际 body=%q", rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Total-Count"); got != "0" {
+		t.Errorf("空结果 X-Total-Count = %q，期望 0", got)
+	}
+}
+
 // /admin/logs 非法时间参数 → 400。
 func TestAdminLogsBadParams(t *testing.T) {
 	o, _ := newTestObs(t)
