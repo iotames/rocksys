@@ -92,7 +92,7 @@ GeoIP 同步卡（`database.js:420 geoSyncHTML`，`overviewHTML()` 末尾 `datab
 }
 ```
 
-- `Code` = `md5(Dsn)`（`dsn` 包生成，唯一定位）；`Name` 人工连接名（唯一，迁移目标按名引用）；`DriverName` ∈ {sqlite, mysql, postgres}（须为已注册驱动）；`Dsn` 完整连接串（含密码，本机明文，UI 脱敏展示）。
+- `Code` = `md5(Dsn)`（`dsn` 包生成，唯一定位）；`Name` 人工连接名（唯一，迁移目标按名引用）；`DriverName` ∈ {sqlite, mysql, postgres}（须为已注册驱动）；`Dsn` 完整连接串（含密码，本机明文，UI 脱敏展示）；`ActiveCode` 由底座维护（首次追加自动激活），本方案按 Code/Name 引用、**不依赖激活态**。
 
 **数据关系**：数据源 ↔ 迁移任务 = 按名/按 Code 引用（无外键，JSON 文件与内存任务解耦）；迁移目标库的表结构 ← 内嵌 SQL 源（与运行库表同步同源）。
 
@@ -117,7 +117,7 @@ GeoIP 同步卡（`database.js:420 geoSyncHTML`，`overviewHTML()` 末尾 `datab
 | `/admin/db/dsn/delete` | POST | 按 `code` 删除（该数据源有迁移任务进行中时拒绝） |
 | `/admin/db/dsn/test` | POST | `{driver, dsn}` 连通测试（`sql.Open`+`Ping`+版本查询；不落盘，可直接测试未保存的 DSN） |
 
-- 存储：`easydb/dsn.NewDsnConf(<CONF_DIR>/dsn.json)`——路径每次读写时按 `CONF_DIR` 当前生效值拼接（D11，支持热更）；写入走 `SaveDsnGroup`；**懒创建**：首次写入时目录/文件不存在则新建（读取时不存在视为空 `DsnGroup`，不报错）。
+- 存储：`easydb/dsn.NewDsnConf(<CONF_DIR>/dsn.json)`——路径每次读写时按 `CONF_DIR` 当前生效值拼接（D11，支持热更）；**不用 `dsn.GetDsnConf`**（其内部 `sync.Once` 单例会把首次实例永久复用，路径锁死首值，与热更语义冲突）；写入走 `SaveDsnGroup`；**懒创建**：首次写入时目录/文件不存在则新建（读取时不存在视为空 `DsnGroup`，不报错）。
 - 模块归属：数据源为管理面资源，handler 放 `internal/adminapi/dsn.go`，存储包装同文件（`internal` 不 import `plugins`，无越界）。
 
 ### 4.3 目标库表结构对齐（复用表同步链路）
@@ -133,7 +133,7 @@ GeoIP 同步卡（`database.js:420 geoSyncHTML`，`overviewHTML()` 末尾 `datab
 ### 4.4 数据迁移执行器（`internal/adminapi/migrate.go` 新增）
 
 - **执行模型**：后台 goroutine + 内存任务注册表（`sync.Mutex` 互斥，全局单任务）；context 取消支持；进度快照原子读。
-- **读（表输入）**：源连接流式 `SELECT * FROM <table>`（`rows.Next()` 迭代，database/sql 三方言驱动默认流式游标，无 OFFSET 翻页、无全量载入内存）；`rows.Columns()` 取源列名。
+- **读（表输入）**：源连接读 `SELECT * FROM <table>`（`rows.Next()` 逐行迭代、攒批即写，**应用层内存占用与表行数解耦**，只与批次大小相关；无 OFFSET 翻页、不依赖主键形态）；`rows.Columns()` 取源列名。注：PG/MySQL 协议下服务端仍会物化/推送完整结果集，超大表的源库侧影响见 §8 边界。
 - **攒批（Kettle batch）**：累计 `batchSize` 行（默认 1000；请求参数临时传入，服务端 clamp 100–10000，内存态不落盘——D5）。
 - **写（表输出）**：目标库**同名列**批量 `INSERT INTO t (col,…) VALUES (…),…`，每批一个事务（批次 = 事务粒度）；源有而目标无的列 → 报错终止该表并提示「先执行表结构对齐」；类型经 `database/sql` 原生传递（时间/字节/数值由驱动双方方言自适应，D6 同名字段直迁）。
 - **占位符预算与切子批**（D17）：参数化 INSERT 的占位符数 = 列数 × 行数，三方言硬上限为 SQLite 32766、PG/MySQL 65535（协议 16 位计数），批次过大必撞限整批报错，且单纯下调批次上限治不了标（33 列 × 1000 行即超 SQLite）；执行器按预算常量 `migratePlaceholderBudget = 30000`（三方言通用、留余量）自适应切子批——子批行数 = 预算 ÷ 列数（至少 1 行），每子批一条参数化 INSERT、**共享同一事务**，事务边界/取消/进度语义不变，用户无感知。
@@ -222,5 +222,6 @@ GeoIP 同步卡（`database.js:420 geoSyncHTML`，`overviewHTML()` 末尾 `datab
 - `<CONF_DIR>/dsn.json` 含 DSN 明文密码：本机文件与 `bin/.env` 同级安全边界，不入库不入 git（bin/ 已在忽略约定内）。
 - `CONF_DIR` 变更后原位置 `dsn.json` 不自动搬迁（需手工移动，否则按新位置视为空配置）。
 - 表清单来源=期望结构业务表：源库中不在期望结构的表不参与迁移（边界内语义，页面文案注明）。
+- 源库读侧：应用层逐行流式（内存占用与表行数解耦），但 PG/MySQL 协议特性使服务端仍会物化/推送完整结果集——超大表迁移需评估源库侧内存与连接占用（本期不做游标式真流式与分页降级）。
 
 **验收结论**（待实施与终验后回填）
