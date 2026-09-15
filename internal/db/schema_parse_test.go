@@ -239,6 +239,32 @@ ALTER TABLE t ADD COLUMN title TEXT NOT NULL DEFAULT '';
 	}
 }
 
+// TestSplitStatementsTrailingCommentSemicolon 行尾注释吞终止符回归：语句以
+// 「-- 注释;」收尾时，注释内行尾分号即终止符——不切分会把本语句与下一条语句
+// 融合为一段（目标库逐条执行报 near "CREATE"，实测踩坑于 shield_event 索引脚本）。
+func TestSplitStatementsTrailingCommentSemicolon(t *testing.T) {
+	sqlText := `CREATE INDEX IF NOT EXISTS idx_tail ON t(col) -- 统计聚合复合索引（说明;含分号）;
+CREATE TABLE IF NOT EXISTS next_t (
+    id INTEGER PRIMARY KEY
+);
+`
+	got := SplitStatements(sqlText)
+	if len(got) != 2 {
+		t.Fatalf("行尾注释分号应切分，got %d 条: %#v", len(got), got)
+	}
+	if !strings.HasPrefix(got[0], "CREATE INDEX") {
+		t.Errorf("第一条应为 CREATE INDEX（含行尾注释），got %q", got[0])
+	}
+	if !strings.Contains(got[1], "CREATE TABLE") {
+		t.Errorf("第二条应为 CREATE TABLE，got %q", got[1])
+	}
+	// 注释中部的分号不切分（防止误把注释内容拆成语句段）。
+	mid := "SELECT 1 -- 说明; 这里有分号但不该切\n;"
+	if got := SplitStatements(mid); len(got) != 1 {
+		t.Fatalf("注释中部分号不应切分，got %d 条: %#v", len(got), got)
+	}
+}
+
 // TestParseTableKeyColumnsConstraintName 词边界回归：CONSTRAINT 约束名含
 // UNIQUE/PRIMARY 字样的 CHECK 约束不得误判为键约束（否则列被误降 C 级需人工）。
 func TestParseTableKeyColumnsConstraintName(t *testing.T) {

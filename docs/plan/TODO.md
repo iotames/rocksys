@@ -19,7 +19,7 @@
 | 3 | data_migration/STEP3_表结构对齐.md | migrate/schema diff 预览 + schema_apply 任务化 | 1,2 | 已实施 |
 | 4 | data_migration/STEP4_数据迁移执行器.md | migrate.go 执行器（流式读/攒批/子批/冲突策略/序列重置）+ 三端点 | 3 | 已实施 |
 | 5 | data_migration/STEP5_GeoIP与SQL任务化.md | geoip_sync 后台任务化 + exec 后台执行开关 | 1 | 已实施 |
-| 6 | data_migration/STEP6_前端表数据页签.md | database.js 页签 + 四卡 + 共用提交→轮询组件（含页面恢复） | 1–5 | 待实施 |
+| 6 | data_migration/STEP6_前端表数据页签.md | database.js 页签 + 四卡 + 共用提交→轮询组件（含页面恢复） | 1–5 | 已实施 |
 | 7 | data_migration/STEP7_文档与终验.md | 文档同步 + 全量测试/vet/构建 + 浏览器实看 + 终验回写 | 6 | 待实施 |
 
 ## §2 执行期红线（自仓库法摘录，冲突时以仓库法原文为准）
@@ -40,3 +40,4 @@
 | 2026-09-15 | ZCode | STEP3 | 已实施：sqlite 目标真库 diff→apply→复检零差异全绿；拆句改用 SplitStatements |
 | 2026-09-15 | ZCode | STEP4 | 已实施：SQLite 双库真跑（行数/抽样/序列重置/宽表子批/clamp/整任务取消）全绿 |
 | 2026-09-15 | ZCode | STEP5 | 已实施：geoip_sync 任务化 + exec background 分支，构建/vet/单测全绿 |
+| 2026-09-15 | ZCode | STEP6 | 已实施：四卡+轮询组件浏览器实测通过；修复拆句吞终止符与后台执行开关复位两个真 bug |

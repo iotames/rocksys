@@ -116,6 +116,12 @@ func (st *tokenState) step(s string, i int) bool {
 		if c == '\n' {
 			st.inLine = false
 		}
+		// 行尾注释以「;」收尾（脚本惯例：语句 -- 注释;）时，该分号即语句终止符：
+		// 视为普通位置交外层切分——否则终止符被注释吞掉，本语句会与下一条语句
+		// 融合为一段，执行时报 near "CREATE"。仅认行尾分号，注释中部分号不切分。
+		if c == ';' && (i+1 >= len(s) || s[i+1] == '\n') {
+			return true
+		}
 		return false
 	case st.inBlock:
 		if c == '*' && i+1 < len(s) && s[i+1] == '/' {
