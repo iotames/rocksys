@@ -44,6 +44,12 @@ func doJSON(s *AdminServer, method, path, body string) *httptest.ResponseRecorde
 		s.handleMigrateSchema(w, r)
 	case PathMigrateSchemaApply:
 		s.handleMigrateSchemaApply(w, r)
+	case PathMigrateStart:
+		s.handleMigrateStart(w, r)
+	case PathMigrateStatus:
+		s.handleMigrateStatus(w, r)
+	case PathMigrateCancel:
+		s.handleMigrateCancel(w, r)
 	}
 	return w
 }

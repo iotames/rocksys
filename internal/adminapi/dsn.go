@@ -87,6 +87,15 @@ func (s *AdminServer) saveDsnGroup(g dsn.DsnGroup) error {
 	return nil
 }
 
+// getDsnByName 按连接名取数据源。
+func (s *AdminServer) getDsnByName(name string) (dsn.DataSource, bool) {
+	g, err := s.loadDsnGroup()
+	if err != nil {
+		return dsn.DataSource{}, false
+	}
+	return g.GetDSNByName(name)
+}
+
 // getDsnByCode 按 Code 取数据源（迁移/结构对齐按 Code 引用，供 migrate.go 复用）。
 func (s *AdminServer) getDsnByCode(code string) (dsn.DataSource, bool) {
 	g, err := s.loadDsnGroup()

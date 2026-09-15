@@ -73,6 +73,8 @@ type AdminServer struct {
 	dataDB       *db.DB              // 表结构同步数据连接（SetTableSpecs 注入，可 nil = 功能不可用）
 	tasks        *taskcenter.Center  // 任务执行中心（长任务统一注册/查询，纯内存随进程生命周期；New 内自建）
 	confDir      *string             // CONF_DIR 配置指针（全局配置目录，dsn.json 位置随其生效值实时拼接）
+	migMu        sync.Mutex          // migState 读写保护（迁移运行态被端点与任务 goroutine 共享）
+	migState     *migrateRunState    // 最近一次数据迁移任务的运行态（表级进度/取消标记，可 nil）
 	tableSpecs   []db.TableSpec      // 表结构同步表清单（装配处单一事实来源，SetTableSpecs 注入）
 	execLogOnce  sync.Once           // SQL 执行审计存储惰性构造（跟随 dataDB 生命周期）
 	execLog      *execLogStore       // SQL 执行审计存储（可 nil = 审计不可用）
@@ -241,6 +243,10 @@ func (s *AdminServer) registerBuiltin() {
 	// 目标库表结构对齐（数据迁移前置）：差异预览 GET，执行为后台任务 POST。
 	s.srv.AddHandler(http.MethodGet, PathMigrateSchema, check(func(ctx httpsvr.Context) { s.handleMigrateSchema(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodPost, PathMigrateSchemaApply, check(func(ctx httpsvr.Context) { s.handleMigrateSchemaApply(ctx.Writer, ctx.Request) }))
+	// 数据迁移：启动为危险操作走 POST，状态查询 GET，取消 POST。
+	s.srv.AddHandler(http.MethodPost, PathMigrateStart, check(func(ctx httpsvr.Context) { s.handleMigrateStart(ctx.Writer, ctx.Request) }))
+	s.srv.AddHandler(http.MethodGet, PathMigrateStatus, check(func(ctx httpsvr.Context) { s.handleMigrateStatus(ctx.Writer, ctx.Request) }))
+	s.srv.AddHandler(http.MethodPost, PathMigrateCancel, check(func(ctx httpsvr.Context) { s.handleMigrateCancel(ctx.Writer, ctx.Request) }))
 }
 
 // RegisterWebUI 注册 WebUI 静态资源（管理控制台）。
