@@ -231,8 +231,9 @@
   function maskOf(v) { return String(v == null ? '' : v) === '' ? '（空）' : '••••••••'; }
 
   function cfgSearchHTML() {
+    // 搜索框复用统一表单组件（放大镜图标由 .input-search 样式提供，各页只给占位文案）
     return '<div class="card cfg-searchbar"><div class="cfg-search-wrap">' +
-      '<input id="cfg-search" class="input" placeholder="🔍 搜索配置项 KEY / 标题，选择结果定位并编辑" autocomplete="off" spellcheck="false">' +
+      Rock.comp.form.search({ id: 'cfg-search', placeholder: '搜索配置项 KEY / 标题，选择结果定位并编辑' }) +
       '<div id="cfg-search-drop" class="cfg-search-drop" hidden></div>' +
       '</div></div>';
   }

@@ -21,6 +21,7 @@
   const confirmDialog = Rock.ui.confirmDialog;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const codeEditor = Rock.comp.codeEditor;
+  const form = Rock.comp.form;          // 统一表单控件（input/select/checkbox，禁裸控件与内联样式）
   const fmtDateTime = Rock.util.fmtDateTime;
   const truncate = Rock.util.truncate;
   const fmtBytes = Rock.util.fmtBytes;
@@ -62,6 +63,8 @@
       dsn: {              // 外部数据源列表与添加表单
         loaded: false, loading: false, failed: false, items: [],
         testing: false, testMsg: '',
+        // 表单值入状态：连通测试/列表刷新等会整卡重绘，输入内容只存 DOM 会被清空（须回显）
+        form: { name: '', driver: 'sqlite', dsn: '' },
       },
       align: {            // 目标库表结构对齐
         code: '', checking: false, checked: false, items: [], sql: '', applying: false,
@@ -80,11 +83,515 @@
   // 页面恢复：各卡加载时查 /admin/tasks，存在 created_by 匹配且 running 的任务即续上轮询，
   // 任务 ID 不落前端存储，切页签/刷新不失联。
 
-  // 任务轮询与耗时文案复用全局共用组件（Rock.ui.pollTask / findRunningTask / fmtTaskCost，
-  // 同一实现亦服务概览页的 GeoIP「立即同步」，避免两处各写一套轮询）。
+  // 任务轮询与耗时文案复用全局共用组件（Rock.ui.pollTask / findRunningTask / fmtTaskCost）：
+  // 同一实现亦服务概览页的 GeoIP「立即同步」，两页共用避免各写一套轮询。
   const pollTask = Rock.ui.pollTask;
   const findRunningTask = Rock.ui.findRunningTask;
   const fmtTaskCost = Rock.ui.fmtTaskCost;
+
+  // 差异分级展示配置：级别 → { label 差异类型, tag 分级标签（绿=自动/橙=需人工/灰=仅提示） }
+  const LEVEL_META = {
+    A: { label: '缺表', tag: '<span class="tag tag-green">自动</span>' },
+    B: { label: '缺普通列', tag: '<span class="tag tag-green">自动</span>' },
+    C: { label: '缺 PK/UNIQUE/自增列', tag: '<span class="tag tag-orange">需人工</span>' },
+    D: { label: '缺索引', tag: '<span class="tag tag-green">自动</span>' },
+    E: { label: '结构不一致', tag: '<span class="tag tag-gray">仅提示</span>' },
+    F: { label: '多余对象', tag: '<span class="tag tag-gray">仅提示</span>' },
+  };
+
+  // 差异结果表（client 模式实例；bind 一次挂在页容器上，重渲染不受影响）
+  const diffTable = Rock.comp.dataTable.create({
+    ns: 'db-diff',
+    columns: [
+      { key: 'table', label: '表' },
+      { key: 'object', label: '对象' },
+      { key: 'level', label: '差异类型', render: r => {
+          const m = LEVEL_META[r.level] || { label: r.level, tag: '<span class="tag tag-gray">未知</span>' };
+          return m.tag + ' <span class="muted">' + esc(m.label) + '</span>';
+        } },
+      { key: 'expected', label: '期望' },
+      { key: 'actual', label: '实际' },
+      { key: 'note', label: '建议' },
+    ],
+    paging: { mode: 'client' },
+    emptyText: '未发现差异',
+  });
+
+  // 执行结果表（client 模式；失败行标红复用 logs 页的 is-error 行样式）
+  const execTable = Rock.comp.dataTable.create({
+    ns: 'db-exec',
+    columns: [
+      { key: 'idx', label: '#', width: '48px', render: r => esc(r.idx) },
+      { key: 'sql', label: '语句' },
+      { key: 'ok', label: '结果', width: '120px', render: r => r.ok
+          ? '<span class="tag tag-green">成功</span>' + (r.rows != null ? ' <span class="muted">' + esc(String(r.rows)) + ' 行</span>' : '')
+          : '<span class="tag tag-orange">失败</span>' },
+      { key: 'error', label: '说明' },
+    ],
+    paging: { mode: 'client' },
+    rowClass: r => (r.ok ? '' : 'is-error'),
+    emptyText: '尚未执行',
+  });
+
+  // 执行历史表（client 模式展示当前页；分页由页内上一页/下一页按钮驱动服务端 offset；点行弹详情）
+  const histTable = Rock.comp.dataTable.create({
+    ns: 'db-hist',
+    rowKey: r => String(r.id),
+    ns: 'db-hist',
+    columns: [
+      { key: 'time', label: '执行时间', cls: 'mono', render: r => esc(fmtDateTime(r.time)) },
+      { key: 'batch_id', label: '批次/#', cls: 'mono', render: r =>
+          '<span title="批次 ' + esc(r.batch_id) + '">' + esc(String(r.batch_id || '').slice(0, 8)) +
+          '</span> <span class="muted">#' + esc(r.seq) + '</span>' },
+      { key: 'sql_text', label: '语句', render: r =>
+          '<span class="mono" title="' + esc(r.sql_text) + '">' + esc(truncate(r.sql_text, 90)) + '</span>' },
+      { key: 'ok', label: '结果', width: '90px', render: r => r.ok
+          ? '<span class="tag tag-green">成功</span>'
+          : '<span class="tag tag-orange">失败</span>' },
+      { key: 'rows_affected', label: '行数', width: '70px', cls: 'mono' },
+      { key: 'duration_ms', label: '耗时', width: '80px', cls: 'mono', render: r => esc(r.duration_ms) + 'ms' },
+      { key: 'client_ip', label: '来源 IP', cls: 'mono', width: '130px' },
+      { key: 'error', label: '失败原因', render: r => r.error
+          ? '<span title="' + esc(r.error) + '">' + esc(truncate(r.error, 60)) + '</span>' : '' },
+    ],
+    paging: { mode: 'client' },
+    rowClass: r => (r.ok ? '' : 'is-error'),
+    emptyText: '暂无执行记录（执行 SQL 后自动留痕）',
+    detail: { title: 'SQL 执行详情' }, // fields 由 onDetail 动态给出
+  });
+  // 行详情弹层：完整语句 + 执行快照（列表仅截断展示，详情给全量审计字段）
+  histTable.onDetail = function (row) {
+    Rock.comp.detailModal.show({
+      title: 'SQL 执行详情',
+      width: 720,
+      row: row,
+      fields: [
+        { key: 'time', label: '执行时间', render: r => '<span class="mono">' + esc(fmtDateTime(r.time)) + '</span>' },
+        { key: 'batch_id', label: '批次 / 序号', render: r =>
+            '<span class="mono">' + esc(r.batch_id) + '</span> <span class="muted">#' + esc(r.seq) + '</span>' },
+        { key: 'sql_text', label: '完整语句', pre: true, copy: true },
+        { key: 'ok', label: '结果', render: r => r.ok
+            ? '<span class="tag tag-green">成功</span>'
+            : '<span class="tag tag-orange">失败</span>' },
+        { key: 'rows_affected', label: '影响行数', render: r => '<span class="mono">' + esc(r.rows_affected) + '</span>' },
+        { key: 'duration_ms', label: '耗时', render: r => '<span class="mono">' + esc(r.duration_ms) + 'ms</span>' },
+        { key: 'client_ip', label: '来源 IP', render: r => '<span class="mono">' + esc(r.client_ip || '—') + '</span>' },
+        { key: 'source', label: '执行渠道', render: r => esc(r.source || '—') },
+        { key: 'error', label: '失败原因', render: r => r.error
+            ? '<span class="mono is-error-text">' + esc(r.error) + '</span>' : '<span class="muted">—</span>' },
+      ],
+    });
+  };
+
+  // 数据表概览表（空间占用统计：表名/备注/条数/占用空间，含占比条）
+  const overviewTable = Rock.comp.dataTable.create({
+    ns: 'db-overview',
+    columns: [
+      { key: 'name', label: '表名', cls: 'mono', render: r => '<span class="log-path" title="' + esc(r.name) + '">' + esc(truncate(r.name, 40)) + '</span>' },
+      { key: 'comment', label: '表备注', render: r => esc(r.comment || '—') },
+      { key: 'rows', label: '数据条数', cls: 'mono', render: r => esc(fmtIntNA(r.rows)) },
+      // 占用空间拆两列：数据 / 索引（SQLite 表 B-tree 含溢出页；MySQL 聚簇索引与二级索引；PG 表堆与索引）。
+      // 未计算的表在两列统一以「计算」按钮呈现（SQLite 逐表占用需遍历页树，约数秒~数十秒）。
+      // 占比条各自同口径：数据列按「已统计数据合计」、索引列按「已统计索引合计」，两列不共用分母。
+      { key: 'data_bytes', label: '数据', render: r => {
+          if (!r.bytes_known) {
+            // 计算是全局串行的（一次只允许一张表在算）：任何一行在算时其余行一并禁用，
+            // 否则点击被静默忽略，用户以为页面卡死。
+            const calc = state.size.calcTable;
+            const me = calc === r.name;
+            return '<button class="btn btn-sm" data-act="db-table-size" data-table="' + esc(r.name) + '"' +
+              (calc ? ' disabled' : '') + '>' + (me ? '计算中…' : '计算') + '</button>';
+          }
+          return sizeCellHTML(r.data_bytes, 'data_bytes', r, '数据');
+        } },
+      { key: 'index_bytes', label: '索引', render: r => r.bytes_known ? sizeCellHTML(r.index_bytes, 'index_bytes', r, '索引') : '<span class="muted">—</span>' },
+    ],
+    paging: { mode: 'client' },
+    emptyText: '库内暂无业务表',
+  });
+
+  // 条数千分位（0 显示 0；空值显示 —）
+  function fmtIntNA(n) {
+    n = Number(n) || 0;
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  // 数据/索引单元格：数值 + 各自口径的占比条。
+  // 分母按列同口径求和（数据列=已统计表的数据合计，索引列=已统计表的索引合计），
+  // 且只统计 bytes_known 的表——未计算的表不计入分母，避免把「未统计」当成小表。
+  function sizeCellHTML(part, key, r, label) {
+    const known = (state.size.tables || []).filter(t => t.bytes_known);
+    const denom = known.reduce((s, t) => s + (Number(t[key]) || 0), 0);
+    const pct = denom > 0 ? Math.min(100, (Number(part) / denom) * 100) : 0;
+    const total = Number(r.bytes) || 0;
+    const share = total > 0 ? (Number(part) / total * 100) : 0;
+    const title = label + ' ' + fmtBytes(part) +
+      '：占已统计 ' + known.length + ' 张表的' + label + '合计（' + fmtBytes(denom) + '）的 ' +
+      (pct >= 1 ? pct.toFixed(1) : '<1') + '%；占该表合计（' + fmtBytes(total) + '）的 ' +
+      (share >= 1 ? share.toFixed(1) : '<1') + '%';
+    return '<span class="mono">' + esc(fmtBytes(part)) + '</span>' +
+      '<div class="db-size-bar" title="' + esc(title) + '">' +
+      '<div class="db-size-bar-fill" style="width:' + pct.toFixed(2) + '%"></div></div>';
+  }
+
+  // 首次进入挂分页控件事件（页容器为持久元素）
+  let bound = false;
+  function ensureBind() {
+    if (bound) return;
+    const host = $('#page-database');
+    if (host) {
+      diffTable.bind(host); execTable.bind(host); histTable.bind(host); overviewTable.bind(host);
+      bindFormSync();
+      bound = true;
+    }
+  }
+
+  // 页面加载：首次拉一次表结构检查，其余路由往返走缓存（手动刷新按钮 force 重拉）
+  async function load(opts) {
+    ensureBind();
+    if (state.loaded && !opts.force) { render(); return; }
+    const host = $('#page-database');
+    if (!state.loaded && host && !host.innerHTML.trim()) host.innerHTML = skeletonHTML(5);
+    loadSize(); // 空间占用异步加载（不阻塞表结构检查主流程，失败静默走占位）
+    loadGeoSyncMeta(); // 上次同步时间（定时任务登记行，失败静默走「未登记」占位）
+    try {
+      const res = await api.get('/admin/db/schema');
+      state.driver = String(res.driver || '');
+      state.items = Array.isArray(res.items) ? res.items : [];
+      state.sql = String(res.sql || '');
+      state.loaded = true;
+    } catch (e) {
+      if (e.status !== 0) {
+        toast('表结构检查失败：' + e.message + '。请确认服务可达后点击「表结构检查」重试', 'error');
+      }
+    }
+    render();
+  }
+
+  // 说明区：口径说明 + 当前方言
+  function infoHTML() {
+    const drv = state.driver ? '<span class="tag tag-blue">' + esc(state.driver) + '</span>' : '';
+    return '<div class="alert alert-info">' +
+      '<b>口径说明：</b>期望结构 = 当前运行 SQL 源（外挂 <code>HOT_SCRIPTS_DIR/sql/</code> 优先、内嵌兜底）；' +
+      '实际结构 = 当前数据连接 catalog ' + drv + '。' +
+      '检查只读不写；「执行SQL」将直接作用于当前数据库，DDL 不可回滚，执行前建议先备份。</div>';
+  }
+
+  // 操作区：检查主按钮 + 执行危险按钮（编辑器无内容时禁用）
+  function actionsHTML() {
+    const hasSQL = !!(state.sql && state.sql.trim());
+    return '<div class="comp-actions comp-actions-lead">' +
+      '<button class="btn btn-primary" data-act="db-check"' + (state.checking ? ' disabled' : '') + '>' +
+      (state.checking ? '检查中…' : '表结构检查') + '</button>' +
+      '<button class="btn btn-danger" data-act="db-exec"' + (hasSQL && !state.executing ? '' : ' disabled') +
+      ' title="执行编辑器中的 SQL 语句（直接作用于当前数据库）">' + (state.executing ? '执行中…' : '执行SQL') + '</button>' +
+      form.checkbox({ id: 'db-exec-bg', label: '后台执行', checked: state.execBackground, attrs: { 'data-act': 'db-exec-bg' } }) +
+      '<span class="form-hint">长语句勾选后台执行，摆脱请求超时；提交后经任务查询取逐条结果</span>' +
+      '</div>';
+  }
+
+  function schemaHTML() {
+    let html = infoHTML() + actionsHTML();
+    if (state.items.length) {
+      const autoCnt = state.items.filter(i => i.auto).length;
+      html += '<div class="card"><div class="card-title">差异结果' +
+        '<span class="tag tag-orange">' + state.items.length + ' 处差异（自动 ' + autoCnt + ' / 人工 ' + (state.items.length - autoCnt) + '）</span>' +
+        '</div>' + diffTable.html(state.items) + '</div>';
+      html +=
+        '<div class="card">' +
+        '<div class="card-title">SQL 预览与执行' +
+        '<span class="comp-actions">' +
+        '<button class="btn btn-sm" data-act="db-copy-sql">复制</button>' +
+        '<button class="btn btn-sm btn-danger" data-act="db-exec"' + (state.sql.trim() && !state.executing ? '' : ' disabled') + '>' +
+        (state.executing ? '执行中…' : '执行SQL') + '</button>' +
+        '</span></div>' +
+        codeEditor.html(EDITOR_ID, { lang: 'sql', height: '320px', value: state.sql }) +
+        '<div class="form-hint" style="margin-top:8px">已按自动差异（缺表 / 缺列 / 缺索引）预填生成 SQL，可自由编辑（如只保留部分语句、手工补写救急语句）；非自动差异（PK/UNIQUE/自增列、类型不一致、多余对象）不自动生成，请参考差异表建议人工处理。</div>' +
+        '</div>';
+    } else if (state.loaded) {
+      html += '<div class="card">' + Rock.comp.empty.message({ text: '表结构一致，未发现差异' }) + '</div>';
+    }
+    // 执行结果区（最近一次执行后展示，失败行标红）
+    if (state.exec) {
+      html += '<div class="card"><div class="card-title">最近一次执行结果' +
+        '<span class="' + (state.exec.failed ? 'tag tag-orange' : 'tag tag-green') + '">' +
+        '成功 ' + state.exec.executed + ' / 失败 ' + state.exec.failed + '</span></div>' +
+        execTable.html(state.exec.results) + '</div>';
+    }
+    return html;
+  }
+
+  function render() {
+    const host = $('#page-database');
+    if (!host) return;
+    ensureBind();
+    host.innerHTML =
+      Rock.comp.head.headHTML({
+        title: '数据库',
+        desc: '表结构比对：检查差异、生成 SQL 并执行同步；执行 SQL 全量留痕可审计',
+        actions: '<button class="btn btn-sm" data-act="db-check"' + (state.checking ? ' disabled' : '') + '>⟳ 重新检查</button>',
+      }) +
+      sizeBarHTML() +
+      Rock.comp.tabs.tabsHTML(
+        [{ name: 'schema', label: '表同步' }, { name: 'overview', label: '表概览' }, { name: 'data', label: '表数据' }, { name: 'history', label: 'SQL历史' }],
+        state.tab,
+        { act: 'db-tab', nameAttr: 'data-tab' }
+      ) +
+      '<div class="tab-pane">' + (state.tab === 'history' ? histHTML()
+        : (state.tab === 'overview' ? overviewHTML()
+          : (state.tab === 'data' ? dataHTML() : schemaHTML()))) + '</div>';
+    // 编辑器联动：内容变化即时同步「执行SQL」按钮可用态（不整页重绘，避免打断输入）
+    if (state.tab === 'schema' && state.items.length) {
+      codeEditor.wire(EDITOR_ID, {
+        onChange: function (src) {
+          state.sql = src;
+          const btn = document.querySelector('#page-database [data-act="db-exec"]');
+          if (btn) btn.disabled = state.executing || !src.trim();
+        },
+      });
+    }
+  }
+
+  // ── 空间占用：公共状态区（页签上方，总空间常驻）+ 数据表概览页签 ─────────┐
+
+  // 拉取空间占用统计（GET /admin/db/size，只读；页面加载与概览页签刷新共用）
+  // 该端点为精确统计（大库 COUNT(*) 秒级~十秒级），显式放宽超时到 60 秒，避免被默认 5 秒误掐断。
+  // force=true 表示用户主动触发（点「加载」/「⟳」）：失败必须给出统一报错提示；
+  // 自动加载（页面进入）失败仅在服务端有响应时提示，网络不可达静默并由状态栏占位承载。
+  // 上次同步时间（GEOIP_LIST D7）：读 schedule_list 登记行 geoip_sync 的 last_run_at；
+  // 静默刷新（失败不弹 toast，卡片显示「未登记」占位），同步成功后由 runGeoSync 触发重拉。
+  async function loadGeoSyncMeta() {
+    try {
+      const r = await api.get('/admin/schedule/list');
+      const row = ((r && r.tasks) || []).find(function (t) { return t.name === 'geoip_sync'; });
+      if (row) {
+        state.geo.lastRunAt = String(row.last_run_at || '');
+        state.geo.lastStatus = String(row.last_status || '');
+        render();
+      }
+    } catch (e) { /* 静默：保持占位文案 */ }
+  }
+
+  async function loadSize(force) {
+    if (state.size.loading) return;
+    if (state.size.loaded && !force) { render(); return; }
+    state.size.loading = true;
+    render();
+    try {
+      const res = await api.get('/admin/db/size', 60000);
+      state.size.totalBytes = Number(res.total_bytes) || 0;
+      state.size.tables = Array.isArray(res.tables) ? res.tables : [];
+      state.size.loaded = true;
+      state.size.failed = false;
+    } catch (e) {
+      state.size.failed = true;
+      if (force || e.status !== 0) {
+        toast('空间统计查询失败：' + e.message + '。请确认数据连接正常后点「重试」', 'error');
+      }
+    }
+    state.size.loading = false;
+    render();
+  }
+
+  // 单表精确占用按需计算（GET /admin/db/table_size）：SQLite 下逐表占用需遍历全库页树
+  // （大库首次数秒~数十秒），故不随页面默认统计；用户点「计算」时才触发，结果服务端缓存 10 分钟。
+  async function calcTableSize(table) {
+    if (!table || state.size.calcTable) return;
+    state.size.calcTable = table;
+    render();
+    try {
+      const res = await api.get('/admin/db/table_size?table=' + encodeURIComponent(table), 120000);
+      const bytes = Number(res && res.bytes) || 0;
+      const data = Number(res && res.data_bytes) || 0;
+      const idx = Number(res && res.index_bytes) || 0;
+      let hit = false;
+      (state.size.tables || []).forEach(function (t) {
+        if (t.name === table) {
+          t.bytes = bytes; t.data_bytes = data; t.index_bytes = idx; t.bytes_known = true; hit = true;
+        }
+      });
+      if (!hit) loadSize(true); // 表清单已变化，重拉一次保证一致
+      toast(table + ' 占用空间：数据 ' + fmtBytes(data) + ' + 索引 ' + fmtBytes(idx) + ' = ' + fmtBytes(bytes) +
+        (res && res.cached ? '（服务端缓存）' : ''), 'success');
+    } catch (e) {
+      toast('「' + table + '」占用空间计算失败：' + e.message + '。可稍后点「计算」重试', 'error');
+    }
+    state.size.calcTable = '';
+    render();
+  }
+
+  // 公共状态区：页签上方常驻展示库级空间占用（与全局配置页搜索栏同层级的公共数据状态）
+  function sizeBarHTML() {
+    const sz = state.size;
+    let inner;
+    if (sz.loading) {
+      inner = '<span class="muted">空间统计中…</span>';
+    } else if (sz.failed) {
+      inner = '<span class="muted">空间占用：加载失败</span>' +
+        '<button class="btn btn-sm" data-act="db-size-refresh">重试</button>';
+    } else if (!sz.loaded) {
+      inner = '<span class="muted">空间占用：未加载</span>' +
+        '<button class="btn btn-sm" data-act="db-size-refresh">加载</button>';
+    } else {
+      inner = '<span>数据库占用总空间：<b class="mono">' + esc(fmtBytes(sz.totalBytes)) + '</b></span>' +
+        '<span class="tag tag-blue">' + sz.tables.length + ' 张业务表</span>' +
+        (state.driver ? '<span class="tag tag-gray">' + esc(state.driver) + '</span>' : '') +
+        '<button class="btn btn-sm" data-act="db-size-refresh"' + (sz.loading ? ' disabled' : '') + '>⟳</button>';
+    }
+    return '<div class="db-statusbar">' + inner + '</div>';
+  }
+
+  function overviewHTML() {
+    const sz = state.size;
+    let html = '<div class="card"><div class="card-title">数据表概览' +
+      '<span class="comp-actions"><button class="btn btn-sm" data-act="db-size-refresh"' +
+      (sz.loading ? ' disabled' : '') + '>' + (sz.loaded ? '⟳ 刷新' : '加载') + '</button></span></div>' +
+      '<div class="form-hint" style="margin-bottom:8px">数据条数为精确统计（动态 COUNT(*)）；总占用取自数据库系统表。' +
+      '占用空间按「数据 + 索引」两列拆分：' +
+      (state.driver === 'sqlite'
+        ? 'SQLite 表数据为表 B-tree 页（含大字段溢出页），索引为各索引 B-tree 之和；逐表占用需遍历全库页树（大库首次数秒~数十秒），故按需点「计算」触发，结果服务端缓存 10 分钟。'
+        : state.driver === 'mysql'
+          ? 'MySQL/InnoDB 数据取 DATA_LENGTH（聚簇索引即数据本体），索引取 INDEX_LENGTH（二级索引）；碎片页 DATA_FREE 不计入。'
+          : 'PostgreSQL 数据取表堆主体，索引取该表全部索引；不含 TOAST（合计口径含 TOAST，故可能略大于两列之和）。') + '</div>';
+    // 三态区分（避免把「尚未加载」误报成「库里没有表」）：
+    // 未加载 → 引导加载；加载失败 → 行内错误 + 重试；已加载且为空 → 才是真的无业务表。
+    if (sz.loading) {
+      html += '<div class="load-hint"><span class="load-spin"></span>空间统计中，大库首次统计需数秒</div>';
+    } else if (sz.failed) {
+      html += Rock.comp.empty.emptyCard({ text: '空间占用统计加载失败（表清单与占用空间暂不可用）', br: true,
+        action: '<button class="btn btn-sm btn-primary" data-act="db-size-refresh">重试</button>' });
+    } else if (!sz.loaded) {
+      html += Rock.comp.empty.emptyCard({ text: '尚未加载空间占用（表清单、数据条数与占用空间按需统计，避免打开页面即对大库做全量统计）', br: true,
+        action: '<button class="btn btn-sm btn-primary" data-act="db-size-refresh">加载</button>' });
+    } else {
+      html += overviewTable.html(sz.tables);
+    }
+    html += '</div>';
+    return html;
+  }
+
+  // GeoIP 关联表同步卡：增量构建/刷新 geoip_list（一 IP 一行，
+  // 与 access_log / shield_event 按 client_ip 关联），显示上次同步时间（schedule_list.geoip_sync 行）。
+  // 同步为后台任务模式：提交即返回任务 ID，轮询任务详情展示进度与结果，不受 HTTP 超时限制。
+  function geoSyncHTML() {
+    const g = state.geo;
+    const lastSync = g.lastRunAt
+      ? '上次同步：' + esc(String(g.lastRunAt).replace('T', ' ').slice(0, 19)) + ' UTC' +
+        (g.lastStatus ? '（' + esc(g.lastStatus) + '）' : '')
+      : '上次同步：未登记（尚未执行过同步）';
+    let body;
+    if (g.error) {
+      body = '<div class="alert alert-warn">' + esc(g.error) + '</div>' +
+        '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync">重试同步</button>';
+    } else if (g.result) {
+      body = '<div class="alert alert-info">' + esc(g.result.text || '完成') + '</div>' +
+        '<button class="btn btn-sm" data-act="db-geoip-sync">再次同步（处理新增缺失 IP）</button>';
+    } else {
+      body = '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync"' + (g.running ? ' disabled' : '') + '>' +
+        (g.running ? '同步中…（提交后可在任务列表观察进度）' : '开始同步') + '</button>';
+    }
+    return '<div class="card"><div class="card-title">GeoIP 数据同步' +
+      '<span class="tag tag-blue">维护工具</span></div>' +
+      '<div class="form-hint">' + lastSync + '。</div>' +
+      '<div class="form-hint">扫描 access_log / shield_event 中「尚未入 geoip_list 关联表」的 IP，' +
+      '按当前已加载的 mmdb 数据逐 IP 解析后写入 geoip_list（一 IP 一行，明细与统计经 client_ip 关联取地理信息）。' +
+      '私网/回环等无地理信息的 IP 跳过并计数；同步分趟执行：每趟有服务端时间上限（约 20 秒），' +
+      '到点即从断点收工，重复执行自动续接。' +
+      '自动同步间隔经 GEOIP_SYNC_INTERVAL 配置（见「定时任务」页）。</div>' +
+      body + '</div>';
+  }
+
+  // 提交同步任务（POST /admin/db/geoip_sync → {task_id}）并轮询至终态。
+  async function runGeoSync() {
+    if (state.geo.running) return;
+    const ok = await confirmDialog({
+      title: 'GeoIP 数据同步',
+      message: '将按当前 mmdb 数据，把 access_log / shield_event 中尚未入 geoip_list 的 IP ' +
+        '解析后写入关联表（一 IP 一行；已入表 IP 不动，其他数据不变）。是否继续？',
+      confirmText: '开始同步',
+    });
+    if (!ok) return;
+    state.geo.running = true;
+    state.geo.error = null;
+    render();
+    try {
+      const r = await api.post('/admin/db/geoip_sync')();
+      state.geo.taskId = (r && r.task_id) || '';
+      pollTask(state.geo.taskId, {
+        onRunning: function () {},
+        onDone: finishGeoSync,
+        onFailed: finishGeoSync,
+      });
+    } catch (e) {
+      state.geo.running = false;
+      state.geo.error = e.message || '同步失败';
+      // mmdb 提示仅在服务端真返回 503（geo 未就绪）时附带，避免误导
+      const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务' : '';
+      toast('GeoIP 同步提交失败：' + state.geo.error + hint, 'error');
+      render();
+    }
+  }
+
+  // 同步任务终态：展示报告、刷新登记与概览。
+  function finishGeoSync(task) {
+    const g = state.geo;
+    g.running = false;
+    g.taskId = '';
+    if (task.status === 'done') {
+      const text = (task.progress && task.progress.text) || task.result || '完成';
+      g.result = { text: text };
+      toast('GeoIP 数据同步完成（' + fmtTaskCost(task) + '）', 'success');
+      loadGeoSyncMeta(); // 上次同步时间随本次执行刷新
+      loadSize(true);    // 同步不改两表行数但刷新概览无妨
+    } else {
+      g.error = task.result || '同步失败';
+      toast('GeoIP 数据同步失败：' + g.error + '。同步分趟执行，已完成部分已写入，稍候再次点击即从断点继续', 'error');
+    }
+    render();
+  }
+
+  // ── 「表数据」页签：数据源 → 表结构对齐 → 数据迁移 → GeoIP 数据同步 ──────
+  // 按迁移流程自上而下排布：先配置外部数据源，再对目标库对齐表结构，然后迁移数据；
+  // GeoIP 数据同步同属数据维护工具，归入本页签。
+
+  function dataHTML() {
+    return dsnHTML() + alignHTML() + migrateHTML() + geoSyncHTML();
+  }
+
+  // 进入「表数据」页签：拉数据源列表 + 恢复进行中任务（迁移/GeoIP 同步）。
+  function enterDataTab() {
+    loadDsn();
+    recoverRunningTasks();
+    render();
+  }
+
+  // 页面恢复：查任务列表，按 created_by 匹配本页两处长任务，running 即续上轮询。
+  function recoverRunningTasks() {
+    findRunningTask('migrate').then(function (t) {
+      if (!t || state.data.mig.running) return;
+      const m = state.data.mig;
+      m.running = true;
+      m.taskId = t.id;
+      applyMigrateProgress(t);
+      pollTask(t.id, {
+        onRunning: applyMigrateProgress,
+        onDone: function (task) { finishMigrate(task); },
+        onFailed: function (task) { finishMigrate(task); },
+      });
+      render();
+    });
+    findRunningTask('geoip_sync').then(function (t) {
+      if (!t || state.geo.running) return;
+      state.geo.running = true;
+      state.geo.taskId = t.id;
+      pollTask(t.id, {
+        onRunning: function () {},
+        onDone: function (task) { finishGeoSync(task); },
+        onFailed: function (task) { finishGeoSync(task); },
+      });
+      render();
+    });
+  }
 
   // ── 卡 1：数据源 ────────────────────────────────────────────────────────
   async function loadDsn(force) {
@@ -126,31 +633,58 @@
     } else {
       body = d.items.length
         ? '<table class="table"><thead><tr><th>连接名</th><th>驱动</th><th>DSN（脱敏）</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>'
-        : '<div class="muted" style="margin-bottom:8px">暂无外部数据源。添加目标库（如开发用 SQLite → 生产 MySQL）后即可做结构对齐与数据迁移。</div>';
+        : '<div class="muted form-gap">暂无外部数据源。添加目标库（如开发用 SQLite → 生产 MySQL）后即可做结构对齐与数据迁移。</div>';
     }
     return '<div class="card"><div class="card-title">数据源' +
       '<span class="tag tag-blue">迁移目标与备选源</span>' +
-      '<span class="comp-actions"><button class="btn btn-sm" data-act="db-dsn-reload"' + (d.loading ? ' disabled' : '') + '>⟳</button></span></div>' +
+      '<span class="comp-actions"><button class="btn btn-sm" data-act="db-dsn-reload"' + (d.loading ? ' disabled' : '') + '>⟳ 刷新</button></span></div>' +
       body +
-      '<div class="comp-actions" style="margin-top:12px;flex-wrap:wrap;gap:8px">' +
-      '<input id="db-dsn-name" placeholder="连接名（唯一，如 prod-mysql）" style="width:200px">' +
-      '<select id="db-dsn-driver"><option value="sqlite">sqlite</option><option value="mysql">mysql</option><option value="postgres">postgres</option></select>' +
-      '<input id="db-dsn-dsn" placeholder="连接串 DSN（含凭据，服务端脱敏存储展示）" style="width:340px" class="mono">' +
-      '<button class="btn btn-sm" data-act="db-dsn-test"' + (d.testing ? ' disabled' : '') + '>' + (d.testing ? '测试中…' : '连通测试') + '</button>' +
-      '<button class="btn btn-sm btn-primary" data-act="db-dsn-add">添加</button>' +
-      '</div>' +
-      '<div class="form-hint">连通测试不落盘，可先测试未保存的连接串；MySQL 密码含 @ 会被拦截（需先 URL 编码）。</div>' +
-      (d.testMsg ? '<div class="form-hint" style="margin-top:4px">' + esc(d.testMsg) + '</div>' : '') +
+      form.inline(
+        form.input({ id: 'db-dsn-name', scope: 'dsn.form', field: 'name', width: 'sm',
+          placeholder: '连接名（唯一，如 prod-mysql）', value: d.form.name }) +
+        form.select({ id: 'db-dsn-driver', scope: 'dsn.form', field: 'driver', width: 'xs',
+          options: [['sqlite', 'sqlite'], ['mysql', 'mysql'], ['postgres', 'postgres']], selected: d.form.driver }) +
+        form.input({ id: 'db-dsn-dsn', scope: 'dsn.form', field: 'dsn', width: 'lg', mono: true,
+          placeholder: '连接串 DSN（含凭据，服务端脱敏存储展示）', value: d.form.dsn }) +
+        '<button class="btn btn-sm" data-act="db-dsn-test"' + (d.testing ? ' disabled' : '') + '>' +
+        (d.testing ? '测试中…' : '连通测试') + '</button>' +
+        '<button class="btn btn-sm btn-primary" data-act="db-dsn-add">添加</button>'
+      ) +
+      form.hint('连通测试不落盘，可先测试未保存的连接串；MySQL 密码含 @ 会被拦截（需先 URL 编码）。') +
+      (d.testMsg ? form.hint(d.testMsg) : '') +
       '</div>';
   }
 
-  // 读取添加表单输入（按 id 取值，不做双向绑定——保持页面既有轻量风格）。
+  // 读取添加表单输入：状态优先（输入即同步、重渲染不清空），DOM 仅作兜底。
   function dsnFormValues() {
-    return {
-      name: (document.getElementById('db-dsn-name') || {}).value || '',
-      driver: (document.getElementById('db-dsn-driver') || {}).value || '',
-      dsn: ((document.getElementById('db-dsn-dsn') || {}).value || '').trim(),
+    const f = state.data.dsn.form;
+    const pick = (id, key) => {
+      const el = document.getElementById(id);
+      return el && el.value ? el.value : f[key];
     };
+    return {
+      name: (pick('db-dsn-name', 'name') || '').trim(),
+      driver: pick('db-dsn-driver', 'driver') || 'sqlite',
+      dsn: (pick('db-dsn-dsn', 'dsn') || '').trim(),
+    };
+  }
+
+  // 表单值与状态同步：页内 input/change 委托（data-scope + data-field），
+  // 任何整卡重渲染都从状态回显，用户已输入内容不因「连通测试」等操作丢失。
+  function bindFormSync() {
+    const host = $('#page-database');
+    if (!host || host.getAttribute('data-form-sync') === '1') return;
+    const onEdit = function (e) {
+      const el = e.target && e.target.closest ? e.target.closest('[data-scope][data-field]') : null;
+      if (!el) return;
+      const target = (el.getAttribute('data-scope') || '').split('.').reduce(function (acc, k) {
+        return acc ? acc[k] : undefined;
+      }, state.data);
+      if (target) target[el.getAttribute('data-field')] = el.value;
+    };
+    host.addEventListener('input', onEdit);
+    host.addEventListener('change', onEdit);
+    host.setAttribute('data-form-sync', '1');
   }
 
   async function addDsn() {
@@ -160,8 +694,11 @@
       return;
     }
     try {
-      await api.post('/admin/db/dsn')({ name: f.name.trim(), driver: f.driver, dsn: f.dsn });
-      toast('数据源「' + f.name.trim() + '」已添加并持久化（重启保留）', 'success');
+      await api.post('/admin/db/dsn')({ name: f.name, driver: f.driver, dsn: f.dsn });
+      toast('数据源「' + f.name + '」已添加并持久化（重启保留）', 'success');
+      // 添加成功后仅清空名称与 DSN，驱动保留（便于连续添加同类数据源）
+      state.data.dsn.form.name = '';
+      state.data.dsn.form.dsn = '';
       loadDsn(true);
     } catch (e) {
       toast('添加数据源失败：' + e.message + '。请核对驱动/连接名/连接串后重试', 'error');
@@ -207,26 +744,27 @@
   // ── 卡 2：表结构对齐 ────────────────────────────────────────────────────
   function alignHTML() {
     const a = state.data.align;
-    const opts = state.data.dsn.items.map(function (it) {
-      return '<option value="' + esc(it.code) + '"' + (a.code === it.code ? ' selected' : '') + '>' +
-        esc(it.name) + '（' + esc(it.driver) + '）</option>';
-    }).join('');
-    let body = '<div class="comp-actions" style="margin-bottom:8px">' +
-      '<select id="db-align-target"' + (state.data.dsn.items.length ? '' : ' disabled') + '>' + (opts || '<option value="">请先在上方添加数据源</option>') + '</select>' +
+    let body = form.inline(
+      form.select({ id: 'db-align-target', scope: 'align', field: 'code',
+        // 无数据源时给占位项：空下拉看不出「为什么不能选」，占位文案直接指路
+        options: state.data.dsn.items.length
+          ? state.data.dsn.items.map(k => [k.code, k.name + '（' + k.driver + '）'])
+          : [['', '请先在上方添加数据源']],
+        selected: a.code, disabled: !state.data.dsn.items.length, width: 'md' }) +
       '<button class="btn btn-sm btn-primary" data-act="db-align-check"' + (!a.code || a.checking ? ' disabled' : '') + '>' +
       (a.checking ? '检查中…' : '检查差异') + '</button>' +
       (a.checked ? '<button class="btn btn-sm btn-danger" data-act="db-align-apply"' + (a.applying ? ' disabled' : '') + '>' +
-        (a.applying ? '对齐中…' : '执行对齐') + '</button>' : '') +
-      '</div>';
+        (a.applying ? '对齐中…' : '执行对齐') + '</button>' : '')
+    );
     if (a.checked) {
       body += !a.items.length
         ? '<div class="alert alert-info">目标库结构与期望一致，无需对齐。</div>'
-        : '<div class="form-hint" style="margin-bottom:6px">发现 ' + a.items.length + ' 处差异，将对目标库逐条执行以下 DDL（遇错即停；不写本机审计表）：</div>' +
-          '<pre class="mono" style="max-height:200px;overflow:auto;background:var(--bg,#f7f7f7);padding:8px;border-radius:6px">' + esc(a.sql) + '</pre>';
+        : '<div class="form-hint">发现 ' + a.items.length + ' 处差异，将对目标库逐条执行以下 DDL（遇错即停；不写本机审计表）：</div>' +
+          '<pre class="mono code-block">' + esc(a.sql) + '</pre>';
     }
     return '<div class="card"><div class="card-title">表结构对齐' +
       '<span class="tag tag-blue">迁移前置</span></div>' +
-      '<div class="form-hint" style="margin-bottom:8px">目标 = 外部数据源；期望结构 = 本系统内嵌 SQL 脚本（与「表同步」同源）。' +
+      '<div class="form-hint">目标 = 外部数据源；期望结构 = 本系统内嵌 SQL 脚本（与「表同步」同源）。' +
       '迁移前先对齐目标库结构，保证双方同名列一致。</div>' + body + '</div>';
   }
 
@@ -294,38 +832,42 @@
   function migrateHTML() {
     const m = state.data.mig;
     const dsns = state.data.dsn.items;
-    const srcOpts = '<option value="self"' + (m.source === 'self' ? ' selected' : '') + '>本机运行库</option>' +
-      dsns.map(it => '<option value="' + esc(it.code) + '"' + (m.source === it.code ? ' selected' : '') + '>' + esc(it.name) + '</option>').join('');
-    const tgtOpts = dsns.map(it => '<option value="' + esc(it.code) + '"' + (m.target === it.code ? ' selected' : '') + '>' + esc(it.name) + '（' + esc(it.driver) + '）</option>').join('');
+    const srcOptions = [['self', '本机运行库']].concat(dsns.map(it => [it.code, it.name]));
+    const tgtOptions = dsns.length
+      ? dsns.map(it => [it.code, it.name + '（' + it.driver + '）'])
+      : [['', '请先在上方添加数据源']];
     const tables = migrateTables();
     const tableList = tables.length
-      ? tables.map(function (name) {
+      ? form.checkList(tables.map(function (name) {
           const checked = !!m.selected[name];
-          return '<label style="margin-right:12px;white-space:nowrap"><input type="checkbox" data-act="db-mig-table" data-table="' + esc(name) + '"' +
+          return '<label class="form-check"><input type="checkbox" data-act="db-mig-table" data-table="' + esc(name) + '"' +
             (checked ? ' checked' : '') + '> <span class="mono">' + esc(name) + '</span></label>';
-        }).join('')
-      : '<span class="muted">表清单不可用：请先到「表概览」页签加载空间统计（表清单取自运行库业务表）。</span>';
+        }).join(''))
+      : '<div class="muted">表清单不可用：请先到「表概览」页签加载空间统计（表清单取自运行库业务表）。</div>';
     let body =
-      '<div class="comp-actions" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">' +
-      '<label>源 <select id="db-mig-source">' + srcOpts + '</select></label>' +
-      '<label>目标 <select id="db-mig-target"' + (dsns.length ? '' : ' disabled') + '>' + (tgtOpts || '<option value="">请先添加数据源</option>') + '</select></label>' +
-      '<label>冲突策略 <select id="db-mig-mode"><option value="replace"' + (m.mode === 'replace' ? ' selected' : '') + '>清空重灌</option>' +
-      '<option value="skip"' + (m.mode === 'skip' ? ' selected' : '') + '>跳过冲突</option></select></label>' +
-      '<label>批次 <input id="db-mig-batch" type="number" value="' + esc(String(m.batch)) + '" min="100" max="10000" style="width:90px"></label>' +
-      '</div>' +
-      '<div class="form-hint" style="margin-bottom:8px">批次为性能参考值：批越大吞吐越高、内存与目标库单语句负载越高；' +
-      '超出目标库参数上限时服务端自动切分执行，无需手工计算。批次仅本次会话生效，刷新复位 1000。</div>' +
-      '<div style="margin-bottom:8px"><b>迁移表：</b><div style="margin-top:4px;display:flex;flex-wrap:wrap">' + tableList + '</div></div>' +
+      form.inline(
+        '<label>源 ' + form.select({ id: 'db-mig-source', scope: 'mig', field: 'source',
+          options: srcOptions, selected: m.source, width: 'sm' }) + '</label>' +
+        '<label>目标 ' + form.select({ id: 'db-mig-target', scope: 'mig', field: 'target',
+          options: tgtOptions, selected: m.target, disabled: !dsns.length, width: 'md' }) + '</label>' +
+        '<label>冲突策略 ' + form.select({ id: 'db-mig-mode', scope: 'mig', field: 'mode',
+          options: [['replace', '清空重灌'], ['skip', '跳过冲突']], selected: m.mode, width: 'sm' }) + '</label>' +
+        '<label>批次 ' + form.input({ id: 'db-mig-batch', scope: 'mig', field: 'batch', type: 'number',
+          value: String(m.batch), width: 'xs', attrs: { min: '100', max: '10000' } }) + '</label>'
+      ) +
+      form.hint('批次为性能参考值：批越大吞吐越高、内存与目标库单语句负载越高；' +
+        '超出目标库参数上限时服务端自动切分执行，无需手工计算。批次仅本次会话生效，刷新复位 1000。') +
+      '<div class="form-label">迁移表：</div>' + tableList +
       '<button class="btn btn-danger" data-act="db-mig-start"' + (m.running ? ' disabled' : '') + '>' +
       (m.running ? '迁移进行中…' : '启动迁移') + '</button>' +
       (m.running ? ' <button class="btn btn-sm" data-act="db-mig-cancel">取消整个任务（当前批完成后停止）</button>' : '');
     if (m.summary || m.errText) {
-      body += '<div class="form-hint" style="margin-top:8px">' +
-        (m.errText ? '<span style="color:var(--danger,#c0392b)">' + esc(m.errText) + '</span>　' : '') +
+      body += '<div class="form-hint">' +
+        (m.errText ? '<span class="is-error-text">' + esc(m.errText) + '</span>　' : '') +
         esc(m.summary) + '</div>';
     }
     if (m.progress && m.progress.length) {
-      body += '<table class="table" style="margin-top:8px"><thead><tr><th>表</th><th>状态</th><th>进度</th><th>说明</th><th>操作</th></tr></thead><tbody>' +
+      body += '<table class="table table-top"><thead><tr><th>表</th><th>状态</th><th>进度</th><th>说明</th><th>操作</th></tr></thead><tbody>' +
         m.progress.map(function (t) {
           const st = { pending: ['tag-gray', '待迁移'], running: ['tag-blue', '迁移中'], done: ['tag-green', '已完成'], failed: ['tag-orange', '失败'], cancelled: ['tag-gray', '已取消'] }[t.status] || ['tag-gray', t.status];
           const pct = t.rows_total > 0 ? Math.round((t.rows_done / t.rows_total) * 100) : (t.status === 'done' ? 100 : 0);
@@ -338,7 +880,7 @@
     }
     return '<div class="card"><div class="card-title">数据迁移' +
       '<span class="tag tag-orange">danger · 作用于目标库</span></div>' +
-      '<div class="form-hint" style="margin-bottom:8px">同名字段跨方言直迁（先完成表结构对齐）；目标不可选本机运行库（防误覆盖生产数据）。' +
+      '<div class="form-hint">同名字段跨方言直迁（先完成表结构对齐）；目标不可选本机运行库（防误覆盖生产数据）。' +
       '单表失败不阻塞后续表；同一时刻全局仅一个长任务运行。</div>' + body + '</div>';
   }
 
@@ -463,9 +1005,9 @@
       '<span class="tag tag-gray">每条语句一行 · 完整留痕</span>' +
       '<span class="comp-actions"><button class="btn btn-sm" data-act="db-hist-refresh"' +
       (h.loading ? ' disabled' : '') + '>⟳ 刷新</button></span></div>' +
-      (h.failed ? '<div class="form-hint" style="color:var(--danger,#c0392b)">本次刷新失败（' +
+      (h.failed ? '<div class="form-hint is-error-text">本次刷新失败（' +
         esc(h.err) + '），以下为上次结果</div>' : '') +
-      '<div class="form-hint" style="margin-bottom:8px">记录「执行SQL」的每条语句：时间、批次、原文、结果与耗时，永久保留，可审计追溯。</div>' +
+      '<div class="form-hint">记录「执行SQL」的每条语句：时间、批次、原文、结果与耗时，永久保留，可审计追溯。</div>' +
       histTable.html(h.loaded || h.items.length ? h.items : []);
     if (h.total > HIST_PAGE_SIZE) {
       const page = Math.floor(h.offset / HIST_PAGE_SIZE) + 1;
