@@ -27,6 +27,7 @@
 - 运行必须在 bin/ 目录（`cd bin && ./rocksys`），禁止项目根目录执行；
 - WebUI 提示统一 `Rock.ui.toast`；错误 toast 不自动消失；文案三要素；
 - 文档同步：webui.md / webui-api.md / CONFIGURATION.md / README.md；DATA_DICT 无新表不涉；
+- 执行期新红线：代码注释与正式文档不得引用 _PLAN/TODO/STEP 文档（宪法新增「功能产出自包含」），叙述自包含
 - git 提交：本次任务**适用**破例授权（用户明示「自行完成开发，测试，验收，提交Git全流程」），范围 = 本项目 STEP 逐个提交至 master 本地；禁止 force push；推送仍待用户确认。
 
 ## §3 进度日志（一行一事）
@@ -35,3 +36,4 @@
 | 2026-09-15 | ZCode | — | 建纲完成，方案定稿（14b9361）后拆步 |
 | 2026-09-15 | ZCode | STEP1 | 已实施：taskcenter 单测+端点测试全绿（互斥/panic收口/淘汰/取消竞态/404） |
 | 2026-09-15 | ZCode | STEP2 | 已实施：dsn CRUD/脱敏/重复拦截/懒创建单测全绿，CONF_DIR 注册于 adminapi.New |
+| 2026-09-15 | ZCode | 宪法 | 用户新增「功能产出自包含」条款；STEP1/2 已落地注释同步去方案引用 |

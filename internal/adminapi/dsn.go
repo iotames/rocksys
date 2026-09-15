@@ -1,4 +1,4 @@
-// dsn.go：外部数据源管理（DATA_MIGRATION §4.2）。
+// dsn.go：外部数据源管理（管理面资源，供数据迁移按名/按 Code 引用外部库）。
 //
 //	GET  /admin/db/dsn        —— 列数据源（DSN 脱敏展示）
 //	POST /admin/db/dsn        —— 添加 {name, driver, dsn[, test]}：驱动已注册 + Name 唯一
@@ -6,10 +6,10 @@
 //	POST /admin/db/dsn/delete —— 按 {code} 删除（迁移任务进行中拒绝）
 //	POST /admin/db/dsn/test   —— {driver, dsn} 连通测试（ping + 版本回显，不落盘）
 //
-// 存储：easydb/dsn 底座，JSON 文件 <CONF_DIR>/dsn.json（D11）。
+// 存储：easydb/dsn 底座，JSON 文件 <CONF_DIR>/dsn.json（数据源是运行资产而非业务数据，不入业务库）。
 // 每次读写实时取 CONF_DIR 当前生效值拼接路径（支持热更）；不使用 dsn.GetDsnConf
 // 单例（其 sync.Once 锁死首次路径，与热更语义冲突）。懒创建：首次写入自动建目录，
-// 读取时文件不存在视为空配置。
+// 读取时文件不存在视为空配置。变更 CONF_DIR 后原位置文件不自动搬迁（需手工移动）。
 package adminapi
 
 import (
@@ -35,10 +35,10 @@ const (
 	PathDsnTest   = "/admin/db/dsn/test"
 )
 
-// 支持的数据源驱动白名单（目标库三方言，D4）。
+// 支持的数据源驱动白名单（迁移目标库三方言）。
 var dsnDrivers = map[string]bool{"sqlite": true, "mysql": true, "postgres": true}
 
-// registerConfDir 注册全局配置目录项（adminapi.New 调用；CONF_DIR 为本方案唯一新增配置，D11）。
+// registerConfDir 注册全局配置目录项（adminapi.New 调用）：CONF_DIR 是全局统一配置目录，
 func registerConfDir(confMgr interface {
 	Register(ptr any, key, defVal, title string, usage ...string) error
 }) (*string, error) {
@@ -51,7 +51,7 @@ func registerConfDir(confMgr interface {
 	return &confDir, nil
 }
 
-// confDirPath 拼接 <CONF_DIR 当前生效值>/dsn.json（每次读写实时取值，D11 热更语义）。
+// confDirPath 拼接 <CONF_DIR 当前生效值>/dsn.json（每次读写实时取值，支持配置热更）。
 func (s *AdminServer) confDirPath() string {
 	dir := "conf"
 	if s.confDir != nil && *s.confDir != "" {
@@ -73,7 +73,7 @@ func (s *AdminServer) loadDsnGroup() (dsn.DsnGroup, error) {
 	return g, nil
 }
 
-// saveDsnGroup 写数据源组：首次写入自动创建目录与文件（懒创建，D11）。
+// saveDsnGroup 写数据源组：首次写入自动创建目录与文件（懒创建）。
 func (s *AdminServer) saveDsnGroup(g dsn.DsnGroup) error {
 	fpath := s.confDirPath()
 	if dir := filepath.Dir(fpath); dir != "" && dir != "." {
@@ -101,7 +101,7 @@ func (s *AdminServer) getDsnByCode(code string) (dsn.DataSource, bool) {
 	return dsn.DataSource{}, false
 }
 
-// maskDsn DSN 脱敏：隐去凭据段，保留 user@host/db 形态摘要（D2 展示安全）。
+// maskDsn DSN 脱敏：隐去凭据段，保留 user@host/db 形态摘要（连接串含明文密码，列表展示必须打码）。
 // sqlite 为文件路径不含凭据，原样返回。
 func maskDsn(driver, d string) string {
 	switch driver {
@@ -239,7 +239,7 @@ func (s *AdminServer) handleDsnAdd(w http.ResponseWriter, r *http.Request) {
 	_ = writeJSON(w, map[string]any{"ok": true, "code": added.Code}, http.StatusOK)
 }
 
-// handleDsnDelete 按 Code 删除：迁移任务进行中拒绝（防删除正在使用的目标源）。
+// handleDsnDelete 按 Code 删除：迁移任务进行中拒绝（防删除正在使用的目标源导致任务中途失联）。
 func (s *AdminServer) handleDsnDelete(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Code string `json:"code"`

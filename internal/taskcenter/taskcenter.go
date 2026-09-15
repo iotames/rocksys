@@ -1,13 +1,13 @@
-// Package taskcenter 任务执行中心（DATA_MIGRATION D20–D29）。
+// Package taskcenter 任务执行中心：长任务（数据迁移、GeoIP 同步、结构对齐执行、SQL 后台执行）的
 //
 // 长任务（数据迁移、GeoIP 同步、结构对齐执行、SQL 后台执行）的统一注册与观测入口：
 // 任务创建只有一个口（Submit）、查询只有一个口（Get/List）；业务逻辑留在各自模块，
-// 中心不感知迁移/同步细节。纯内存实现：重启即失效（重跑幂等），不持久化、无配置项。
+// 中心不感知迁移/同步细节。纯内存实现：重启即失效（任务须可幂等重跑），不持久化、无配置项。
 //
-// 健壮性收口（D23/D24，中心生命线）：
+// 健壮性收口（中心生命线）：
 //   - 任务 goroutine 内 defer 统一收口：recover panic、按时间先后裁定终态、释放全局互斥——
 //     正常/出错/panic/取消四路径必然放锁，单任务异常不锁死中心；
-//   - 终态任务仅保留最近 TaskKeepLimit 条（新终态落定即淘汰最旧），running 永不淘汰。
+//   - 终态任务仅保留最近 TaskKeepLimit 条（新终态落定即淘汰最旧，防常驻进程内存与列表无限增长），running 永不淘汰。
 package taskcenter
 
 import (
@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-// 任务状态。终态一经落定不再变更（取消与自然结束的竞态由中心按时间先后裁定，D27）。
+// 任务状态。终态一经落定不再变更：取消与自然结束的竞态由中心按时间先后裁定（取消请求先于自然结束生效 → cancelled，否则保留自然终态）。
 type Status string
 
 const (
@@ -36,7 +36,7 @@ func (s Status) Terminal() bool {
 // TaskKeepLimit 终态任务最大保留条数（D24，常量不开放配置）。
 const TaskKeepLimit = 100
 
-// Progress 进度快照（D25）：业务每次传入不可变新快照，中心原子指针存取；
+// Progress 进度快照：业务每次传入不可变新快照，中心原子指针存取；
 // 禁止中心与业务共享可变结构——「原子读」以整体快照替换达成。
 type Progress struct {
 	// Text 人类可读进度摘要（如「3/10 表，access_log 500/12000 行」）。
@@ -45,7 +45,7 @@ type Progress struct {
 	Detail any `json:"detail,omitempty"`
 }
 
-// Task 任务快照（D21 最小元数据集）。全部字段为只读快照，中心外不得修改。
+// Task 任务快照（最小元数据集）。全部字段为只读快照，中心外不得修改。
 type Task struct {
 	ID         string     `json:"id"`
 	CreatedBy  string     `json:"created_by"`
@@ -76,14 +76,14 @@ type entry struct {
 
 	cancel context.CancelFunc // 取消函数（终态后置 nil 防重复调用）
 
-	// 竞态裁定（D27）：终态按时间先后判定——取消请求时刻早于自然结束时刻 → cancelled。
+	// 竞态裁定：终态按时间先后判定——取消请求时刻早于自然结束时刻 → cancelled。
 	cancelReqAt time.Time // 取消请求时刻（零值 = 无取消请求）
 	finishAt    time.Time // 自然结束时刻（Run 返回/panic 时刻）
 
 	progress atomicPtr // *Progress 原子存取（D25 快照替换）
 }
 
-// Center 任务执行中心：全局同一时刻仅 1 个 running 任务（D20 全局单任务互斥）。
+// Center 任务执行中心：全局同一时刻仅 1 个 running 任务（运维工具无并发诉求，串行最克制且语义最简单）。
 type Center struct {
 	mu       sync.Mutex
 	epoch    int64    // 启动纪元（进程启动 Unix 秒，D26：重启后 ID 纪元变化，旧 ID 必然查不到）
@@ -136,7 +136,7 @@ func (c *Center) Submit(spec Spec) (string, error) {
 	return id, nil
 }
 
-// run 任务执行与统一收口（D23）：recover、终态裁定、互斥释放同走一个 defer。
+// run 任务执行与统一收口：recover、终态裁定、互斥释放同走一个 defer——正常/出错/panic/取消四路径必然放锁，业务任何写法都锁不死中心。
 func (c *Center) run(e *entry, ctx context.Context, runFn RunFn) {
 	var runErr error
 	func() {
@@ -167,13 +167,13 @@ func (c *Center) run(e *entry, ctx context.Context, runFn RunFn) {
 	e.FinishedAt = &e.finishAt
 	c.terminal = append(c.terminal, e)
 	if len(c.terminal) > TaskKeepLimit {
-		c.terminal = c.terminal[len(c.terminal)-TaskKeepLimit:] // D24：淘汰最旧终态
+		c.terminal = c.terminal[len(c.terminal)-TaskKeepLimit:] // 终态限量：淘汰最旧，running 永不淘汰
 	}
 	c.running = nil
 	c.mu.Unlock()
 }
 
-// resolveFinalStatus 终态裁定（D27）：取消请求先于自然结束生效 → cancelled；
+// resolveFinalStatus 终态裁定：取消请求先于自然结束生效 → cancelled；
 // 否则保留自然终态（nil→done、err→failed、panic→failed）。
 func resolveFinalStatus(e *entry, runErr error) Status {
 	if !e.cancelReqAt.IsZero() && !e.cancelReqAt.After(e.finishAt) {
@@ -186,7 +186,7 @@ func resolveFinalStatus(e *entry, runErr error) Status {
 }
 
 // Cancel 取消任务：向业务 ctx 发取消信号，落点由业务自定（迁移=当前批事务完成后停）。
-// 竞态语义（D27）：已终态 → 返回该终态快照与提示、不报错；不存在（含已淘汰终态）→ ok=false。
+// 竞态语义：已终态 → 返回该终态快照与提示、不报错；不存在（含已淘汰终态）→ ok=false。
 func (c *Center) Cancel(id string) (Task, string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -204,7 +204,7 @@ func (c *Center) Cancel(id string) (Task, string, bool) {
 	return e.Task, "取消请求已送达（任务将在当前批次边界停止）", true
 }
 
-// Get 单任务快照；不存在（含已被 D24 淘汰的终态）返回 ok=false。
+// Get 单任务快照；不存在（含已被限量淘汰的终态）返回 ok=false。
 func (c *Center) Get(id string) (Task, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -243,7 +243,7 @@ func (c *Center) findByID(id string) *entry {
 	return nil
 }
 
-// setProgress 整体快照替换（D25）：中心原子指针存取；终态后的迟到写入忽略。
+// setProgress 整体快照替换：中心原子指针存取；终态后的迟到写入忽略（终态不可被迟到进度污染）。
 func (c *Center) setProgress(e *entry, p *Progress) {
 	if p == nil {
 		return

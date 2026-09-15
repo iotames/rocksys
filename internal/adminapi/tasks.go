@@ -1,12 +1,12 @@
-// tasks.go：任务执行中心 HTTP 端点（DATA_MIGRATION D28）。
+// tasks.go：任务执行中心 HTTP 端点。
 //
-//	GET  /admin/tasks              —— 任务列表（含 running 与保留期内终态，供前端轮询与页面恢复 D29）
+//	GET  /admin/tasks              —— 任务列表（含 running 与保留期内终态，供前端轮询与页面恢复）
 //	GET  /admin/tasks/{id}         —— 单任务详情（不存在 → 404，D26）
-//	POST /admin/tasks/{id}/cancel  —— 统一取消（D27 竞态语义：终态返回终态不报错；不存在 → 404）
+//	POST /admin/tasks/{id}/cancel  —— 统一取消（已终态返回终态与提示、不报错；不存在 → 404）
 //
 // 路由实现说明：easyserver 路由为精确匹配、不支持路径参数，故本组端点经头部中间件
 // 前缀拦截（/admin/tasks/...），其余请求原样放行；鉴权与其他内建端点同轨（auth.check）。
-// 端点脱离 /admin/db 前缀：任务中心是全局模块而非数据库域专属（D28）。
+// 端点脱离 /admin/db 前缀：任务中心是全局模块而非数据库域专属，未来非数据库域长任务接入不改路径。
 package adminapi
 
 import (
@@ -18,7 +18,7 @@ import (
 	"rocksys/internal/taskcenter"
 )
 
-// PathTasksPrefix 任务中心端点前缀（D28）。
+// PathTasksPrefix 任务中心端点前缀。
 const PathTasksPrefix = "/admin/tasks"
 
 // newTasksMiddleware 构造任务端点头部中间件（AdminServer.New 内注册）。
@@ -57,7 +57,7 @@ func (s *AdminServer) routeTasks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleTaskGet 单任务详情：不存在（含已淘汰终态）一律 404（D26）。
+// handleTaskGet 单任务详情：不存在（含已被终态限量淘汰的记录）一律 404。
 func (s *AdminServer) handleTaskGet(w http.ResponseWriter, id string) {
 	task, ok := s.tasks.Get(id)
 	if !ok {
@@ -67,7 +67,7 @@ func (s *AdminServer) handleTaskGet(w http.ResponseWriter, id string) {
 	_ = writeJSON(w, task, http.StatusOK)
 }
 
-// handleTaskCancel 统一取消：D27 竞态语义——已终态返回终态与提示（HTTP 200），不存在 404。
+// handleTaskCancel 统一取消：已终态返回终态与提示（HTTP 200），不存在 404。
 func (s *AdminServer) handleTaskCancel(w http.ResponseWriter, id string) {
 	task, msg, ok := s.tasks.Cancel(id)
 	if !ok {
