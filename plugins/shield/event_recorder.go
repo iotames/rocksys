@@ -326,7 +326,7 @@ func (r *EventRecorder) Stats() (written, dropped int64) {
 // ── SQL 执行（SQL 外置铁律：脚本位于 sql/<dbtype>/，禁止 Go 内联）──────
 
 // sqlText 读取脚本并替换 {table} 表名占位符与 {geo}(geoip_list) 关联表占位符
-//（表名来自配置注册项，非用户输入，安全）。
+// （表名来自配置注册项，非用户输入，安全）。
 func (r *EventRecorder) sqlText(name string) (string, error) {
 	txt, err := r.sqls.SQL(name)
 	if err != nil {
@@ -514,10 +514,33 @@ func (r *EventRecorder) QueryEvents(q EventQuery) ([]map[string]any, error) {
 	if err := r.edb.GetMany(sel, &rows, args...); err != nil {
 		return nil, fmt.Errorf("shield: 查询拦截明细失败: %w", err)
 	}
+	fillGeoRows(r.geo, rows)
 	for _, row := range rows {
 		normalizeEventRow(row)
 	}
 	return rows, nil
+}
+
+// fillGeoRows 行级 geo 回填（GEOIP_LIST 方案）：明细查询 LEFT JOIN geoip_list，未命中
+// （同步间隔内新 IP）回退实时 Lookup 补齐展示字段；nil resolver 安全跳过。
+func fillGeoRows(res *geoip.Resolver, rows []map[string]any) {
+	if res == nil || len(rows) == 0 {
+		return
+	}
+	for _, row := range rows {
+		if cc, _ := row["country_code"].(string); cc != "" {
+			continue
+		}
+		ip, _ := row["client_ip"].(string)
+		if ip == "" {
+			continue
+		}
+		gi := res.Lookup(ip)
+		row["country_code"] = gi.Code
+		row["country_name"] = gi.Country
+		row["province"] = gi.Province
+		row["city"] = gi.City
+	}
 }
 
 // CountEvents 按相同条件统计拦截明细总数（与 QueryEvents 的过滤条件一致，不含 limit/offset）。

@@ -268,8 +268,37 @@ func (o *Obs) StoreStats() (dropCount, consecutiveFails int64) {
 func (o *Obs) PurgeTrafficCache() { o.tcache.purge() }
 
 // Query 按条件查询访问日志（转发当前启用的存储后端）。
+// geo 读侧兜底：明细查询 LEFT JOIN geoip_list，未命中（同步间隔内新入库的 IP）回退实时
+// Lookup 补齐展示字段（GEOIP_LIST_PLAN §4.5——保新 IP 及时可见，不污染库数据）。
 func (o *Obs) Query(q Query) ([]map[string]any, error) {
-	return o.sink.Load().(*AsyncStore).Query(q)
+	rows, err := o.sink.Load().(*AsyncStore).Query(q)
+	if err != nil {
+		return nil, err
+	}
+	fillGeoRows(o.geo, rows)
+	return rows, nil
+}
+
+// fillGeoRows 行级 geo 回填：JOIN 命中用存量（country_code 非空即跳过），未命中实时解析。
+// nil resolver（未装配 mmdb）安全跳过。
+func fillGeoRows(res *geoip.Resolver, rows []map[string]any) {
+	if res == nil || len(rows) == 0 {
+		return
+	}
+	for _, row := range rows {
+		if cc, _ := row["country_code"].(string); cc != "" {
+			continue
+		}
+		ip, _ := row["client_ip"].(string)
+		if ip == "" {
+			continue
+		}
+		gi := res.Lookup(ip)
+		row["country_code"] = gi.Code
+		row["country_name"] = gi.Country
+		row["province"] = gi.Province
+		row["city"] = gi.City
+	}
 }
 
 // Count 按相同过滤条件统计访问日志总数（转发当前启用的存储后端，服务端分页用）。

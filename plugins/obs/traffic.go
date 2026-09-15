@@ -351,9 +351,9 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 		for _, row := range rows {
 			region, _ := row[nameKey].(string)
 			// 展示兜底链（只做在最终显示，库列保持真实语义）：
-			//   市→省：city 列存「省/市」，市缺失时列值即「省」，无需映射；
-			//   省→国：province 级查询已限定 country='CN'，region 空串展示为「中国」；
-			//   country 级空串无父级可退，计「未知」参与排序（不悄悄丢量）。
+			//   市→省：province 为空时 city 可退（geoip_list 分别承载省/市）；
+			//   省→国：province 级查询已限定 country_code='CN'，region 空串展示为「中国」；
+			//   country 级空串（未同步 IP）无父级可退，计「未知」参与排序（不悄悄丢量）。
 			if region == "" {
 				if level == "province" {
 					region = "中国"
@@ -361,10 +361,16 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 					region = "未知"
 				}
 			}
-			out = append(out, map[string]any{
+			entry := map[string]any{
 				nameKey: region,
 				"cnt":   int64(trafficAsF(row["cnt"])),
-			})
+			}
+			if level == "country" {
+				// 中文国名随聚合带回（traffic_geo_top.sql MAX(country_name)），Top 列表展示用。
+				cn, _ := row["country_name"].(string)
+				entry["country_name"] = cn
+			}
+			out = append(out, entry)
 		}
 		return out, nil
 	})

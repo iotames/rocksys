@@ -183,6 +183,11 @@ func normalizeRowTypes(row map[string]any) {
 	for k, v := range row {
 		spec, ok := dimIndex[k]
 		if !ok {
+			// JOIN 关联表列（geoip_list 的 country_code/province/city 等）不在维度注册表，
+			// 统一 []byte→string 兜底，防驱动返回 []byte 在 JSON 输出中变 base64。
+			if b, isB := v.([]byte); isB {
+				row[k] = string(b)
+			}
 			continue
 		}
 		switch spec.Type {
