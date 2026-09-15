@@ -1,4 +1,4 @@
-// geoip_sync.go：GeoIP 关联表增量同步（geoip_list 构建/刷新，GEOIP_LIST_PLAN §4.5）。
+// geoip_sync.go：GeoIP 关联表增量同步（geoip_list 构建/刷新）。
 //
 // 背景：地理信息不再逐行存于 access_log / shield_event（原 country/city 两列已删），
 // 改由一 IP 一行的 geoip_list 关联表承载；本同步器扫两表 client_ip 与 geoip_list 求差，
@@ -12,9 +12,9 @@
 //     （已入表 IP 被求差过滤，重扫代价可忽略），避免「已发现未回写」的行被游标跳过。
 //   - 回写侧逐 IP upsert（geoip_list_upsert.sql：冲突更新 geo 列与 updated_at，created_at 保持
 //     首次入库值）：幂等可重入，反复执行直至扫完即全量构建。
-//   - ★服务端硬超时：整趟绑定「调用方上下文 + 单趟时间预算」（固定常量 geoSyncBudget=20 秒，非配置项），
-//     在每个扫描块/回写批边界检查，到点或调用方断开立即收工返回已完成进度——互斥锁随本趟退出立即释放。
-//     私网/回环/解析不出的 IP 跳过并计数（永远无 geo，游标越过不再重试）。
+//   - ★无时间预算（设计约定）：任务中心承载的默认无超时（后台化的意义就是摆脱请求超时），
+//     单趟仅在扫描块/回写批边界响应调用方取消（人工 Cancel），取消即收工返回已完成进度——
+//     分组互斥锁随本趟退出立即释放。私网/回环/解析不出的 IP 跳过并计数（永远无 geo，游标越过不再重试）。
 package main
 
 import (
@@ -28,6 +28,9 @@ import (
 
 	"rocksys/internal/db"
 	"rocksys/internal/geoip"
+	"rocksys/internal/taskcenter"
+
+	"github.com/iotames/easyserver/log"
 )
 
 // geoLookup GeoIP 解析最小接口（*geoip.Resolver 天然满足；测试可注入桩）。
@@ -38,14 +41,14 @@ type geoLookup interface {
 
 // geoSyncReport 单表同步报告。
 type geoSyncReport struct {
-	Table      string   `json:"table"`
-	IPs        int      `json:"ips"`            // 本趟处理的去重 IP 数（新入 geoip_list）
-	RowsUpsert int64    `json:"rows_upserted"`  // upsert geoip_list 行数
-	Skipped    int      `json:"skipped"`        // 解析不出地理位置的 IP 数（私网/回环/库外地址）
-	IPSample   []string `json:"ip_sample"`      // 跳过的 IP 样本（最多 5 个，供排查）
-	Scanned    int      `json:"scanned"`        // 本趟发现阶段实际扫描的日志行数
-	Done       bool     `json:"done"`           // 本表缺失区间是否已扫完（false=可再次执行续扫）
-	BudgetStop bool     `json:"budget_stopped"` // 本趟是否因时间预算/调用方断开而提前收工
+	Table       string   `json:"table"`
+	IPs         int      `json:"ips"`           // 本趟处理的去重 IP 数（新入 geoip_list）
+	RowsUpsert  int64    `json:"rows_upserted"` // upsert geoip_list 行数
+	Skipped     int      `json:"skipped"`       // 解析不出地理位置的 IP 数（私网/回环/库外地址）
+	IPSample    []string `json:"ip_sample"`     // 跳过的 IP 样本（最多 5 个，供排查）
+	Scanned     int      `json:"scanned"`       // 本趟发现阶段实际扫描的日志行数
+	Done        bool     `json:"done"`          // 本表缺失区间是否已扫完（false=可再次执行续扫）
+	Interrupted bool     `json:"interrupted"`   // 本趟是否因调用方取消而提前收工（已扫描/已写入部分保留）
 }
 
 // 同步节奏参数（批次化：单趟有界、可断点续扫，超时/失败已完成部分依然生效）。
@@ -57,10 +60,6 @@ var (
 	geoSyncScanChunk  = 10000  // 发现阶段每块扫描的日志行数（走 id 主键范围扫，单块毫秒级）
 	geoSyncScanCap    = 200000 // 单趟发现阶段扫描行数上限：即使缺失行极稀疏也保证单趟耗时可控
 )
-
-// geoSyncBudget 单趟时间预算（固定 20 秒，不做配置项）：同步是大表批量读写，必须给服务端硬上限，
-// 到点即在块/批边界收工返回已完成进度；属实现细节而非用户可调策略，写死以免增加配置心智负担。
-const geoSyncBudget = 20 * time.Second
 
 // 回写运行态：id 游标（断点续扫，进程内记录即可）与进行中互斥锁（防并发双趟重复扫描写库）。
 var (
@@ -74,8 +73,13 @@ var (
 var geoipSyncIntervalMin int
 
 // geoSyncOnDone 同步结束回写钩子（装配期注入 schedule_list 登记器；nil=不回写）：
-// status = success / failed，message 为结果摘要。回写点单一（D21）：手动与定时触发皆经 geoSyncAll 收口。
+// status = success / failed / partial（取值语义见 schedule.go 常量），message 为结果摘要。
+// 回写点单一：手动与定时触发皆经 geoSyncAll 收口。
 var geoSyncOnDone func(status, message string)
+
+// geoSyncOnSkip 定时轮被跳过（互斥组被占，任务未提交）的登记钩子（nil=不登记）：
+// 只记「该轮未执行」（skipped）与原因，不改最近执行时间（其语义 = 执行结束时刻，跳过非执行）。
+var geoSyncOnSkip func(message string)
 
 // geoSyncCursorLoad/Store 游标读写（0 表示从头扫）。
 func geoSyncCursorLoad(table string) int64 {
@@ -183,8 +187,9 @@ func geoSyncUpsert(ctx context.Context, d *db.DB, vals []geoVal) (int64, error) 
 
 // geoSyncTable 对单表执行一轮同步：id 游标分块增量发现「client_ip 未入 geoip_list」的 IP
 // （单趟上限 geoSyncBatchIPs 个 IP / geoSyncScanCap 行）→ 解析 → upsert geoip_list。
-// ctx 在块/批边界检查：到点或调用方断开即收工，并在报告中标记 BudgetStop。
-func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup) (geoSyncReport, error) {
+// ctx 在块/批边界检查：调用方取消即收工，并在报告中标记 Interrupted；
+// setProgress 在每块边界回传进度（后台任务页实时可见）。
+func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup, setProgress func(string)) (geoSyncReport, error) {
 	rep := geoSyncReport{Table: table, IPSample: []string{}}
 	sqlDB := d.EasyDB().GetSqlDB()
 	prevCursor := geoSyncCursorLoad(table)
@@ -196,7 +201,7 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup) (g
 	interrupted := false
 	for len(uniq) < geoSyncBatchIPs && rep.Scanned < geoSyncScanCap && !exhausted {
 		if ctx.Err() != nil {
-			rep.BudgetStop = true
+			rep.Interrupted = true
 			interrupted = true
 			break
 		}
@@ -206,7 +211,7 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup) (g
 		rows, err := sqlDB.QueryContext(ctx, q)
 		if err != nil {
 			if ctx.Err() != nil { // 超时/断开导致的取消不算错误，按提前收工处理
-				rep.BudgetStop = true
+				rep.Interrupted = true
 				interrupted = true
 				break
 			}
@@ -234,7 +239,7 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup) (g
 		rows.Close()
 		if err != nil {
 			if ctx.Err() != nil {
-				rep.BudgetStop = true
+				rep.Interrupted = true
 				interrupted = true
 				break
 			}
@@ -246,11 +251,14 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup) (g
 		}
 		rep.Scanned += n
 		cursor = maxID
+		if setProgress != nil {
+			setProgress(fmt.Sprintf("%s：已扫描 %d 行，发现 %d 个待同步 IP", table, rep.Scanned, len(uniq)))
+		}
 		// 块内求差：过滤已入 geoip_list 的 IP（IN 点查），剩余即本块缺失 IP。
 		exist, err := geoSyncExistingIPs(ctx, d, chunk)
 		if err != nil {
 			if ctx.Err() != nil {
-				rep.BudgetStop = true
+				rep.Interrupted = true
 				interrupted = true
 				break
 			}
@@ -282,7 +290,7 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup) (g
 	rep.RowsUpsert = upserted
 	if err != nil {
 		if ctx.Err() != nil { // 取消导致的失败同样按提前收工处理（此前批次已提交）
-			rep.BudgetStop = true
+			rep.Interrupted = true
 			interrupted = true
 		} else {
 			return rep, err
@@ -297,13 +305,14 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup) (g
 	return rep, nil
 }
 
-// geoSyncAll 对全部参与表执行增量同步（geoip_list 构建/刷新唯一入口，D31）：
-// 手动端点与定时触发皆调它。geo 未就绪直接报错（无 mmdb 时同步无从谈起）；
-// 上一趟仍在进行时拒绝并发（不排队）。ctx 为调用方上下文（客户端断开会取消本趟），
-// budget 为单趟时间预算（≤0 表示不限，仅受 ctx 约束）——两者共同保证服务端不会脱离
-// 调用方监督长时间空转：到点/断开即在块边界收工，已完成部分保留，互斥锁立即释放。
-// 结束后经 geoSyncOnDone 回写 schedule_list 状态（D21，注入方决定落点；nil 不回写）。
-func geoSyncAll(ctx context.Context, d *db.DB, res geoLookup, budget time.Duration) ([]geoSyncReport, error) {
+// geoSyncAll 对全部参与表执行增量同步（geoip_list 构建/刷新唯一入口）：
+// 手动端点与定时触发皆经任务中心提交后调它（同互斥组天然串行）。geo 未就绪直接报错
+// （无 mmdb 时同步无从谈起）；上一趟仍在进行时拒绝并发（不排队，防御性兜底——正常路径
+// 互斥由任务中心分组承担）。ctx 为调用方上下文（人工取消即本趟收工；无时间预算——
+// 后台任务默认无超时，跑多久由数据量决定）：取消在块/批边界生效，已完成部分保留。
+// 结束后经 geoSyncOnDone 回写 schedule_list 状态（注入方决定落点；nil 不回写）；
+// setProgress 在每块边界回传进度（后台任务页实时可见，可 nil）。
+func geoSyncAll(ctx context.Context, d *db.DB, res geoLookup, setProgress func(text string)) ([]geoSyncReport, error) {
 	if !res.Ready() {
 		return nil, fmt.Errorf("geoip: mmdb 未加载，无法同步；请先放置 GeoLite2 mmdb 并重启服务")
 	}
@@ -311,17 +320,15 @@ func geoSyncAll(ctx context.Context, d *db.DB, res geoLookup, budget time.Durati
 		return nil, fmt.Errorf("geoip: 上一轮同步仍在进行中，请稍候再触发（已完成部分不受影响）")
 	}
 	defer geoSyncRunning.Store(false)
-	if budget > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, budget)
-		defer cancel()
-	}
 	var out []geoSyncReport
 	var syncErr error
 	for _, table := range geoipSyncTables {
-		rep, err := geoSyncTable(ctx, d, table, res)
+		rep, err := geoSyncTable(ctx, d, table, res, setProgress)
 		if rep.Table != "" {
 			out = append(out, rep)
+		}
+		if setProgress != nil {
+			setProgress(geoSyncReportText(out))
 		}
 		if err != nil {
 			syncErr = err
@@ -329,25 +336,22 @@ func geoSyncAll(ctx context.Context, d *db.DB, res geoLookup, budget time.Durati
 		}
 	}
 	// 状态回写（单点收口）：结果落 schedule_list（geoip_sync 行），报告摘要作 message。
-	// 三态分清（取值权威定义见 schedule.go 常量 + sql 建表脚本注释 + docs/DATA_DICT.md §3.5）：
-	//   - 单趟到点（budget 超时）：分趟同步的设计内节奏，记 success（下次执行从断点续接）；
-	//   - 被取消（任务取消端点 / 进程收尾）：人工终止 ≠ 系统分趟——混记 success 会让
-	//     定时任务页误示「成功」，用户以为数据已补齐，故记 cancelled；
+	// 取值全部是「轮次执行结果」域词汇（schedule 是任务工厂的登记面，实例运行时状态只在
+	// 任务中心；取值权威定义见 schedule.go 常量 + sql 建表脚本注释 + docs/DATA_DICT.md §3.5）：
+	//   - 正常跑完：记 success（分趟上限先到的轮次亦然——下次执行从断点续接，属设计内节奏）；
+	//   - 被取消（任务取消端点 / 进程收尾）：本轮未跑完 ≠ 失败也 ≠ 成功，记 partial——
+	//     记 success 会谎报「上轮已跑完」，用户误以为数据已补齐；
 	//   - 其余错误：真失败，记 failed。
 	// 原因判定以「ctx 停止原因」为准：表的读写路径在 ctx 取消时已按协作式收工转成
-	// BudgetStop 且 err=nil，只看 syncErr 会把「被取消」误判成正常完成（实测踩坑）。
+	// Interrupted 且 err=nil，只看 syncErr 会把「被取消」误判成正常完成（实测踩坑）。
 	stopErr := syncErr
 	if stopErr == nil {
 		stopErr = ctx.Err()
 	}
 	status, stopped := geoipSyncOutcome(stopErr)
 	msg := geoSyncReportText(out)
-	if stopped && hasBudgetStop(out) {
-		if errors.Is(stopErr, context.DeadlineExceeded) {
-			msg += "；收工原因：单趟时间到点（分趟续接，非异常）"
-		} else {
-			msg += "；收工原因：任务被取消（已完成部分已写入，再次执行从断点续接）"
-		}
+	if stopped && hasInterrupted(out) {
+		msg += "；收工原因：任务被取消（已完成部分已写入，再次执行从断点续接）"
 	} else if status == ScheduleStatusFailed {
 		msg = syncErr.Error()
 	}
@@ -355,7 +359,7 @@ func geoSyncAll(ctx context.Context, d *db.DB, res geoLookup, budget time.Durati
 		geoSyncOnDone(status, msg)
 	}
 	if stopped {
-		// 协作式收工（到点/取消）不上抛错误：任务中心已按取消请求裁定终态（取消先到 → cancelled），
+		// 协作式收工（取消）不上抛错误：任务中心已按取消请求裁定终态（取消先到 → cancelled），
 		// 上抛会把「中断」记成任务失败。
 		return out, nil
 	}
@@ -363,31 +367,30 @@ func geoSyncAll(ctx context.Context, d *db.DB, res geoLookup, budget time.Durati
 }
 
 // geoipSyncOutcome 同步收口的结果裁定（纯函数，便于穷尽断言）：
-//   - nil                  → success（正常完成；含单趟把活干完）
-//   - DeadlineExceeded     → success（单趟时间到点收工：分趟同步的设计内节奏，下次续接）
-//   - Canceled             → cancelled（人工经任务取消端点终止，或进程收尾中止）
-//   - 其他                 → failed（真错误：库不可用、SQL 出错等）
+//   - nil      → success（正常完成；含分趟上限先到、下轮续接的轮次）
+//   - Canceled → partial（本轮未跑完：人工经任务取消端点终止，或进程收尾中止；
+//     已完成部分已写入，下轮从断点续接）
+//   - 其他     → failed（真错误：库不可用、SQL 出错等）
 //
-// 返回的 stopped 为 true 表示「协作式收工」（到点/取消），属中断而非失败，不上抛错误。
+// 返回的 stopped 为 true 表示「协作式收工」（取消），属中断而非失败，不上抛错误。
 // 传入的 err 应为「真实的停止原因」：正常结束传 nil；协作式收工场景须传 ctx.Err()
 // （内层把 ctx 取消转为优雅收工、err 为 nil，只传 err 会把取消误判为成功完成）。
+// 注：任务中心默认无超时（ctx 无 deadline），不存在「到点收工」分支。
 func geoipSyncOutcome(err error) (status string, stopped bool) {
 	switch {
 	case err == nil:
 		return ScheduleStatusSuccess, false
-	case errors.Is(err, context.DeadlineExceeded):
-		return ScheduleStatusSuccess, true
 	case errors.Is(err, context.Canceled):
-		return ScheduleStatusCancelled, true
+		return ScheduleStatusPartial, true
 	default:
 		return ScheduleStatusFailed, false
 	}
 }
 
-// hasBudgetStop 本趟是否存在提前收工的表（用于只在确有中断时追加收工原因文案）。
-func hasBudgetStop(reps []geoSyncReport) bool {
+// hasInterrupted 本趟是否存在提前收工的表（用于只在确有中断时追加收工原因文案）。
+func hasInterrupted(reps []geoSyncReport) bool {
 	for _, r := range reps {
-		if r.BudgetStop {
+		if r.Interrupted {
 			return true
 		}
 	}
@@ -401,8 +404,7 @@ func geoSyncReportText(reps []geoSyncReport) string {
 		fmt.Fprintf(&b, "%s：新同步 %d 个 IP（扫描 %d 行，跳过 %d 个无地理信息 IP）",
 			r.Table, r.RowsUpsert, r.Scanned, r.Skipped)
 		switch {
-		case r.BudgetStop:
-			// 原因中立体现在报告里（到点 vs 取消由收口按 ctx 判定后追加），避免把取消说成到点。
+		case r.Interrupted:
 			b.WriteString("；本轮提前收工，已完成部分已写入，再次执行从断点继续")
 		case !r.Done:
 			b.WriteString("；仍有未同步行未扫完，可再次执行继续")
@@ -412,7 +414,31 @@ func geoSyncReportText(reps []geoSyncReport) string {
 	return strings.TrimSuffix(b.String(), "；")
 }
 
-// normalizeGeoSyncInterval 归一 GEOIP_SYNC_INTERVAL 配置值（D34）：
+// geoSyncTaskSpec 构造 GeoIP 同步任务（手动端点与定时触发共用同一执行体，仅标题区分来源）：
+// 经任务中心提交执行（无时间预算——后台任务默认无超时，取消经统一取消端点送达）；
+// 互斥由任务中心规则承载（geoip_sync 标签在公共互斥集内，与迁移/结构对齐/SQL 后台执行互斥）。
+func geoSyncTaskSpec(title string, d *db.DB, res geoLookup, purgeCache func()) taskcenter.Spec {
+	return taskcenter.Spec{
+		CreatedBy: "geoip_sync",
+		Title:     title,
+		Run: func(ctx context.Context, setProgress taskcenter.SetProgressFn) error {
+			reps, err := geoSyncAll(ctx, d, res, func(text string) {
+				setProgress(&taskcenter.Progress{Text: text})
+			})
+			if err != nil {
+				log.Error("geoip: 同步失败", "err", err.Error())
+				return err
+			}
+			setProgress(&taskcenter.Progress{Text: geoSyncReportText(reps), Detail: reps})
+			if purgeCache != nil {
+				purgeCache() // 同步成功清流量统计缓存：聚合视图下次查询重新计算，立即见新数据
+			}
+			return nil
+		},
+	}
+}
+
+// normalizeGeoSyncInterval 归一 GEOIP_SYNC_INTERVAL 配置值：
 // 0 = 关闭自动同步（手动不受影响）；有效最小 10 分钟（防设置过小耗尽资源）；
 // <10（非 0）或负数等非法值回落默认 60。
 func normalizeGeoSyncInterval(v int) int {
@@ -426,10 +452,14 @@ func normalizeGeoSyncInterval(v int) int {
 	}
 }
 
-// startGeoSyncTimer 启动自动同步定时器（GEOIP_LIST D29/D34，装配层调用）：
+// startGeoSyncTimer 启动自动同步定时器（装配层调用）：
 // 分钟粒度 tick，每轮触发时重读间隔当前值（运行中改值下一轮生效，含 0=关闭的动态判定）；
 // 首轮在启动约 1 分钟后执行（存量库冷启动多轮逐步追平）。返回停止通道，进程停机时关闭。
 // mmdb 未就绪时返回 nil（不启动定时器——同步无从谈起，配置任意值均不生效）。
+//
+// 执行模型：定时同步与手动同步同为任务中心实例（run 由装配期注入「提交任务」闭包），
+// 受任务中心分组互斥统一管控——同互斥组已有任务在跑（人工长任务/上一轮未完）时提交被拒，
+// 该轮跳过（经 geoSyncOnSkip 登记，下轮到点自动续接，游标增量无数据丢失）。
 func startGeoSyncTimer(res geoLookup, run func(ctx context.Context)) chan struct{} {
 	if !res.Ready() {
 		return nil
@@ -452,10 +482,8 @@ func startGeoSyncTimer(res geoLookup, run func(ctx context.Context)) chan struct
 					continue
 				}
 				lastRun = time.Now()
-				// 单趟绑定固定时间预算（geoSyncBudget）：脱离调用方监督也不会长时间读写。
-				ctx, cancel := context.WithTimeout(context.Background(), geoSyncBudget)
-				run(ctx)
-				cancel()
+				// 无时间预算（后台任务默认无超时）：互斥与生命周期由任务中心统一管控。
+				run(context.Background())
 			}
 		}
 	}()

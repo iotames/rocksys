@@ -11,9 +11,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"rocksys/internal/db"
 	"rocksys/internal/taskcenter"
+
+	"github.com/iotames/easydb/dsn"
 )
 
 // newMigrateServer 构造带数据源与表清单的服务器：CONF_DIR 指向临时目录，
@@ -454,5 +457,131 @@ func TestMigrateCancelWholeTask(t *testing.T) {
 	snap := s.migState.snapshot()
 	if snap[1].Status != tableCancelled {
 		t.Fatalf("剩余表应 cancelled, got %s", snap[1].Status)
+	}
+}
+
+// TestMigrateSkipConflictSQLite skip 冲突策略真语义（SQLite 双库）：
+// 目标库预置冲突行 → skip 迁移应逐行跳过冲突、写入非冲突行、保留既有行、不报错。
+// （对应冲突策略三方言分写：MySQL INSERT IGNORE、SQLite/PG ON CONFLICT DO NOTHING。）
+func TestMigrateSkipConflictSQLite(t *testing.T) {
+	dir := t.TempDir()
+	src, err := db.Open("sqlite", filepath.Join(dir, "src.db"))
+	if err != nil {
+		t.Fatalf("打开源库: %v", err)
+	}
+	defer src.Close()
+	tgtPath := filepath.ToSlash(filepath.Join(dir, "tgt.db"))
+	tgt, err := db.Open("sqlite", tgtPath)
+	if err != nil {
+		t.Fatalf("打开目标库: %v", err)
+	}
+	defer tgt.Close()
+	for _, d := range []*db.DB{src, tgt} {
+		if _, err := d.EasyDB().Exec("CREATE TABLE mig_skip_t (id INTEGER PRIMARY KEY, name TEXT NOT NULL)"); err != nil {
+			t.Fatalf("建表: %v", err)
+		}
+	}
+	// 源库 3 行；目标库预置 id=2（与源冲突，值不同）。
+	for i := 1; i <= 3; i++ {
+		if _, err := src.EasyDB().Exec(fmt.Sprintf("INSERT INTO mig_skip_t VALUES (%d, 'src-%d')", i, i)); err != nil {
+			t.Fatalf("源库插行: %v", err)
+		}
+	}
+	if _, err := tgt.EasyDB().Exec("INSERT INTO mig_skip_t VALUES (2, 'preexisting')"); err != nil {
+		t.Fatalf("目标库预置冲突行: %v", err)
+	}
+
+	s := &AdminServer{}
+	ds := dsnForTest(tgt.Driver(), tgtPath)
+	params := migrateParams{source: "self", targetDS: ds, tables: []string{"mig_skip_t"},
+		batch: 100, mode: migrateModeSkip, selfDB: src}
+	st := &migrateRunState{tables: []*tableProgress{{Table: "mig_skip_t", Status: tablePending}}}
+	rowsDone, err := s.migrateTable(context.Background(), src, tgt, "mig_skip_t", params, st, func(*taskcenter.Progress) {})
+	if err != nil {
+		t.Fatalf("skip 迁移不应报错（冲突行须被跳过）: %v", err)
+	}
+	if rowsDone != 3 {
+		t.Fatalf("skip 迁移读取行数 = %d, want 3（含被跳过的冲突行）", rowsDone)
+	}
+	var total int64
+	if err := tgt.EasyDB().GetSqlDB().QueryRow("SELECT COUNT(*) FROM mig_skip_t").Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Fatalf("目标库行数 = %d, want 3（冲突行跳过、两行新写入、既有行保留）", total)
+	}
+	var name string
+	if err := tgt.EasyDB().GetSqlDB().QueryRow("SELECT name FROM mig_skip_t WHERE id=2").Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "preexisting" {
+		t.Fatalf("冲突行被覆盖：id=2 name=%q, want preexisting（skip 不得覆盖既有行）", name)
+	}
+}
+
+// dsnForTest 构造测试用数据源描述。
+func dsnForTest(driver, dsnStr string) (ds dsn.DataSource) {
+	return dsn.DataSource{Code: "t", Name: "t", DriverName: driver, Dsn: dsnStr}
+}
+
+// TestMigrateSanitizesInvalidUTF8 跨库编码边界：源文本含非 UTF-8 字节（如 GBK 历史遗留）时，
+// 迁移不失败、非法字节替换为 U+FFFD（MySQL/PG 严格校验目标库的整批拒收防线）。
+func TestMigrateSanitizesInvalidUTF8(t *testing.T) {
+	dir := t.TempDir()
+	src, err := db.Open("sqlite", filepath.Join(dir, "src.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	tgtPath := filepath.ToSlash(filepath.Join(dir, "tgt.db"))
+	tgt, err := db.Open("sqlite", tgtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tgt.Close()
+	for _, d := range []*db.DB{src, tgt} {
+		if _, err := d.EasyDB().Exec("CREATE TABLE mig_enc_t (id INTEGER PRIMARY KEY, path TEXT)"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 源库直接以 BLOB 通道写入 GBK 字节（模拟 SQLite 宽容存储的脏文本）
+	dirty := append([]byte("/"), 0xB1, 0xB8, 0xB7, 0xDD) // GBK「备份」
+	if _, err := src.EasyDB().Exec("INSERT INTO mig_enc_t VALUES (1, CAST(? AS TEXT))", dirty); err != nil {
+		t.Fatalf("写入脏数据: %v", err)
+	}
+	if _, err := src.EasyDB().Exec(`INSERT INTO mig_enc_t VALUES (2, '/clean-path')`); err != nil {
+		t.Fatal(err)
+	}
+	if utf8.Valid(dirty) {
+		t.Fatal("测试数据应为非法 UTF-8")
+	}
+
+	s := &AdminServer{}
+	ds := dsnForTest("sqlite", tgtPath)
+	params := migrateParams{source: "self", targetDS: ds, tables: []string{"mig_enc_t"},
+		batch: 100, mode: migrateModeReplace, selfDB: src}
+	st := &migrateRunState{tables: []*tableProgress{{Table: "mig_enc_t", Status: tablePending}}}
+	rows, err := s.migrateTable(context.Background(), src, tgt, "mig_enc_t", params, st, func(*taskcenter.Progress) {})
+	if err != nil {
+		t.Fatalf("含脏编码的迁移不应失败: %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("迁移行数 = %d, want 2", rows)
+	}
+	var got string
+	if err := tgt.EasyDB().GetSqlDB().QueryRow("SELECT path FROM mig_enc_t WHERE id=1").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	// strings.ToValidUTF8 将连续非法字节段整体替换为一个 U+FFFD（与 Go/PostgreSQL 惯例一致）
+	want := "/" + "\uFFFD"
+	if got != want {
+		t.Fatalf("脏编码行净化结果 = %q, want %q", got, want)
+	}
+	var clean string
+	if err := tgt.EasyDB().GetSqlDB().QueryRow("SELECT path FROM mig_enc_t WHERE id=2").Scan(&clean); err != nil {
+		t.Fatal(err)
+	}
+	if clean != "/clean-path" {
+		t.Fatalf("干净行不应被改写: %q", clean)
 	}
 }

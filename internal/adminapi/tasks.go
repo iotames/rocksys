@@ -45,7 +45,14 @@ func (s *AdminServer) routeTasks(w http.ResponseWriter, r *http.Request) {
 	path = strings.Trim(path, "/")
 	switch {
 	case path == "" && r.Method == http.MethodGet:
-		_ = writeJSON(w, map[string]any{"items": s.tasks.List()}, http.StatusOK)
+		// 并发管控配置一并透出（内存态），后台任务页原样展示：来源白名单 + 互斥规则三件套。
+		_ = writeJSON(w, map[string]any{
+			"items":            s.tasks.List(),
+			"allow_creators":   s.tasks.AllowCreators(),
+			"mutex_task_field": s.tasks.MutexTaskField(),
+			"mutex_list":       s.tasks.MutexList(),
+			"mutex_map":        s.tasks.MutexMap(),
+		}, http.StatusOK)
 	case path == "":
 		http.Error(w, "任务列表仅接受 GET", http.StatusMethodNotAllowed)
 	case r.Method == http.MethodGet:

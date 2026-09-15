@@ -46,7 +46,7 @@ type geoRecord struct {
 	City         nameMap   `maxminddb:"city"`
 }
 
-// GeoInfo 一次查询的完整地理信息（GEOIP_LIST_PLAN §4.1：名实相符、省与市分离）：
+// GeoInfo 一次查询的完整地理信息（名实相符、省与市分离）：
 //   - Code     ISO 国家码（如 "CN"，聚合口径）
 //   - Country  国名（本地化优先 zh-CN，缺失回落 en，如 "中国"；无则为空）
 //   - Province 一级行政区全称（zh-CN 优先，如 "广东省"/"California"；中国地图着色依赖全称）

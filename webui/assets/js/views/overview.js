@@ -540,7 +540,7 @@
         '</div>', geoLoading);
     }
     // 并入流量统计卡内的分区样式（同运行状态卡「资源」分区的 border-top 风格）。
-    // 能力边界注记（GEOIP_LIST D31）：聚合基于 geoip_list 关联表，按同步间隔更新，
+    // 能力边界注记：聚合基于 geoip_list 关联表，按同步间隔更新，
     // 最近一个间隔内新访问的 IP 暂不计入；「立即同步」按钮手动补齐。
     return '<div style="border-top:1px solid rgba(127,127,127,.15);margin-top:12px;padding-top:10px"><div class="geo-card-head"><div class="card-title">地理位置 <span class="card-sub">按范围查库聚合 · 地图与排名联动</span>' +
       '<button class="btn btn-sm" data-act="geo-sync"' + (geoSyncing ? ' disabled' : '') + ' style="margin-left:8px">' +
@@ -898,7 +898,7 @@
       'traffic-summary-retry': function () { loadSummary({ manual: true }); },
       'traffic-series-retry': function () { loadSeries({ manual: true }); },
       'geo-retry': function () { loadGeo({ manual: true }); },
-      // GeoIP 立即同步（GEOIP_LIST D31）：复用 POST /admin/db/geoip_sync 唯一端点；
+      // GeoIP 立即同步：复用 POST /admin/db/geoip_sync 唯一端点；
       // 同步成功后服务端已清统计缓存，重拉当前位置分布即见新数据
       'geo-sync': async function () {
         if (geoSyncing) return;

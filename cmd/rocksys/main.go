@@ -25,7 +25,6 @@ import (
 	"rocksys/internal/geoip"
 	"rocksys/internal/hotswap"
 	"rocksys/internal/netutil"
-	"rocksys/internal/taskcenter"
 
 	"github.com/iotames/easydb"
 
@@ -256,7 +255,7 @@ func buildServer(args []string) (*Server, error) {
 		return nil, fmt.Errorf("netutil.SubscribeHub: %w", err)
 	}
 
-	// GeoIP 历史回填（数据库页入口）服务端硬超时见 geoip_sync.go 的 geoSyncBudget 常量：
+	// GeoIP 历史回填（数据库页入口）执行模型见 geoip_sync.go 头注（后台任务，无时间预算）：
 	// 回填是大表批量读写，到点即在扫描块/更新批边界收工返回已完成进度（客户端断开同样立即停），
 	// 避免「前端早已超时、服务端仍在长时间读写占锁」。属实现细节，不做配置项。
 
@@ -305,7 +304,9 @@ func buildServer(args []string) (*Server, error) {
 		"数据库连接串（不同驱动取值不同；sqlite 默认已含 busy_timeout=5000 与 WAL，可显式覆盖）",
 		"  sqlite（默认）: rocksys.db 或 rocksys.db?_busy_timeout=5000&_journal_mode=WAL",
 		"  mysql:    user:pass@tcp(127.0.0.1:3306)/rocksys?charset=utf8mb4&parseTime=true",
-		"  postgres: host=127.0.0.1 port=5432 user=postgres dbname=rocksys sslmode=disable",
+				"  postgres（两种写法等价，任选其一）:",
+		"    URI 形式:  postgres://postgres:password@127.0.0.1:5432/rocksys?sslmode=disable",
+		"    键值形式:  host=127.0.0.1 port=5432 user=postgres password=yourpassword dbname=rocksys sslmode=disable",
 	); err != nil {
 		return nil, fmt.Errorf("register DB_DSN: %w", err)
 	}
@@ -327,7 +328,7 @@ func buildServer(args []string) (*Server, error) {
 	}
 	geoRes := geoip.NewResolver(geoipDir)
 
-	// ── GeoIP 自动同步间隔（GEOIP_LIST D29/D34：间隔内置开关语义，不设独立开关）──
+	// ── GeoIP 自动同步间隔（间隔值内置开关语义：0=关闭，不设独立开关）──
 	// int 分钟：0=关闭自动同步（手动不受影响）；有效最小 10（防设置过小耗尽资源）；
 	// <10（非 0）或非法回落默认 60。生效前置 = mmdb 已加载（未加载则定时器不启动，见下方启动处）；
 	// 运行中改值下一轮生效（每轮触发时重读本变量当前值，含 0=关闭的动态判定）。
@@ -436,13 +437,17 @@ func buildServer(args []string) (*Server, error) {
 	adminSrv.SetCatalog(catalog.DefaultComponents(), catalog.DefaultServices()) // WebUI 全局组件/服务说明
 	// 注入构建期版本信息（--version 同源，经 -ldflags 注入 main 包变量），供 WebUI 左上角展示。
 	adminSrv.SetVersionInfo(Version, BuildTime, GoVersion)
+	// 任务来源白名单追加本层拥有的提交点（内存态）：migrate/schema_apply/sql_exec 已由
+	// adminapi 创建时注册；只有注册过的来源可提交任务（防未注册调用方混入）。
+	// 名单经 GET /admin/tasks 透出，WebUI「后台任务」页以下拉框呈现。
+	adminSrv.TaskCenter().RegisterCreators("geoip_sync")
 	if dataDB != nil {
 		adminSrv.SetSQLSource(dataDB) // 用户存储 SQL 脚本源（sql/<dbtype>/admin_users_*.sql）
 		// 表结构同步：表清单在装配处注册（表名在这里已知，无法从脚本文件名推断），
 		// 数据连接与清单一并注入（详见 buildTableSpecs）。
 		adminSrv.SetTableSpecs(dataDB, buildTableSpecs(db.TableShieldEvent))
-		// 定时任务只读登记（GEOIP_LIST D13/D18/D19/D20）：装配期 upsert 登记（系统级整行重置），
-		// geoSyncAll 收口经 geoSyncOnDone 回写 geoip_sync 行运行状态（D21 单点）。
+		// 定时任务只读登记：装配期 upsert 登记（系统级整行重置），
+		// geoSyncAll 收口经 geoSyncOnDone 回写 geoip_sync 行运行状态（单点回写）。
 		schedReg := NewScheduleRegistry(dataDB)
 		if err := schedReg.EnsureTable(); err != nil {
 			log.Warn("schedule: 登记表初始化失败（定时任务页降级）", "err", err.Error())
@@ -453,14 +458,18 @@ func buildServer(args []string) (*Server, error) {
 					log.Warn("schedule: geoip_sync 状态回写失败", "err", err.Error())
 				}
 			}
+			geoSyncOnSkip = func(message string) {
+				if err := schedReg.UpdateSkipStatus(schedGeoipSync, message); err != nil {
+					log.Warn("schedule: geoip_sync 跳过登记失败", "err", err.Error())
+				}
+			}
 			if err := adminSrv.RegisterPlugin(PathScheduleList, ScheduleList(schedReg, cfgMgr, geoRes.Ready())); err != nil {
 				log.Warn("schedule: 端点注册失败", "err", err.Error())
 			}
 		}
 		// GeoIP 增量同步（数据库页「表数据」页签入口，POST 才生效）：增量构建/刷新 geoip_list 关联表。
-		// 同步执行改造为后台任务模式：同步是大表批量读写，同步 HTTP 受超时压制且前端拿不到进度；
-		// 提交任务即返回任务 ID，前端轮询任务详情展示进度与结果。geoip 数据处理逻辑零改动：
-		// 单趟时间预算（geoSyncBudget）与块/批边界收工语义保持，取消经任务中心 context 送达。
+		// 后台任务模式：提交任务即返回任务 ID，前端轮询任务详情展示进度与结果；无时间预算
+		// （后台任务默认无超时），取消经任务中心统一取消端点送达。互斥组 = 运行库数据面。
 		// mmdb 未加载时 503 引导（先放置数据文件并重启）。
 		adminSrv.RegisterPlugin("/admin/db/geoip_sync", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
@@ -471,24 +480,7 @@ func buildServer(args []string) (*Server, error) {
 				http.Error(w, "geoip: mmdb 未加载，无法同步；请放置 GeoLite2 mmdb（见概览页引导卡）并重启服务后重试", http.StatusServiceUnavailable)
 				return
 			}
-			taskID, err := adminSrv.SubmitTask(taskcenter.Spec{
-				CreatedBy: "geoip_sync",
-				Title:     "GeoIP 数据同步",
-				Run: func(ctx context.Context, setProgress taskcenter.SetProgressFn) error {
-					reps, err := geoSyncAll(ctx, dataDB, geoRes, geoSyncBudget)
-					setProgress(&taskcenter.Progress{
-						Text:   geoSyncReportText(reps),
-						Detail: reps,
-					})
-					if err != nil {
-						log.Error("geoip: 同步失败", "err", err.Error())
-						return err
-					}
-					// 同步成功清流量统计缓存：聚合视图下次查询重新计算，立即见新数据。
-					obsMw.PurgeTrafficCache()
-					return nil
-				},
-			})
+			taskID, err := adminSrv.SubmitTask(geoSyncTaskSpec("GeoIP 数据同步", dataDB, geoRes, obsMw.PurgeTrafficCache))
 			if err != nil {
 				http.Error(w, "提交 GeoIP 同步任务失败："+err.Error(), http.StatusConflict)
 				return
@@ -668,18 +660,23 @@ func buildServer(args []string) (*Server, error) {
 		autoBan.Start()
 	}
 
-	// GeoIP 自动同步定时器（GEOIP_LIST D29/D34）：mmdb 已加载才启动（生效前置）；
-	// 手动端点与定时触发收敛 geoSyncAll 唯一入口（D31），同步成功后清流量统计缓存（D25）。
+	// GeoIP 自动同步定时器：mmdb 已加载才启动（生效前置）；
+	// 手动端点与定时触发收敛 geoSyncAll 唯一入口，同步成功后清流量统计缓存。
 	var geoSyncStop chan struct{}
 	if dataDB != nil {
+		// 定时同步与手动同步同为任务中心实例（工厂到点生产实例），受分组互斥统一管控：
+		// 同互斥组有任务在跑（人工长任务/上一轮未完）时该轮跳过并登记 skipped（不动最近执行时间），
+		// 下轮到点自动续接（游标增量，无数据丢失）。
 		geoSyncStop = startGeoSyncTimer(geoRes, func(ctx context.Context) {
-			reps, err := geoSyncAll(ctx, dataDB, geoRes, 0) // ctx 已绑定单趟时间预算
+			taskID, err := adminSrv.SubmitTask(geoSyncTaskSpec("GeoIP 数据同步（定时）", dataDB, geoRes, obsMw.PurgeTrafficCache))
 			if err != nil {
-				log.Warn("geoip: 自动同步失败（下一轮到点重试）", "err", err.Error())
+				if geoSyncOnSkip != nil {
+					geoSyncOnSkip("本轮到点未执行（跳过）：" + err.Error())
+				}
+				log.Warn("geoip: 定时同步本轮跳过", "err", err.Error())
 				return
 			}
-			obsMw.PurgeTrafficCache()
-			log.Info("geoip: 自动同步完成", "report", geoSyncReportText(reps))
+			log.Info("geoip: 定时同步任务已提交", "task_id", taskID)
 		})
 		if geoSyncStop == nil {
 			log.Info("geoip: mmdb 未加载，自动同步未启动（放置 GeoLite2 mmdb 并重启后生效）")

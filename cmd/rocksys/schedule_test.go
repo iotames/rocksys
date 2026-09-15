@@ -146,7 +146,7 @@ func TestScheduleUpdateRunStatusTruncatesByRunes(t *testing.T) {
 	if len([]rune(long)) <= scheduleMessageMaxRunes {
 		t.Fatalf("测试数据应超过 %d 字符", scheduleMessageMaxRunes)
 	}
-	if err := reg.UpdateRunStatus(schedGeoipSync, ScheduleStatusCancelled, long); err != nil {
+	if err := reg.UpdateRunStatus(schedGeoipSync, ScheduleStatusPartial, long); err != nil {
 		t.Fatalf("UpdateRunStatus: %v", err)
 	}
 	var got string

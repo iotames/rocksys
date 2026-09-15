@@ -1,5 +1,5 @@
 -- IP 地理信息关联表（幂等建表，SQLite 方言）。{table} 为运行时表名占位符（非用户输入，安全）。
--- 一 IP 一行：地理信息是 IP 的函数，独立成表与日志表按 client_ip 关联（GEOIP_LIST_PLAN §4.1），
+-- 一 IP 一行：地理信息是 IP 的函数，独立成表与日志表按 client_ip 关联，
 -- 取代 access_log / shield_event 逐行冗余存 country/city。
 -- 名实相符：country_code 存 ISO 码（聚合口径）、country_name 存本地化国名（显示，zh-CN 优先）、
 -- province 存一级行政区全称（zh-CN，如「广东省」；中国地图着色依赖全称，禁止存短名）、city 只存城市名。

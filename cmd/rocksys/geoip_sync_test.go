@@ -111,7 +111,7 @@ func TestGeoipSyncBuild(t *testing.T) {
 		`INSERT INTO shield_event (time, trace_id, block_type, client_ip, method, path, user_agent, host, status_code, rule_hit, req_bytes, extra)
 		VALUES ('%s','s1',7,'1.2.3.4','GET','/x','UA','h',403,'test',0,'{}')`, now))
 
-	reps, err := geoSyncAll(context.Background(), d, stubResolver{}, 0)
+	reps, err := geoSyncAll(context.Background(), d, stubResolver{}, nil)
 	if err != nil {
 		t.Fatalf("geoSyncAll err: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestGeoipSyncBuild(t *testing.T) {
 		}
 	}
 	// 幂等：再跑一次应 0 行新增（127.0.0.1 永远无 geo，每趟被重发现但跳过，不计入 upsert）
-	reps2, err := geoSyncAll(context.Background(), d, stubResolver{}, 0)
+	reps2, err := geoSyncAll(context.Background(), d, stubResolver{}, nil)
 	if err != nil {
 		t.Fatalf("二次同步 err: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestGeoipSyncNotReady(t *testing.T) {
 	d := openTestDB(t)
 	stubReady = false
 	defer func() { stubReady = true }()
-	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, 0); err == nil {
+	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, nil); err == nil {
 		t.Fatal("mmdb 未就绪应拒绝并报错")
 	}
 }
@@ -210,7 +210,7 @@ func TestGeoipSyncCursorResume(t *testing.T) {
 	defer func() { geoSyncBatchIPs, geoSyncScanChunk = oldIPs, oldChunk }()
 
 	for pass := 1; pass <= 2; pass++ {
-		rep, err := geoSyncTable(context.Background(), d, "access_log", stubFlexResolver{})
+		rep, err := geoSyncTable(context.Background(), d, "access_log", stubFlexResolver{}, nil)
 		if err != nil {
 			t.Fatalf("第 %d 趟 err: %v", pass, err)
 		}
@@ -222,7 +222,7 @@ func TestGeoipSyncCursorResume(t *testing.T) {
 		t.Errorf("断点续扫后应 4 个 IP 全入表，实际 %d", got)
 	}
 	// 扫完一趟：Done=true 且游标归零，再次执行仍幂等 0 行
-	rep3, err := geoSyncTable(context.Background(), d, "access_log", stubFlexResolver{})
+	rep3, err := geoSyncTable(context.Background(), d, "access_log", stubFlexResolver{}, nil)
 	if err != nil {
 		t.Fatalf("收尾趟 err: %v", err)
 	}
@@ -231,9 +231,10 @@ func TestGeoipSyncCursorResume(t *testing.T) {
 	}
 }
 
-// TestGeoipSyncBudgetStop 服务端硬超时：上下文取消（调用方断开/单趟到点）时立即收工，
-// 返回已完成进度且标记 BudgetStop，并释放进行中互斥锁——不允许脱离调用方继续长时间读写。
-func TestGeoipSyncBudgetStop(t *testing.T) {
+// TestGeoipSyncInterruptOnCancel 调用方取消（人工经任务中心取消/进程收尾）时立即在块边界收工，
+// 返回已完成进度且标记 Interrupted，并释放进行中互斥锁。无时间预算（后台任务默认无超时），
+// 停止只有取消一条路。
+func TestGeoipSyncInterruptOnCancel(t *testing.T) {
 	resetGeoSyncState()
 	d := openTestDB(t)
 	exec(t, d, mustDDL(t, d, "access_log_create_table.sql", "access_log"))
@@ -244,13 +245,13 @@ func TestGeoipSyncBudgetStop(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 模拟调用方已断开 / 单趟时间已到
-	reps, err := geoSyncAll(ctx, d, stubFlexResolver{}, 0)
+	reps, err := geoSyncAll(ctx, d, stubFlexResolver{}, nil)
 	if err != nil {
 		t.Fatalf("取消后应正常返回已完成进度而非报错，err: %v", err)
 	}
 	for _, r := range reps {
-		if !r.BudgetStop || r.Done || r.RowsUpsert != 0 {
-			t.Errorf("%s 应标记提前收工（BudgetStop=true, done=false, 0 行），报告 %+v", r.Table, r)
+		if !r.Interrupted || r.Done || r.RowsUpsert != 0 {
+			t.Errorf("%s 应标记提前收工（Interrupted=true, done=false, 0 行），报告 %+v", r.Table, r)
 		}
 	}
 	if geoSyncRunning.Load() {
@@ -267,17 +268,17 @@ func TestGeoipSyncBusyGuard(t *testing.T) {
 	ensureGeoipList(t, d)
 	geoSyncRunning.Store(true)
 	defer geoSyncRunning.Store(false)
-	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, 0); err == nil {
+	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, nil); err == nil {
 		t.Fatal("上一趟进行中应拒绝并发触发")
 	}
 }
 
-// TestGeoSyncStatusCancelledVsBudgetStop 取消与到点的登记状态必须可分辨：
-//   - 到点（DeadlineExceeded）：分趟同步的设计内节奏 → success；
-//   - 取消（Cancel）：人工终止 → cancelled；
+// TestGeoSyncOutcome 取消与正常完成的登记状态必须可分辨（无时间预算，不存在到点分支）：
+//   - 取消（Cancel）：人工终止（本轮未跑完）→ partial；
 //   - 真错误 → failed。
+//
 // 三者混记会让定时任务页把「被取消」显示成「成功」，用户误以为数据已补齐。
-func TestGeoSyncStatusCancelledVsBudgetStop(t *testing.T) {
+func TestGeoSyncOutcome(t *testing.T) {
 	cases := []struct {
 		name       string
 		err        error
@@ -285,9 +286,8 @@ func TestGeoSyncStatusCancelledVsBudgetStop(t *testing.T) {
 		wantStop   bool
 	}{
 		{"无错误", nil, "success", false},
-		{"单趟到点", context.DeadlineExceeded, "success", true},
-		{"任务被取消", context.Canceled, "cancelled", true},
-		{"包装后的取消", fmt.Errorf("geoip: upsert 失败: %w", context.Canceled), "cancelled", true},
+		{"任务被取消", context.Canceled, "partial", true},
+		{"包装后的取消", fmt.Errorf("geoip: upsert 失败: %w", context.Canceled), "partial", true},
 		{"真错误", fmt.Errorf("geoip: 扫描缺失 IP 失败: disk I/O error"), "failed", false},
 	}
 	for _, c := range cases {
@@ -310,7 +310,7 @@ func TestGeoSyncOnDone(t *testing.T) {
 	var status, msg string
 	called := false
 	geoSyncOnDone = func(s, m string) { called, status, msg = true, s, m }
-	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, 0); err != nil {
+	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, nil); err != nil {
 		t.Fatalf("geoSyncAll err: %v", err)
 	}
 	if !called || status != "success" || msg == "" {
@@ -321,7 +321,7 @@ func TestGeoSyncOnDone(t *testing.T) {
 	called = false
 	stubReady = false
 	geoSyncOnDone = func(s, m string) { called, status, msg = true, s, m }
-	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, 0); err == nil {
+	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, nil); err == nil {
 		t.Fatal("mmdb 未就绪应报错")
 	}
 	if called {

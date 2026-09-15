@@ -1,6 +1,6 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/schedule.js 定时任务页（只读）
- * 数据源 GET /admin/schedule/list（GEOIP_LIST D15/D18：只读登记 + 状态汇总，不驱动任务）。
+ * 数据源 GET /admin/schedule/list（只读登记 + 状态汇总，不驱动任务）。
  * 展示：任务名称 / 说明 / 类型 / 关联开关（enabled 由服务端按配置现值计算）/
  *       上次执行时间（仅本期回写者 geoip_sync 有值，其余行标注「未登记」并说明）。
  * UX 红线：load 透传 refreshPage 的 opts（含 silent）；非引导态加载失败弹统一 error toast。
@@ -32,7 +32,7 @@
     if (st === 'success') return '<span class="tag tag-green">成功</span>';
     if (st === 'failed') return '<span class="tag tag-red">失败</span>';
     if (st === 'skipped') return '<span class="tag">跳过</span>';
-    if (st === 'cancelled') return '<span class="tag tag-orange">已取消</span>';
+    if (st === 'partial') return '<span class="tag tag-orange">部分完成</span>';
     return esc(st);
   }
 
@@ -49,7 +49,7 @@
   }
 
   function tableHTML() {
-    const head = '<tr><th>任务</th><th>计划</th><th>类型</th><th>关联开关</th><th>状态</th><th>上次执行完成</th><th>说明</th></tr>';
+    const head = '<tr><th>任务</th><th>计划</th><th>类型</th><th>关联开关</th><th>最近执行时间</th><th>最近执行结果</th><th>说明</th></tr>';
     const body = rows.map(function (t) {
       const cfg = t.config_key
         ? '<code>' + esc(t.config_key) + '</code>'
@@ -64,9 +64,9 @@
         '<td>' + esc(t.plan || '—') + '</td>' +
         '<td>' + kindTag(t.kind) + '</td>' +
         '<td>' + cfg + '<div style="margin-top:4px">' + enabledTag(!!t.enabled) + '</div></td>' +
+        '<td>' + runCell + '</td>' +
         '<td>' + statusTag(t.last_status) +
           (t.last_message ? '<div class="form-hint" style="max-width:280px;white-space:normal">' + esc(t.last_message) + '</div>' : '') + '</td>' +
-        '<td>' + runCell + '</td>' +
         '<td class="form-hint" style="max-width:260px;white-space:normal">' + esc(t.remark || '—') + '</td>' +
         '</tr>';
     }).join('');
@@ -89,7 +89,7 @@
     host.innerHTML = '<div class="page-head"><h2>定时任务</h2>' +
       '<button class="btn btn-sm" data-act="schedule-reload">⟳ 刷新</button></div>' +
       '<div class="alert alert-info"><b>口径说明：</b>本页为只读登记与状态汇总，不驱动任何任务' +
-      '（各任务由各自触发循环执行）。「上次执行完成」仅对纳入状态回写的任务（当前为 GeoIP 关联表同步）有值，' +
+      '（各任务由各自触发循环执行）。「最近执行时间」（执行结束时刻）仅对纳入状态回写的任务（当前为 GeoIP 关联表同步）有值，' +
       '其余任务显示「未登记」不代表从未执行；需要实时/精确触发的内部机制不纳入统一登记。' +
       '启用状态来自配置中心实时值（无独立开关列，可配型任务的开关即其关联配置项）。</div>' + body;
   }

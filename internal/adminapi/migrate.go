@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/iotames/easydb/dsn"
 	"github.com/iotames/easyserver/log"
@@ -596,6 +597,7 @@ func (s *AdminServer) migrateTable(ctx context.Context, src, tgt *db.DB, table s
 	}
 
 	insertStmt := buildInsertSQL(tgt.Driver(), table, writeCols, p.mode)
+	conflictSuffix := insertConflictSuffix(tgt.Driver(), p.mode)
 	subRows := migratePlaceholderBudget / len(writeCols) // 子批行数 = 预算 ÷ 列数（至少 1 行）
 	if subRows < 1 {
 		subRows = 1
@@ -611,7 +613,7 @@ func (s *AdminServer) migrateTable(ctx context.Context, src, tgt *db.DB, table s
 		if len(batchVals) == 0 {
 			return nil
 		}
-		if err := writeSubBatches(ctx, tgt, table, insertStmt, writeCols, batchVals, subRows); err != nil {
+		if err := writeSubBatches(ctx, tgt, table, insertStmt, conflictSuffix, writeCols, batchVals, subRows); err != nil {
 			return err
 		}
 		rowsDone += int64(len(batchVals))
@@ -632,6 +634,17 @@ func (s *AdminServer) migrateTable(ctx context.Context, src, tgt *db.DB, table s
 		if err := rows.Scan(ptrs...); err != nil {
 			_ = flush()
 			return rowsDone, fmt.Errorf("读取源表行失败: %w", err)
+		}
+		// 跨库编码边界净化：SQLite 动态类型宽容，源文本可能含历史遗留的非 UTF-8 字节
+		// （如客户端 GBK 编码的原始请求路径），MySQL/PG 等严格校验的目标库会整批拒收。
+		// 非法字节替换为 U+FFFD 替换符（不猜测源编码做转码，避免二次破坏）。
+		for i := range scan {
+			switch v := scan[i].(type) {
+			case string:
+				scan[i] = toValidUTF8(v)
+			case []byte:
+				scan[i] = []byte(toValidUTF8(string(v)))
+			}
 		}
 		vals := make([]any, 0, len(writeCols))
 		for i, c := range srcCols {
@@ -666,7 +679,7 @@ func (s *AdminServer) migrateTable(ctx context.Context, src, tgt *db.DB, table s
 }
 
 // writeSubBatches 把攒下的一批按占位符预算切子批写入（子批共享同一事务——批次=事务粒度不变）。
-func writeSubBatches(ctx context.Context, tgt *db.DB, table, insertStmt string, cols []string, batchVals [][]any, subRows int) error {
+func writeSubBatches(ctx context.Context, tgt *db.DB, table, insertStmt, conflictSuffix string, cols []string, batchVals [][]any, subRows int) error {
 	tx, err := tgt.EasyDB().GetSqlDB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("开启事务失败: %w", err)
@@ -678,7 +691,7 @@ func writeSubBatches(ctx context.Context, tgt *db.DB, table, insertStmt string, 
 			end = len(batchVals)
 		}
 		part := batchVals[start:end]
-		sqlText := insertStmt + multiValues(tgt.Driver(), len(part), len(cols))
+		sqlText := insertStmt + multiValues(tgt.Driver(), len(part), len(cols)) + conflictSuffix
 		args := make([]any, 0, len(part)*len(cols))
 		for _, v := range part {
 			args = append(args, v...)
@@ -701,7 +714,8 @@ func quoteIdent(driver string) string {
 	return `"`
 }
 
-// buildInsertSQL 构造 INSERT 前缀（列名方言引号 + 冲突策略），VALUES 占位符段由 multiValues 生成。
+// buildInsertSQL 构造 INSERT 前缀（列名方言引号 + 冲突策略），VALUES 占位符段由 multiValues 生成，
+// 冲突策略后缀由 insertConflictSuffix 生成（skip 的 ON CONFLICT 子句须位于 VALUES 之后，故拆两段）。
 func buildInsertSQL(driver, table string, cols []string, mode string) string {
 	q := quoteIdent(driver)
 	parts := make([]string, len(cols))
@@ -713,6 +727,16 @@ func buildInsertSQL(driver, table string, cols []string, mode string) string {
 		return "INSERT IGNORE INTO " + q + table + q + " (" + collist + ") VALUES "
 	}
 	return "INSERT INTO " + q + table + q + " (" + collist + ") VALUES "
+}
+
+// insertConflictSuffix 冲突策略后缀：skip 模式下 SQLite/PG 用 ON CONFLICT DO NOTHING 逐行跳过冲突
+// （该子句语法上位于 VALUES 之后，MySQL 的同语义跳过用 INSERT IGNORE 前缀表达，见 buildInsertSQL）；
+// replace 模式写前已清空目标表，无后缀。
+func insertConflictSuffix(driver, mode string) string {
+	if mode != migrateModeSkip || driver == "mysql" {
+		return ""
+	}
+	return " ON CONFLICT DO NOTHING"
 }
 
 // multiValues 生成 nRows 行 × nCols 列的 VALUES 占位符段（如 (?,?),(?,?)）。
@@ -741,6 +765,14 @@ func multiValues(driver string, nRows, nCols int) string {
 		b.WriteByte(')')
 	}
 	return b.String()
+}
+
+// toValidUTF8 字符串净化：非法 UTF-8 字节序列替换为 U+FFFD（与 Go/PostgreSQL 惯例一致）。
+func toValidUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "\uFFFD")
 }
 
 // countSQL 各方言行数统计。

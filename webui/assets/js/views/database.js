@@ -358,7 +358,7 @@
   // 该端点为精确统计（大库 COUNT(*) 秒级~十秒级），显式放宽超时到 60 秒，避免被默认 5 秒误掐断。
   // force=true 表示用户主动触发（点「加载」/「⟳」）：失败必须给出统一报错提示；
   // 自动加载（页面进入）失败仅在服务端有响应时提示，网络不可达静默并由状态栏占位承载。
-  // 上次同步时间（GEOIP_LIST D7）：读 schedule_list 登记行 geoip_sync 的 last_run_at；
+  // 上次同步时间：读 schedule_list 登记行 geoip_sync 的 last_run_at；
   // 静默刷新（失败不弹 toast，卡片显示「未登记」占位），同步成功后由 runGeoSync 触发重拉。
   async function loadGeoSyncMeta() {
     try {
@@ -527,7 +527,7 @@
       state.geo.error = e.message || '同步失败';
       // mmdb 提示仅在服务端真返回 503（geo 未就绪）时附带，避免误导
       const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务' : '';
-      toast('GeoIP 同步提交失败：' + state.geo.error + hint, 'error');
+      toast(state.geo.error + hint, 'error');
       render();
     }
   }
@@ -881,7 +881,7 @@
     return '<div class="card"><div class="card-title">数据迁移' +
       '<span class="tag tag-orange">danger · 作用于目标库</span></div>' +
       '<div class="form-hint">同名字段跨方言直迁（先完成表结构对齐）；目标不可选本机运行库（防误覆盖生产数据）。' +
-      '单表失败不阻塞后续表；同一时刻全局仅一个长任务运行。</div>' + body + '</div>';
+      '单表失败不阻塞后续表；同互斥集任务串行（互斥规则见「后台任务」页并发管控卡），其余任务并行不设限。</div>' + body + '</div>';
   }
 
   // 把任务详情映射进迁移进度区。

@@ -221,9 +221,12 @@ func TestMigrateCrossDialect(t *testing.T) {
 	if newID <= rows {
 		t.Fatalf("MySQL 自增序列未重置: new id = %d, want > %d", newID, rows)
 	}
-	// skip 模式重跑：冲突行跳过，不报错（幂等补数语义）。
+	// skip 模式重跑：冲突行跳过，不报错（幂等补数语义），行数不变（既有行不被覆盖）。
 	if n := migrateThrough(t, s, src, mysqlDB, "migtest_users", 1000, migrateModeSkip); n != rows {
 		t.Fatalf("skip 重跑迁移行数 = %d, want %d", n, rows)
+	}
+	if n := countRowsX(t, mysqlDB, "migtest_users"); n != rows+1 {
+		t.Fatalf("MySQL skip 重跑后行数 = %d, want %d（含补写的一条 after，冲突行全跳过）", n, rows+1)
 	}
 	// 宽表大批次：33 列 × 1000 行 = 33000 占位符，预算 30000 切子批后应完整迁完。
 	if n := migrateThrough(t, s, src, mysqlDB, "migtest_wide", 1000, migrateModeReplace); n != 2000 {
@@ -279,6 +282,15 @@ func TestMigrateCrossDialect(t *testing.T) {
 	}
 	if pgNewID <= wantRows {
 		t.Fatalf("PG 自增序列未重置: new id = %d, want > %d", pgNewID, wantRows)
+	}
+
+	// PG skip 冲突策略（ON CONFLICT DO NOTHING）：对同批数据重迁，冲突行逐行跳过、
+	// 不报错、行数不变（既有行不被覆盖）。
+	if n := migrateThrough(t, s, mysqlDB, pgDB, "migtest_users", 1000, migrateModeSkip); n != wantRows {
+		t.Fatalf("MySQL→PG skip 重迁读取行数 = %d, want %d", n, wantRows)
+	}
+	if n := countRowsX(t, pgDB, "migtest_users"); n != wantRows+1 {
+		t.Fatalf("PG skip 重迁后行数 = %d, want %d（含补写的一条 after-pg，冲突行全跳过）", n, wantRows+1)
 	}
 }
 

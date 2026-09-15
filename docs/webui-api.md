@@ -68,7 +68,7 @@
 | 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；每条语句落 `sql_exec_log` 审计留痕；danger 级危险操作，服务端不做语句白名单）。**混合模式**：body 带 `background:true` 时改提交任务执行中心后台执行、立即返回 `{ok,task_id,total}`，逐条结果经 `GET /admin/tasks/{id}` 的 `progress.detail` 取回（长语句摆脱 HTTP 超时；`source` 记为 `webui-background`） |
 | 43 | GET | `/admin/db/execlog` | SQL 执行历史查询（`sql_exec_log` 表，时间倒序 + offset 服务端分页） |
 | 44 | GET | `/admin/db/size` | 数据库空间占用统计（表名/备注/精确条数 + 库级总空间；逐表占用含数据/索引拆分，只取缓存，未计算返回 `bytes_known=false`）；`GET /admin/db/table_size?table=` 单表精确占用按需计算（白名单校验 + 10 分钟缓存） |
-| 45 | POST | `/admin/db/geoip_sync` | GeoIP 关联表增量同步：扫 access_log / shield_event 中「`client_ip` 未入 `geoip_list`」的 IP，按已加载 mmdb 逐 IP 解析后 upsert `geoip_list`（一 IP 一行；发现阶段按 id 主键游标分块增量扫描 + 对 geoip_list IN 点查内存求差；单趟受固定 20 秒预算与任务取消双重约束，到点即在块边界收工、重复执行自动续接；geo 未就绪 503；私网/回环/解析不出的 IP 跳过并计数；同步成功后自动清流量统计缓存；结束回写 `schedule_list` 的 `geoip_sync` 行：完成或单趟到点收工记 `success`，人工取消记 `cancelled`，真错误记 `failed`）。**后台任务模式**：提交即返回 `{ok,task_id}`，进度与报告文本经 `GET /admin/tasks/{id}` 查询（不再受 HTTP 15 秒超时压制）；重复提交（已有任务在跑）返回 409 |
+| 45 | POST | `/admin/db/geoip_sync` | GeoIP 关联表增量同步：扫 access_log / shield_event 中「`client_ip` 未入 `geoip_list`」的 IP，按已加载 mmdb 逐 IP 解析后 upsert `geoip_list`（一 IP 一行；发现阶段按 id 主键游标分块增量扫描 + 对 geoip_list IN 点查内存求差；无时间预算——后台任务默认无超时，人工取消在块边界收工、重复执行自动续接；geo 未就绪 503；私网/回环/解析不出的 IP 跳过并计数；同步成功后自动清流量统计缓存；结束回写 `schedule_list` 的 `geoip_sync` 行（任务定义登记面，只记轮次执行结果）：完成记 `success`，人工取消致本轮未跑完记 `partial`，真错误记 `failed`）。**后台任务模式**：手动与定时（GEOIP_SYNC_INTERVAL 到点）皆经任务中心提交实例——提交即返回 `{ok,task_id}`，进度经 `GET /admin/tasks/{id}` 查询（流式更新）；互斥命中返回 409。定时轮同集被占则该轮跳过并登记 `skipped`（不动最近执行时间），下轮到点续接 |
 | 45a | GET | `/admin/schedule/list` | 定时任务只读清单（GEOIP_LIST D15/D18）：`schedule_list` 登记行 + 行内 `enabled`（bool，服务端读 `config_key` 对应 easyconf 现值；空 `config_key` 系统级恒 true；`GEOIP_SYNC_INTERVAL` 按 0=关闭语义判定且 mmdb 未就绪视为停用）。响应 `{ok,tasks:[{name,title,kind,config_key,plan,last_run_at,last_status,last_message,remark,enabled}]}`；`last_run_at=null` 表示「未登记」（非「从未执行」）。只读，无写端点 |
 | 46 | GET | `/admin/db/dsn` | 外部数据源列表（DSN 脱敏：mysql/postgres 凭据段打码，sqlite 路径原样；`{code,name,driver,dsn}`）。数据源为迁移目标与备选源，配置持久化在 `<CONF_DIR>/dsn.json` |
 | 47 | POST | `/admin/db/dsn` | 添加数据源：body `{name,driver,dsn[,test]}`。校验驱动白名单（sqlite/mysql/postgres）与已注册、`name` 唯一、DSN 重复（同 Code）拦截、MySQL 密码裸 `@` 预检；`test:true` 时先连通测试再落盘。成功返回 `{ok,code}` |
@@ -79,12 +79,12 @@
 | 52 | POST | `/admin/db/migrate/start` | 启动数据迁移：body `{source,target,tables[],batch,mode}`（`source` 缺省/`self`=本机运行库；`target` 必须是外部数据源，指向运行库被拒；`mode` ∈ replace/skip；`batch` clamp 100–10000，缺省 1000，仅存任务内存态不落盘）。返回 `{ok,task_id,tables,batch,mode}`；已有任务在跑 409 |
 | 53 | GET | `/admin/db/migrate/status` | 迁移任务状态便捷视图：`{state,task_id?,result?,tables:[{table,status,rows_done,rows_total,err?}]}`，无任务时 `state=idle` |
 | 54 | POST | `/admin/db/migrate/cancel` | 取消迁移：body `{table}` 取消该待迁移表（仅 pending 可取消）；空 body 取消整任务（当前批事务完成后停止，已写入行保留、重跑幂等续接） |
-| 55 | GET | `/admin/tasks` | 任务执行中心任务列表：`{items:[Task]}`，含 running 与保留期内终态（终态仅留最近 100 条），按新→旧排序。Task = `{id,created_by,title,status,progress{text,detail},result,created_at,finished_at}` |
+| 55 | GET | `/admin/tasks` | 任务执行中心任务列表：`{items:[Task], allow_creators:[来源白名单], mutex_task_field:"CreatedBy", mutex_list:[互斥公共集], mutex_map:{标签:[互斥标签]}}`；items 含 running 与保留期内终态（终态仅留最近 100 条），按新→旧排序。Task = `{id,created_by,title,status,progress{text,detail},result,created_at,finished_at}` |
 | 56 | GET | `/admin/tasks/{id}` | 单任务详情（`progress`/`status`/`result`/时间字段）；不存在（含已淘汰/重启后旧 ID）返回 404 |
 | 57 | POST | `/admin/tasks/{id}/cancel` | 统一取消（context 送达，落点由业务定）：返回 `{ok,message,task}`；任务已终态时返回该终态与提示、不报错；不存在返回 404 |
 | 43 | POST | `/admin/shield/blacklist/sync_file` | 从外挂规则文件 `rules/ip_blacklist.txt` 同步 IP 入库（block_type=11，幂等） |
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
-| 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的全部封禁条目（含永久；首页页签数据源） |
+| 45 | POST | `/admin/db/geoip_sync` | GeoIP 关联表增量同步：扫 access_log / shield_event 中「`client_ip` 未入 `geoip_list`」的 IP，按已加载 mmdb 逐 IP 解析后 upsert `geoip_list`（一 IP 一行；发现阶段按 id 主键游标分块增量扫描 + 对 geoip_list IN 点查内存求差；无时间预算——后台任务默认无超时，人工取消在块边界收工、重复执行自动续接；geo 未就绪 503；私网/回环/解析不出的 IP 跳过并计数；同步成功后自动清流量统计缓存；结束回写 `schedule_list` 的 `geoip_sync` 行（任务定义登记面，只记轮次执行结果）：完成记 `success`，人工取消致本轮未跑完记 `partial`，真错误记 `failed`）。**后台任务模式**：手动与定时（GEOIP_SYNC_INTERVAL 到点）皆经任务中心提交实例——提交即返回 `{ok,task_id}`，进度经 `GET /admin/tasks/{id}` 查询（流式更新）；互斥命中返回 409。定时轮同集被占则该轮跳过并登记 `skipped`（不动最近执行时间），下轮到点续接 |
 | 46 | GET | `/admin/system` | 运行时长 + 机器资源概况（概览页运行时间瓦片与资源监控卡数据源） |
 | 47 | GET | `/admin/shield/total` | WAF 拦截事件落库总数（查库 COUNT 全范围，受保留期影响） |
 | 48 | GET | `/admin/obs/traffic/summary` | 流量统计指标标量 + 率（概览页流量统计区数据源） |

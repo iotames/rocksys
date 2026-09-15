@@ -133,7 +133,16 @@ func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *ea
 	s.initUsers()
 	s.auth = newAdminAuth(confMgr, s.initialized, s.jwtSecret, s.adminToken, s.users, addr)
 	// 任务执行中心：纯内存、零配置，随管理接口生命周期；端点经头部中间件前缀拦截（见 tasks.go）。
-	s.tasks = taskcenter.New(time.Now().Unix())
+	// 任务执行中心 + 来源白名单（内存态）：本包拥有 migrate/schema_apply/sql_exec 三个提交点，
+	// 由创建方注册；外部提交点（如装配层 geoip_sync）由其归属方 RegisterCreators 追加。
+	// 未注册来源 Submit 一律拒绝（防未知调用方混入任务列表）。
+	s.tasks = taskcenter.New(time.Now().Unix(), "migrate", "schema_apply", "sql_exec")
+	// 互斥规则（内存态）：迁移/结构对齐/SQL 后台执行/GeoIP 同步都读写运行库（前两者还写目标库），
+	// 标签进公共互斥集——集内至多 1 个任务在跑；未入集的来源（未来新增长任务）默认并行不互斥。
+	if err := s.tasks.RegisterMutexRules("CreatedBy",
+		[]string{"migrate", "schema_apply", "sql_exec", "geoip_sync"}, nil); err != nil {
+		panic(err) // 常量入参误配置属装配缺陷，直接暴露（与上方 confMgr.Register 同口径）
+	}
 	s.srv.AddMiddleHead(s.newTasksMiddleware())
 	s.registerBuiltin()
 	return s

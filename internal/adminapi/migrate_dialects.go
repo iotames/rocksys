@@ -126,6 +126,14 @@ func resetAutoIncrement(ctx context.Context, d *db.DB, table string) error {
 	q := quoteIdent(d.Driver())
 	switch d.Driver() {
 	case "sqlite":
+		// sqlite_sequence 表随库内首个 AUTOINCREMENT 表创建；目标库全无 AUTOINCREMENT 表时
+		// 该表不存在——此时主键要么是普通 INTEGER PRIMARY KEY（ROWID 别名，SQLite 原生按
+		// max(rowid)+1 分配，无需重置），要么无主键，一律跳过。
+		var seqTable string
+		if err := sqldb.QueryRowContext(ctx,
+			"SELECT name FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'").Scan(&seqTable); err != nil {
+			return nil // sqlite_sequence 不存在：无自增序列可重置，也无需重置
+		}
 		// sqlite_sequence 行在首次自增插入后才存在：先 UPDATE，无行则 INSERT。
 		res, err := sqldb.ExecContext(ctx,
 			"UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX("+q+pkCol+q+"), 0) FROM "+q+table+q+") WHERE name = ?", table)

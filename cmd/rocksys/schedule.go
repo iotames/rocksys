@@ -1,14 +1,15 @@
-// schedule.go：定时任务只读登记器（GEOIP_LIST_PLAN §4.3，D18/D19/D20/D21）。
+// schedule.go：定时任务只读登记器（schedule_list 表的登记与查询）。
 //
-// 定位：schedule_list 只做「登记 + 状态汇总」，不驱动任何任务——各任务仍由各自触发循环执行，
+// 定位（任务工厂，非任务实例）：schedule_list 是「任务模板 + 轮次结果」的登记面——
+// 登记有哪些任务、关联开关与上一轮执行结果，不驱动任何任务——各任务仍由各自触发循环执行，
 // 本表提供统一入口的可见性（有哪些任务、关联开关、上次执行状态）。需要实时/精确触发的
 // 内部机制（workpool 重试/worker 检查等）不纳入统一登记，以登记行 remark 与本注释标注。
 //
-// 模块边界（D27）：登记与只读端点放装配层（cmd/rocksys），internal 不 import plugins；
+// 模块边界：登记与只读端点放装配层（cmd/rocksys），internal 不 import plugins；
 // enabled 由端点响应行内附带（服务端读 config_key 对应 easyconf 当前值），表内无 enabled 列——
 // 配置中心是启用状态的唯一真源，消除「谁说了算」。
 //
-// 状态回写（D21）：本期仅 geoip_sync 行有回写者（geoSyncAll 收口单点回调，手动/定时皆经它）；
+// 状态回写：本期仅 geoip_sync 行有回写者（geoSyncAll 收口单点回调，手动/定时皆经它）；
 // 其 last_run_at 即「上次同步时间」。老任务零侵入，last_run_at 空表示「未登记」（页面标注，防误读为从未执行）。
 package main
 
@@ -54,16 +55,22 @@ const (
 const PathScheduleList = "/admin/schedule/list"
 
 // schedule_list.last_status 取值（权威定义，与 sql/<方言>/schedule_list_create_table.sql 注释、
-// docs/DATA_DICT.md §3.5 三处一一对应）：
-//   success   执行成功（含分趟同步「单趟到点收工、下次续接」——分趟是设计内节奏，非异常）
-//   failed    执行失败（真错误：库不可用、SQL 出错等）
-//   skipped   跳过（该轮未执行，如前置条件不满足）
-//   cancelled 被取消（人工经任务取消端点终止，或进程收尾中止）；已完成部分保留，重跑从断点续接
+// docs/DATA_DICT.md §3.5 三处一一对应）。
+//
+// 域边界：schedule 是「任务工厂/任务定义」的登记面——只登记任务模板（谁、关联什么开关、
+// 什么节奏）与「上一轮调度执行的结果」；任务实例的运行时状态（进行中/取消/进度/互斥）
+// 属任务执行中心，实例的全部应用状态只在任务中心查询，本表不承载。故取值全部是
+// 「轮次执行结果」域词汇，无实例域词汇：
+//
+//	success   上一轮执行成功（含分趟同步「到点收工、下次续接」——分趟是设计内节奏，非异常）
+//	failed    上一轮执行失败（真错误：库不可用、SQL 出错等）
+//	skipped   该轮未执行（预留：前置条件不满足等场景）
+//	partial   上一轮未跑完（人工经任务中心取消执行实例，已完成部分保留，下轮从断点续接）
 const (
-	ScheduleStatusSuccess   = "success"
-	ScheduleStatusFailed    = "failed"
-	ScheduleStatusSkipped   = "skipped"
-	ScheduleStatusCancelled = "cancelled"
+	ScheduleStatusSuccess = "success"
+	ScheduleStatusFailed  = "failed"
+	ScheduleStatusSkipped = "skipped"
+	ScheduleStatusPartial = "partial"
 )
 
 // ScheduleRegistry schedule_list 登记器：EnsureTable/Upsert/ResetSystem/List/UpdateRunStatus。
@@ -110,7 +117,7 @@ func (r *ScheduleRegistry) Upsert(row ScheduleRow) error {
 	return nil
 }
 
-// ResetSystem 系统级行整行重置（D20：被外部改动后重启按 name 恢复为系统值，含运行态列清零）。
+// ResetSystem 系统级行整行重置：被外部改动后重启按 name 恢复为系统值，含运行态列清零。
 // upsert 语义：全新库上系统级行首次登记也走本入口。
 func (r *ScheduleRegistry) ResetSystem(row ScheduleRow) error {
 	upd, err := r.sqlText("schedule_list_reset.sql")
@@ -153,6 +160,19 @@ func (r *ScheduleRegistry) UpdateRunStatus(name, status, message string) error {
 	return nil
 }
 
+// UpdateSkipStatus 登记「该轮未执行」（skipped）：只记状态与原因，不动 last_run_at——
+// 其语义为最近执行时间（执行结束时刻），跳过不是执行。
+func (r *ScheduleRegistry) UpdateSkipStatus(name, message string) error {
+	upd, err := r.sqlText("schedule_list_skip.sql")
+	if err != nil {
+		return err
+	}
+	if _, err := r.d.EasyDB().Exec(upd, ScheduleStatusSkipped, truncateRunes(message, scheduleMessageMaxRunes), time.Now().UTC(), name); err != nil {
+		return fmt.Errorf("schedule: 登记任务 %s 跳过失败: %w", name, err)
+	}
+	return nil
+}
+
 // List 返回全部登记行（运行态列归一 string/NULL；enabled 由 enabledFn 按 config_key 现值计算，
 // 系统级/空 config_key 恒 true）。只读，不改表。
 func (r *ScheduleRegistry) List(enabledFn func(configKey string) bool) ([]map[string]any, error) {
@@ -183,7 +203,7 @@ func (r *ScheduleRegistry) List(enabledFn func(configKey string) bool) ([]map[st
 	return out, nil
 }
 
-// scheduleRows 装配期登记清单（D19）：可配型 4 + 系统级 7。
+// scheduleRows 装配期登记清单：可配型 4 + 系统级 7。
 // system=true 的行走 ResetSystem 整行重置；其余走 Upsert（保留运行态）。
 func scheduleRows(geoipReady bool) []struct {
 	row    ScheduleRow

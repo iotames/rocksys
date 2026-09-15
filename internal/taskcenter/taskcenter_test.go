@@ -8,8 +8,18 @@ import (
 	"time"
 )
 
-// newTestCenter 测试用中心（纪元固定便于断言 ID）。
-func newTestCenter() *Center { return New(1700000000) }
+// newTestCenter 测试用中心（纪元固定便于断言 ID；注册测试来源白名单 "x"）。
+func newTestCenter() *Center { return New(1700000000, "x") }
+
+// newRuleCenter 测试用中心 + 自定义互斥规则（公共集/指定集）；
+// 白名单覆盖规则测试用到的全部来源标签。
+func newRuleCenter(list []string, m map[string][]string) *Center {
+	c := New(1700000000, "x", "m", "s", "other", "migrate", "geoip_sync")
+	if err := c.RegisterMutexRules("CreatedBy", list, m); err != nil {
+		panic(err)
+	}
+	return c
+}
 
 // waitStatus 轮询等待任务到达指定状态（防测试竞态；超时 fatal）。
 func waitStatus(t *testing.T, c *Center, id string, want Status) Task {
@@ -29,7 +39,7 @@ func TestSubmitRunAndDone(t *testing.T) {
 	c := newTestCenter()
 	var gotProgress *Progress
 	id, err := c.Submit(Spec{
-		CreatedBy: "migrate", Title: "测试任务",
+		CreatedBy: "x", Title: "测试任务",
 		Run: func(ctx context.Context, setProgress SetProgressFn) error {
 			setProgress(&Progress{Text: "1/2"})
 			setProgress(&Progress{Text: "2/2"})
@@ -72,29 +82,74 @@ func TestSubmitFail(t *testing.T) {
 }
 
 func TestGlobalMutexReject(t *testing.T) {
-	c := newTestCenter()
 	release := make(chan struct{})
-	id1, err := c.Submit(Spec{CreatedBy: "a", Title: "长任务", Run: func(ctx context.Context, setProgress SetProgressFn) error {
+	c := newRuleCenter([]string{"m", "s"}, nil) // 公共互斥集：m/s 至多一个在跑
+	id1, err := c.Submit(Spec{CreatedBy: "m", Title: "长任务", Run: func(ctx context.Context, setProgress SetProgressFn) error {
 		<-release
 		return nil
 	}})
 	if err != nil {
 		t.Fatalf("首个 Submit 应成功: %v", err)
 	}
-	_, err = c.Submit(Spec{CreatedBy: "b", Title: "第二个", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }})
+	// 规则①：同标签（同来源）互斥。
+	_, err = c.Submit(Spec{CreatedBy: "m", Title: "同来源第二个", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }})
 	var busy *ErrBusy
 	if !errors.As(err, &busy) {
-		t.Fatalf("第二个 Submit 应返回 ErrBusy, got %v", err)
+		t.Fatalf("同标签 Submit 应返回 ErrBusy, got %v", err)
 	}
 	if busy.ID != id1 {
 		t.Fatalf("ErrBusy.ID = %q, want %q", busy.ID, id1)
 	}
+	// 规则②：公共互斥集命中（s 与 m 同集）互斥。
+	if _, err := c.Submit(Spec{CreatedBy: "s", Title: "同集任务", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }}); !errors.As(err, &busy) {
+		t.Fatalf("同集 Submit 应返回 ErrBusy, got %v", err)
+	}
+	// 未入集且不同标签 → 并行不互斥（规则式互斥的核心收益）。
+	idOther, err := c.Submit(Spec{CreatedBy: "other", Title: "异组并行任务", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }})
+	if err != nil {
+		t.Fatalf("未入规则的不同标签应可并行提交: %v", err)
+	}
+	waitStatus(t, c, idOther, StatusDone)
 	close(release)
 	waitStatus(t, c, id1, StatusDone)
 	// 互斥释放后可再次提交（panic 收口/正常收口都必须放锁）。
-	if _, err := c.Submit(Spec{CreatedBy: "b", Title: "续任务", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }}); err != nil {
+	if _, err := c.Submit(Spec{CreatedBy: "m", Title: "续任务", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }}); err != nil {
 		t.Fatalf("终态后 Submit 应成功: %v", err)
 	}
+}
+
+// TestMutexMapAndUnknownCreator 指定互斥集（双向生效）与来源白名单拒绝。
+func TestMutexMapAndUnknownCreator(t *testing.T) {
+	c := newRuleCenter(nil, map[string][]string{"migrate": {"geoip_sync"}})
+	id, err := c.Submit(Spec{CreatedBy: "migrate", Title: "迁移", Run: func(ctx context.Context, setProgress SetProgressFn) error {
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	// Map 正向：migrate 在跑 → geoip_sync 被拒。
+	if _, err := c.Submit(Spec{CreatedBy: "geoip_sync", Title: "同步", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }}); !isBusy(err) {
+		t.Fatalf("MutexMap 正向应互斥, got %v", err)
+	}
+	waitStatus(t, c, id, StatusDone)
+	// Map 反向：geoip_sync 在跑 → migrate 被拒（双向生效）。
+	id2, _ := c.Submit(Spec{CreatedBy: "geoip_sync", Title: "同步", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }})
+	if _, err := c.Submit(Spec{CreatedBy: "migrate", Title: "迁移", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }}); !isBusy(err) {
+		t.Fatalf("MutexMap 反向应互斥, got %v", err)
+	}
+	waitStatus(t, c, id2, StatusDone)
+
+	// 白名单：未注册来源一律拒绝。
+	if _, err := newTestCenter().Submit(Spec{CreatedBy: "ghost", Title: "未注册", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }}); err == nil {
+		t.Fatal("未注册来源应被拒绝")
+	} else if _, ok := err.(*ErrUnknownCreator); !ok {
+		t.Fatalf("应返回 ErrUnknownCreator, got %T", err)
+	}
+}
+
+func isBusy(err error) bool {
+	var busy *ErrBusy
+	return errors.As(err, &busy)
 }
 
 func TestPanicRecoverAndMutexRelease(t *testing.T) {
@@ -107,7 +162,7 @@ func TestPanicRecoverAndMutexRelease(t *testing.T) {
 		t.Fatalf("panic 任务 Result 应含 panic 摘要, got %q", task.Result)
 	}
 	// 互斥必须已释放（D23：panic 路径同样放锁）。
-	if _, err := c.Submit(Spec{CreatedBy: "y", Title: "后续任务", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }}); err != nil {
+	if _, err := c.Submit(Spec{CreatedBy: "x", Title: "后续任务", Run: func(ctx context.Context, setProgress SetProgressFn) error { return nil }}); err != nil {
 		t.Fatalf("panic 后互斥未释放: %v", err)
 	}
 }
