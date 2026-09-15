@@ -15,7 +15,7 @@
 | # | STEP | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
 | 1 | data_migration/STEP1_任务执行中心.md | internal/taskcenter 新包 + /admin/tasks 三端点 | — | 已实施 |
-| 2 | data_migration/STEP2_数据源管理.md | CONF_DIR 注册 + dsn.go CRUD/测试端点 + dsn.json 持久化 | 1 | 待实施 |
+| 2 | data_migration/STEP2_数据源管理.md | CONF_DIR 注册 + dsn.go CRUD/测试端点 + dsn.json 持久化 | 1 | 已实施 |
 | 3 | data_migration/STEP3_表结构对齐.md | migrate/schema diff 预览 + schema_apply 任务化 | 1,2 | 待实施 |
 | 4 | data_migration/STEP4_数据迁移执行器.md | migrate.go 执行器（流式读/攒批/子批/冲突策略/序列重置）+ 三端点 | 3 | 待实施 |
 | 5 | data_migration/STEP5_GeoIP与SQL任务化.md | geoip_sync 后台任务化 + exec 后台执行开关 | 1 | 待实施 |
@@ -34,3 +34,4 @@
 |---|---|---|---|
 | 2026-09-15 | ZCode | — | 建纲完成，方案定稿（14b9361）后拆步 |
 | 2026-09-15 | ZCode | STEP1 | 已实施：taskcenter 单测+端点测试全绿（互斥/panic收口/淘汰/取消竞态/404） |
+| 2026-09-15 | ZCode | STEP2 | 已实施：dsn CRUD/脱敏/重复拦截/懒创建单测全绿，CONF_DIR 注册于 adminapi.New |

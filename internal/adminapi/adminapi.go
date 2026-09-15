@@ -72,6 +72,7 @@ type AdminServer struct {
 	sqls         db.SQLSource        // 用户存储 SQL 脚本源（dataDB，可 nil）
 	dataDB       *db.DB              // 表结构同步数据连接（SetTableSpecs 注入，可 nil = 功能不可用）
 	tasks        *taskcenter.Center  // 任务执行中心（长任务统一注册/查询，D20–D29；New 内自建）
+	confDir      *string             // CONF_DIR 配置指针（全局配置目录，dsn.json 位置随其生效值，D11）
 	tableSpecs   []db.TableSpec      // 表结构同步表清单（装配处单一事实来源，SetTableSpecs 注入）
 	execLogOnce  sync.Once           // SQL 执行审计存储惰性构造（跟随 dataDB 生命周期）
 	execLog      *execLogStore       // SQL 执行审计存储（可 nil = 审计不可用）
@@ -120,6 +121,12 @@ func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *ea
 			panic(err)
 		}
 		s.adminToken = &adminToken
+		// 全局配置目录（D11）：外部数据源文件 dsn.json 存放位置的唯一注册点。
+		confDir, err := registerConfDir(confMgr)
+		if err != nil {
+			panic(err)
+		}
+		s.confDir = confDir
 	}
 	s.initUsers()
 	s.auth = newAdminAuth(confMgr, s.initialized, s.jwtSecret, s.adminToken, s.users, addr)
@@ -226,6 +233,11 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodGet, PathDBExecLog, check(func(ctx httpsvr.Context) { s.handleDBExecLog(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodGet, PathDBSize, check(func(ctx httpsvr.Context) { s.handleDBSize(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodGet, PathDBTableSize, check(func(ctx httpsvr.Context) { s.handleDBTableSize(ctx.Writer, ctx.Request) }))
+	// 外部数据源管理（DATA_MIGRATION §4.2）：列表/添加为常规操作，删除/测试走 POST。
+	s.srv.AddHandler(http.MethodGet, PathDsn, check(func(ctx httpsvr.Context) { s.handleDsnList(ctx.Writer, ctx.Request) }))
+	s.srv.AddHandler(http.MethodPost, PathDsn, check(func(ctx httpsvr.Context) { s.handleDsnAdd(ctx.Writer, ctx.Request) }))
+	s.srv.AddHandler(http.MethodPost, PathDsnDelete, check(func(ctx httpsvr.Context) { s.handleDsnDelete(ctx.Writer, ctx.Request) }))
+	s.srv.AddHandler(http.MethodPost, PathDsnTest, check(func(ctx httpsvr.Context) { s.handleDsnTest(ctx.Writer, ctx.Request) }))
 }
 
 // RegisterWebUI 注册 WebUI 静态资源（管理控制台）。
