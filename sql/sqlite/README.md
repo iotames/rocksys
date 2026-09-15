@@ -9,6 +9,9 @@ SQLite 为默认零配置方言（`DB_DRIVER` 默认 `sqlite`，`DB_DSN` 默认 
 
 ## 脚本清单
 
+- `geoip_list_*.sql`：IP 地理信息关联表（建表/索引/upsert，GEOIP_LIST 方案），3 个；
+- `schedule_list_*.sql`：定时任务只读登记表（建表/upsert/系统级重置/清单/状态回写），5 个；
+- `access_log_*.sql` / `shield_event_*.sql` 查询脚本经 `{geo}` 占位符 LEFT JOIN geoip_list 关联地理信息；两表已删 country/city 列；
 - `mq_*.sql`：RockMQ outbox 表（建表/索引/插入/轮询/标记结果/重试次数），8 个；
 - `access_log_*.sql`：RockObs 访问日志（建表/索引/插入/查询/表大小），5 个；
 - `admin_users_*.sql`：管理接口超级管理员表（建表/计数/查询/登录查询/更新/插入），6 个。

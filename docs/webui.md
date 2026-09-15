@@ -44,7 +44,7 @@ RockSys 磐石是"**永不宕机的反向代理**"，其能力由多个可热开
 |----|------|
 | 界面风格 | **ElementUI 风格**（中后台经典样式，观感与 ElementUI 组件一致） |
 | 实现方式 | 纯静态单页：HTML + CSS + 原生 JavaScript，**不引入 Vue 等前端框架**、无构建链 |
-| 唯一 vendor 依赖 | **Apache ECharts**（地理位置热力地图用）：`webui/assets/vendor/echarts.min.js` v5.6.0（Apache-2.0），下载直链 `https://registry.npmmirror.com/echarts/5.6.0/files/dist/echarts.min.js`（npmmirror 为 npm 官方包的国内镜像），升级时手工替换文件。地图数据 `webui/assets/geo/{world,china}.json` 取自 echarts v4.9.0 包内 `map/json/`（ECharts 5 起不再随包发行地图），直链 `https://registry.npmmirror.com/echarts/4.9.0/files/map/json/world.json` 与 `https://registry.npmmirror.com/echarts/4.9.0/files/map/json/china.json`；其中 world.json 已做预处理——区划名 `name` 由英文改为 ISO 3166-1 alpha-2 码（原名保留在 `name_en`），与后端 access_log.country 列直连 |
+| 唯一 vendor 依赖 | **Apache ECharts**（地理位置热力地图用）：`webui/assets/vendor/echarts.min.js` v5.6.0（Apache-2.0），下载直链 `https://registry.npmmirror.com/echarts/5.6.0/files/dist/echarts.min.js`（npmmirror 为 npm 官方包的国内镜像），升级时手工替换文件。地图数据 `webui/assets/geo/{world,china}.json` 取自 echarts v4.9.0 包内 `map/json/`（ECharts 5 起不再随包发行地图），直链 `https://registry.npmmirror.com/echarts/4.9.0/files/map/json/world.json` 与 `https://registry.npmmirror.com/echarts/4.9.0/files/map/json/china.json`；其中 world.json 已做预处理——区划名 `name` 由英文改为 ISO 3166-1 alpha-2 码（原名保留在 `name_en`），与后端 geo 聚合输出的 country_code（ISO2）直连 |
 | 交互还原 | 内置 ElementUI 主题样式（静态资源），按钮 / 表格 / 弹窗 / 开关等交互由原生 JS 实现，视觉与交互贴近 ElementUI |
 | 交付形态 | 双模式：**生产**全部静态资源内嵌进 rocksys 单二进制（`go:embed`），随网关一起分发，不额外部署、不依赖外网；**开发**（`-tags dev` 编译）实时读 `webui/` 源码目录，改前端文件后刷新浏览器即见、免重新编译 |
 | 界面入口 | 网关管理地址（如 `127.0.0.1:19527`），浏览器直接打开控制台 |
@@ -84,6 +84,7 @@ RockSys 控制台
 └── 配置
     ├── 全局配置      网关 / 数据访问 / 其他；组件与服务的配置入口链接
     ├── 数据库 database  ← 表结构检查 / SQL 执行（表结构同步）
+    ├── 定时任务 schedule ← 只读登记与状态汇总（GEOIP_LIST 方案）
     └── 系统日志      ← 排障入口：系统进程实时日志
 ```
 
@@ -398,7 +399,7 @@ RockSys 控制台
 - **「本次运行落库（重启清零）」标签**：原「累计落库」语义消歧——`written`/`dropped` 是**本次运行**累计（进程重启清零），标签与 tooltip 说明此语义。
 - **「落库总数」瓦片**：新增，取 `GET /admin/shield/total` 查库全范围总数（**受保留期影响**，清理会减少；与内存窗口口径不同）；进页查一次，不跟随窗口/桶宽刷新。
 - **卡片副标注**：「内存窗口数据重启后从零重新累计」，与落库总数区分口径。
-- **Top 攻击源 IP 表新增「地区」列**：数据源 stats `top_ips` 行的 `country`/`city`（geo 查询时解析）；GeoIP 未加载时服务端不下发该两字段，前端显示占位「—」并复用 geo 缺失引导（见 §4.2 流量统计）。
+- **Top 攻击源 IP 表新增「地区」列**：数据源 stats `top_ips` 行的 `country`/`country_name`/`city`（geo 查询时解析，未随 GEOIP_LIST 方案改动）；GeoIP 未加载时服务端不下发该字段，前端显示占位「—」并复用 geo 缺失引导（见 §4.2 流量统计）。
 
 **自动拉黑说明**（WAF 页说明文案与配置页呼应）：后台风控引擎按配置窗口统计各 IP 拦截次数（**排除 block_type=1 黑名单自我拦截**，避免封禁惩罚自我生产续封证据），**按风险分档**自动写入黑名单——仅精确 IP，拉黑原因取该 IP 达标档内次数最多的类别；软删/过期条目被再次命中自动恢复且解封时间延长为默认 TTL ×10。分档策略：**攻击档**（风险路径/路径遍历/SQL注入/XSS）窗口内命中 1 次直接永久封禁（策略定死代码不可配）；**爬虫档**（爬虫/扫描器 UA）达爬虫阈值限时封禁；**通用档**（限流/方法白名单/体积超限/规则 deny）达通用阈值限时封禁；多档达标取最严档。限时封禁累计入狱达 `SHIELD_AUTO_BAN_REPEAT_LIMIT`（默认 5，0=永不自动转永久）转永久。配置项：`SHIELD_AUTO_BAN_ENABLED`（默认 true，★ 随 `SHIELD_ENABLED` 热联动：防护关闭时引擎空转不生效）/ `SHIELD_AUTO_BAN_THRESHOLD`（默认 50）/ `SHIELD_AUTO_BAN_CRAWLER_THRESHOLD`（默认 20）/ `SHIELD_AUTO_BAN_REPEAT_LIMIT`（默认 5）/ `SHIELD_AUTO_BAN_WINDOW`（默认 10m）/ `SHIELD_AUTO_BAN_TTL`（默认 24h，0=永久），全部每轮读配置支持热更（详见 `docs/CONFIGURATION.md`）。
 
@@ -426,6 +427,14 @@ RockSys 控制台
 4. **审查结论（2026-09）**：修正 ① 概览·小黑屋「管理全部黑名单 →」（灰字 → 右上角主色链接）；② UA黑/白名单「前往文件编辑」（灰字 → 主色）；③ 概览服务卡片与数据流节点缺 pointer 光标。其余跳转入口（面包屑 `.breadcrumb a`、全局配置入口卡片 `.cfg-link`、日志行 `.log-row`）此前已符合规范。
 
 ---
+
+### 4.16 定时任务（服务 → 配置 · schedule 只读页）
+
+目标：**系统定时任务统一可见性**（GEOIP_LIST 方案 D15/D18）——有哪些任务、关联开关、上次执行状态，一处看全；**只读登记，不驱动任何任务**（各任务仍由各自触发循环执行）。
+
+- 数据源：`GET /admin/schedule/list`；表列：任务（中文名+name）/ 计划 / 类型（可配型·系统级只读）/ 关联开关（easyconf 配置名 + 实时启用态）/ 状态（success/failed/未登记）/ 上次执行完成 / 说明。
+- 「上次执行完成」仅对纳入状态回写的任务（当前为 GeoIP 关联表同步）有值，其余行显示「未登记（本类任务不在本期状态回写范围）」——防止被误读为「从未执行」。
+- 页面无任何写操作（无开关、无触发按钮）；可配型任务的启停经其关联配置项（全局配置页），GeoIP 手动同步在数据库页同步卡与概览地理位置卡。
 
 ## 5. 交互与界面规范
 
@@ -466,7 +475,7 @@ RockSys 控制台
 | 单条日志详情（分环节耗时、转发目标、复制） | 入网数据·详情弹层 |
 | 系统进程实时日志 | 系统日志 |
 | WAF 拦截监控（实时计数窗口桶宽 1m/5m/15m/1h 可切、按日趋势、Top 攻击源、拦截明细追溯、本次运行落库/落库总数双口径） | WAF安全 |
-| Top 攻击源 IP（Top N 可选 10/20/30/50/100，改即拉）+ 批量加黑（勾选列 + 一键加入黑名单，已在黑名单的行标注且不可选；一次 import 批量导入、幂等跳过重复）+ 地区列（country/city，GeoIP 未加载显示「—」） | WAF安全·攻击拦截（`/admin/shield/stats` 的 `top` 参数 1-100；返回 `in_blacklist`/`blacklist_addable`；加黑走 `POST /admin/shield/blacklist/import`，`block_type=11` 人工收录、永久生效、快照重建即时拦截） |
+| Top 攻击源 IP（Top N 可选 10/20/30/50/100，改即拉）+ 批量加黑（勾选列 + 一键加入黑名单，已在黑名单的行标注且不可选；一次 import 批量导入、幂等跳过重复）+ 地区列（country_name/city，GeoIP 未加载显示「—」） | WAF安全·攻击拦截（`/admin/shield/stats` 的 `top` 参数 1-100；返回 `in_blacklist`/`blacklist_addable`；加黑走 `POST /admin/shield/blacklist/import`，`block_type=11` 人工收录、永久生效、快照重建即时拦截） |
 | 动态 IP 黑白名单管理（列表/新增/软删恢复/批量导入/从文件同步/排序/分页过滤） | WAF安全·黑白名单 Tab（`/admin/shield/blacklist` 与 `/whitelist`，含 `sync_file` 从文件同步与 `sort` 排序；DB 未配置时页内提示不可用；交互细节见 §4.12） |
 | UA黑名单/UA白名单行级管理（规则文件：生效模式表格/单条删除/追加/恢复默认，≤3s 热更） | WAF安全·黑白名单 Tab·UA 子页签（`views/ualist.js`，读写 `/admin/shield/rules*` 三端点；UA白名单无开关有数据即生效、仅豁免爬虫 UA 拦截一步；见 §4.13） |
 | 拦截明细行内封禁（操作列「IP封禁」+ 行详情弹层入口，24h/永久单选，封禁次数累计满 5 转永久） | WAF安全·攻击拦截（`POST /admin/shield/blacklist/ban` 专用封禁端点；弹窗与置灰逻辑见 §4.12） |

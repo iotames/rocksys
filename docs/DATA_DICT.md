@@ -11,7 +11,7 @@
 - 统一数据访问层：`internal/db`（`DB_DRIVER`/`DB_DSN` 配置，见 `docs/CONFIGURATION.md`）；
 - SQL 脚本三方言齐平：`sql/sqlite/`、`sql/postgres/`、`sql/mysql/`（`internal/db/db_test.go` 的 `TestScriptParity` 强制校验文件集一致）；
 - 表名/库名等动态标识符用 `{table}` 占位符（运行时由组件替换，**禁止来自外部用户输入**）；
-- 全项目共 **8 张业务表**，分属 5 个组件：
+- 全项目共 **10 张业务表**，分属 5 个组件 + 装配层：
   | 表名 | 归属组件 | 条件装配 |
   |---|---|---|
   | `shield_event` | shield（WAF 防护） | 恒建（DB 就绪即建） |
@@ -22,6 +22,8 @@
   | `ip_whitelist` | shield（WAF 防护） | 恒建（DB 就绪即建） |
   | `attack_archive` | shield（WAF 防护） | 恒建（DB 就绪即建） |
   | `sql_exec_log` | adminapi（管理接口） | 恒建（DB 就绪即建，首次执行 SQL 时惰性建） |
+  | `geoip_list` | cmd/rocksys（装配层，GEOIP_LIST 方案） | 恒建（DB 就绪即建；obs/shield 建表时一并确保） |
+  | `schedule_list` | cmd/rocksys（装配层，GEOIP_LIST 方案） | 恒建（DB 就绪即建；登记器 EnsureTable） |
 
 **通用约定**
 - 字段命名统一 `snake_case`；
@@ -43,6 +45,8 @@
 | `ip_whitelist` | 动态 IP 白名单表 | shield | 管理面录入的白名单条目（白名单唯一来源；白名单优先于黑名单） | `sql/{sqlite,postgres,mysql}/ip_whitelist_create_table.sql` |
 | `attack_archive` | 攻击证据归档表 | shield | 攻击证据归档（本期仅建表，归档逻辑见 WAF 方案 §8） | `sql/{sqlite,postgres,mysql}/attack_archive_create_table.sql` |
 | `sql_exec_log` | SQL 执行审计表 | adminapi | 管理端「执行SQL」每条语句执行留痕（审计追溯，不清理） | `sql/{sqlite,postgres,mysql}/sql_exec_log_create_table.sql` |
+| `geoip_list` | IP 地理信息关联表 | cmd/rocksys（装配层） | 一 IP 一行，与 access_log / shield_event 按 client_ip 关联（地理信息归一，取代逐行冗余列）；GeoIP 同步器维护 | `sql/{sqlite,postgres,mysql}/geoip_list_create_table.sql` |
+| `schedule_list` | 定时任务只读登记表 | cmd/rocksys（装配层） | 定时任务登记 + 状态汇总（只读，不驱动任务）；装配期 upsert 登记，geoip_sync 行回写运行状态 | `sql/{sqlite,postgres,mysql}/schedule_list_create_table.sql` |
 
 ---
 
@@ -51,7 +55,9 @@
 > 类型列按 `sqlite / postgres / mysql` 顺序标注；「默认」为空表示无默认值（NOT NULL）。
 > 「可能值示例」为真实场景取值样例。
 
-### 2.1 shield_event — WAF 拦截事件明细表（16 列）
+### 2.1 shield_event — WAF 拦截事件明细表（14 列）
+
+**说明**（GEOIP_LIST 方案）：地理信息不再逐行落库，读侧经 `LEFT JOIN geoip_list ON ip = client_ip` 关联返回 `country_code`/`country_name`/`province`/`city`，JOIN 未命中回退实时解析（「市→省→国名→未知」兜底只在读侧显示）。
 
 **说明**：拦截请求被转发链短路，本表在拦截点就地记录（obs 收不到被拦请求，因此两表各记各的）。
 `block_type` 枚举见 §3.1，`rule_hit` 特征名见 §3.3。
@@ -68,8 +74,6 @@
 | `raw_url` | 原始 URL | 含查询串的原始 URL（攻击特征常在此） | `/login?id=1' OR '1'='1` | TEXT / TEXT / VARCHAR(2048) | `''` |
 | `user_agent` | 客户端标识 | 客户端 User-Agent（爬虫识别依据） | `Mozilla/5.0 (compatible; Googlebot/2.1)` | TEXT / TEXT / VARCHAR(512) | `''` |
 | `host` | 请求主机 | 请求 Host | `127.0.0.1:8080` | TEXT / TEXT / VARCHAR(255) | `''` |
-| `country` | 来源国家 | 攻击来源 GeoIP 国家码（ISO 如 CN；mmdb 未加载时为空串，统计计「未知」） | `CN` | TEXT / TEXT / VARCHAR(8) | `''` |
-| `city` | 来源省市 | 攻击来源 GeoIP 省市（City 库解析；mmdb 未加载时为空串） | `广东省/深圳市` | TEXT / TEXT / VARCHAR(255) | `''` |
 | `status_code` | 拦截响应码 | 拦截响应码（403/413/429，见 §3.2） | `403` | INTEGER / INT / INT | `0` |
 | `rule_hit` | 命中规则 | 命中的规则/特征名（见 §3.3） | `sql_pattern` | TEXT / TEXT / VARCHAR(255) | `''` |
 | `req_bytes` | 请求体大小 | 请求体字节数（Content-Length） | `0`、`1024` | INTEGER / BIGINT / BIGINT | `0` |
@@ -77,7 +81,9 @@
 
 > ⚠ 方言差异备注：`path`、`extra` 在 sqlite/postgres 有默认值（`''`/`'{}'`），MySQL 无默认值（NOT NULL，写入必须显式给值）。
 
-### 2.2 access_log — 访问日志表（19 列）
+### 2.2 access_log — 访问日志表（17 列）
+
+**说明**（GEOIP_LIST 方案）：地理信息经 `geoip_list` 关联（见 §2.1 说明），本表只存事实维度。
 
 **说明**：放行请求的访问明细（拦截请求不经过 obs，见 §2.1 说明）。耗时列单位均为毫秒（ms），
 四段拆解：入网 + 转发（业务） + 出网 = 总耗时（±1ms 取整误差）。
@@ -102,8 +108,6 @@
 | `req_bytes` | 请求字节 | 请求体字节数 | `512` | INTEGER / BIGINT / BIGINT | `0` |
 | `resp_bytes` | 响应字节 | 响应体字节数 | `2048` | INTEGER / BIGINT / BIGINT | `0` |
 | `user_agent` | 客户端标识 | 客户端 User-Agent（UV 口径=IP+UA） | `Mozilla/5.0 ...` | TEXT / TEXT / VARCHAR(512) | `''` |
-| `country` | 客户端国家 | 客户端 GeoIP 国家码（ISO 如 CN；mmdb 未加载时为空串，统计计「未知」） | `CN` | TEXT / TEXT / VARCHAR(8) | `''` |
-| `city` | 客户端省市 | 客户端 GeoIP 省市（City 库解析；mmdb 未加载时为空串） | `广东省/深圳市` | TEXT / TEXT / VARCHAR(255) | `''` |
 | `extra` | 扩展字段 | 扩展字段（JSON，向前兼容） | `{}` | TEXT / TEXT / TEXT | `'{}'` |
 
 ### 2.3 admin_users — 管理接口超级管理员表（5 列）
@@ -212,6 +216,44 @@
 
 ---
 
+### 2.9 geoip_list — IP 地理信息关联表（7 列）
+
+**说明**：地理信息是 IP 的函数，一 IP 一行（`ip` 主键），与两日志表按 `client_ip` 等值关联（无外键）。
+由 GeoIP 同步器（手动 `POST /admin/db/geoip_sync` + 定时 `GEOIP_SYNC_INTERVAL`）增量构建：扫两表
+`client_ip` 与本表求差 → mmdb `Lookup` → upsert。私网/回环/解析不出的 IP 不入表（读侧显示「未知」）。
+数据不造假：解析不出的字段保持空串，拼接/兜底只在读侧显示。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `ip` | IP 地址 | 纯 IP 文本（与日志表 client_ip 同格式，无端口；主键） | `8.8.8.8` | TEXT PK / VARCHAR(64) PK / VARCHAR(64) PK | — |
+| `country_code` | 国家码 | ISO alpha-2（聚合口径 + 世界地图着色） | `CN` | TEXT / VARCHAR(8) / VARCHAR(8) | `''` |
+| `country_name` | 国名 | 本地化国名 zh-CN 优先（显示） | `中国` | TEXT / VARCHAR(64) / VARCHAR(64) | `''` |
+| `province` | 省/州 | 一级行政区，zh-CN 以 mmdb 实际返回为准（多为短名如「广东」，部分全称如「北京市」；中国地图两者均正确着色） | `广东` | TEXT / VARCHAR(128) / VARCHAR(128) | `''` |
+| `city` | 城市 | 城市名（仅市） | `广州市` | TEXT / VARCHAR(128) / VARCHAR(128) | `''` |
+| `created_at` | 首次入库时间 | 首次解析入库时间（UTC）；冲突更新时保持不变 | `2026-09-15T01:30:41Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `updated_at` | 最近解析时间 | 该 IP 最近解析时间（UTC） | `2026-09-15T01:30:41Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+### 2.10 schedule_list — 定时任务只读登记表（11 列）
+
+**说明**：只做登记 + 状态汇总，**不驱动任何任务**。装配期按 `name` upsert 登记（系统级 `kind=system`
+行整行只读，被改则重启重置）；运行状态本期仅 `geoip_sync` 行回写（任务结束单条原子 UPDATE），
+其余行 `last_run_at` 空表示「未登记」（不代表从未执行）。无 `enabled` 列——启用状态由
+`GET /admin/schedule/list` 行内附带（服务端读 `config_key` 对应配置现值，配置中心唯一真源）。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `name` | 任务标识 | 任务唯一标识（与代码常量绑定；唯一） | `geoip_sync` | TEXT UNIQUE / VARCHAR(64) UNIQUE / VARCHAR(64) UNIQUE | — |
+| `title` | 中文名 | 展示名 | `GeoIP 关联表同步` | TEXT / VARCHAR(128) / VARCHAR(128) | `''` |
+| `kind` | 任务类型 | 任务类型枚举（见 §3.5） | `configurable` | TEXT / VARCHAR(16) / VARCHAR(16) | `''` |
+| `config_key` | 关联开关 | 关联 easyconf 配置名（系统级空） | `GEOIP_SYNC_INTERVAL` | TEXT / VARCHAR(64) / VARCHAR(64) | `''` |
+| `plan` | 计划描述 | 仅展示（every@1h / every@24h / window/3 等） | `every@N 分钟（可配，0=关闭）` | TEXT / VARCHAR(64) / VARCHAR(64) | `''` |
+| `last_run_at` | 上次执行完成 | 上次执行完成时刻（UTC；语义=执行结束而非开始）；仅回写者有意义 | `2026-09-15T01:30:41Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | NULL |
+| `last_status` | 上次结果 | 结果枚举（见 §3.5） | `success` | TEXT / VARCHAR(16) / VARCHAR(16) | `''` |
+| `last_message` | 结果摘要 | 人读报告文案（超 255 截断） | `access_log：新同步 758 个 IP…` | TEXT / VARCHAR(255) / VARCHAR(255) | `''` |
+| `remark` | 说明 | 含「不纳入原因/只读」等说明 | `系统级只读` | TEXT / VARCHAR(255) / VARCHAR(255) | `''` |
+| `updated_at` | 行更新时间 | 行最近更新时间（UTC） | `2026-09-15T01:30:41Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
 ## 3. 枚举与取值附录
 
 ### 3.1 block_type — 拦截类别（shield_event.block_type / ip_blacklist.block_type / attack_archive.block_type）
@@ -270,6 +312,26 @@
 | `failed` | 投递失败（可重试，轮询仍会取到） |
 | `done` | 已投递成功（不再处理） |
 | `dead` | 超过重试上限转死信（不再自动投递） |
+
+### 3.5 schedule_list.kind / last_status — 任务类型与结果状态（schedule_list）
+
+`cmd/rocksys/schedule.go` 为权威定义（登记清单 `scheduleRows`；与建表脚本注释一一对应）。
+
+**kind（任务类型）**
+
+| 值 | 含义 |
+|---|---|
+| `configurable` | 可配型（关联 `config_key` 对应 easyconf 开关；启用状态读配置现值） |
+| `system` | 系统级只读（整行只读，被改则重启按 `name` 重置；`config_key` 恒空、enabled 恒 true） |
+
+**last_status（上次执行结果）**
+
+| 值 | 含义 |
+|---|---|
+| `success` | 执行成功（本期仅 `geoip_sync` 行回写） |
+| `failed` | 执行失败 |
+| `skipped` | 跳过（预留） |
+| `''`（空） | 未登记（该行无回写者，不代表从未执行） |
 
 ---
 

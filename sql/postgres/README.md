@@ -37,4 +37,7 @@
 | admin_users_count/get/get_by_username/update/insert.sql | 超管增删改查 | 占位符 `$n` |
 
 > PostgreSQL 方言已用真实实例验证（`internal/db/pg_integration_test.go`，`PG_TEST_DSN` 环境变量触发）。
-> 在 `.env` 中设置 `DB_DRIVER=postgres` 与 `DB_DSN` 即可启用（`cmd/rocksys` 已注册 lib/pq）。
+> 在 `.env` 中设置 `DB_DRIVER=postgres` 与 `DB_DSN` 即可启用（`cmd/rocksys` 已注册 lib/pq）。- `geoip_list_*.sql`：IP 地理信息关联表（建表/索引/upsert，GEOIP_LIST 方案），3 个；
+- `schedule_list_*.sql`：定时任务只读登记表（建表/upsert/系统级重置/清单/状态回写），5 个；
+- `access_log_*.sql` / `shield_event_*.sql` 查询脚本经 `{geo}` 占位符 LEFT JOIN geoip_list 关联地理信息；两表已删 country/city 列；
+

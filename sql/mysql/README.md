@@ -39,4 +39,7 @@
 在 `.env` 中设置 `DB_DRIVER=mysql` 与 `DB_DSN` 即可启用（`cmd/rocksys` 已注册 go-sql-driver/mysql）。
 
 > MySQL 方言已用真实实例验证（MariaDB 10.6，`internal/db/mysql_integration_test.go`，`MYSQL_TEST_DSN` 环境变量触发）：
-> 三组脚本全流程 + 死信语义（`mq_mark_failed.sql` 的 status 先于 retry_count 赋值，避免 MySQL SET 左→右求值导致死信提前一拍）+ 索引 `Duplicate key name` 幂等容错 + `information_schema` 表大小查询均实测通过。
+> 三组脚本全流程 + 死信语义（`mq_mark_failed.sql` 的 status 先于 retry_count 赋值，避免 MySQL SET 左→右求值导致死信提前一拍）+ 索引 `Duplicate key name` 幂等容错 + `information_schema` 表大小查询均实测通过。- `geoip_list_*.sql`：IP 地理信息关联表（建表/索引/upsert，GEOIP_LIST 方案），3 个；
+- `schedule_list_*.sql`：定时任务只读登记表（建表/upsert/系统级重置/清单/状态回写），5 个；
+- `access_log_*.sql` / `shield_event_*.sql` 查询脚本经 `{geo}` 占位符 LEFT JOIN geoip_list 关联地理信息；两表已删 country/city 列；
+

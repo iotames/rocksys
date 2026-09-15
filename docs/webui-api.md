@@ -68,7 +68,8 @@
 | 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；每条语句落 `sql_exec_log` 审计留痕；danger 级危险操作，服务端不做语句白名单） |
 | 43 | GET | `/admin/db/execlog` | SQL 执行历史查询（`sql_exec_log` 表，时间倒序 + offset 服务端分页） |
 | 44 | GET | `/admin/db/size` | 数据库空间占用统计（表名/备注/精确条数 + 库级总空间；逐表占用含数据/索引拆分，只取缓存，未计算返回 `bytes_known=false`）；`GET /admin/db/table_size?table=` 单表精确占用按需计算（白名单校验 + 10 分钟缓存） |
-| 45 | POST | `/admin/db/geoip_sync` | GeoIP 历史回填（对 access_log / shield_event「有 IP 但 country/city 缺失」的行按已加载 mmdb 批量回填；**分批 + 断点续填 + 服务端硬超时**：发现阶段按 id 主键游标分块增量扫描、回填写侧分批 UPDATE 逐条提交；单趟受固定 20 秒预算（代码常量）与请求上下文双重约束，到点或客户端断开即在块/批边界收工并返回已完成进度（响应含 `budget_stopped`），已提交批次保留，再次点击从断点续填（游标只在回填未被中断时推进，中断则保持原值、下趟重扫该区间——已回填行因 `country` 非空被发现阶段过滤，代价可忽略；否则"已发现未回填"的行会被跳过）；未扫完返回 `done=false`；上一趟进行中返回 `ok:false` 拒绝并发；geo 未就绪 503；前端等待上限 30 秒仅作兜底） |
+| 45 | POST | `/admin/db/geoip_sync` | GeoIP 关联表增量同步（GEOIP_LIST 方案）：扫 access_log / shield_event 中「`client_ip` 未入 `geoip_list`」的 IP，按已加载 mmdb 逐 IP 解析后 upsert `geoip_list`（一 IP 一行；**发现阶段按 id 主键游标分块增量扫描 + 对 geoip_list IN 点查内存求差（禁无界 DISTINCT）**；单趟受固定 20 秒预算（代码常量）与请求上下文双重约束，到点或客户端断开即在块边界收工并返回已完成进度（响应含 `budget_stopped`），游标只在回写未被中断时推进；未扫完返回 `done=false`；上一趟进行中返回 `ok:false` 拒绝并发；geo 未就绪 503；私网/回环/解析不出的 IP 跳过并计数；同步成功后自动清流量统计缓存；手动与定时触发（`GEOIP_SYNC_INTERVAL`）收敛本入口，结束均回写 `schedule_list` 的 `geoip_sync` 行） |
+| 45a | GET | `/admin/schedule/list` | 定时任务只读清单（GEOIP_LIST D15/D18）：`schedule_list` 登记行 + 行内 `enabled`（bool，服务端读 `config_key` 对应 easyconf 现值；空 `config_key` 系统级恒 true；`GEOIP_SYNC_INTERVAL` 按 0=关闭语义判定且 mmdb 未就绪视为停用）。响应 `{ok,tasks:[{name,title,kind,config_key,plan,last_run_at,last_status,last_message,remark,enabled}]}`；`last_run_at=null` 表示「未登记」（非「从未执行」）。只读，无写端点 |
 | 43 | POST | `/admin/shield/blacklist/sync_file` | 从外挂规则文件 `rules/ip_blacklist.txt` 同步 IP 入库（block_type=11，幂等） |
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
 | 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的全部封禁条目（含永久；首页页签数据源） |
@@ -362,7 +363,7 @@
 **响应 200**：`Content-Type: application/x-ndjson`，每行一个 JSON 对象；`X-Total-Count` 响应头回传满足条件的总条数（与 `limit`/`offset` 配合实现服务端分页）（平铺维度，扩展负载字段如 `request_body` 直接出现在顶层）：
 
 ```json
-{"time":"2026-08-04T10:12:03+08:00","trace_id":"ab34...","path":"/api/order/1","method":"GET","client_ip":"127.0.0.1:1234","status_code":200,"upstream":"http://o1:9001","shield_ms":1,"biz_ms":11,"total_ms":12,"req_bytes":512,"resp_bytes":1024,"user_agent":"Mozilla/5.0 ...","country":"CN","city":"广东省/深圳市"}
+{"time":"2026-08-04T10:12:03+08:00","trace_id":"ab34...","path":"/api/order/1","method":"GET","client_ip":"203.0.113.7","status_code":200,"upstream":"http://o1:9001","shield_ms":1,"biz_ms":11,"total_ms":12,"req_bytes":512,"resp_bytes":1024,"user_agent":"Mozilla/5.0 ...","country_code":"CN","country_name":"中国","province":"广东省","city":"深圳市"}
 ```
 
 | 字段 | 类型 | 说明 |
@@ -381,7 +382,10 @@
 | req_bytes | int | 请求流量（字节） |
 | resp_bytes | int | 响应流量（字节） |
 | user_agent | string | 客户端 User-Agent（UV 口径=IP+UA） |
-| country | string | 客户端 GeoIP 国家码（ISO，如 `CN`；mmdb 未加载为空串） |
+| country_code | string | 客户端 GeoIP 国家码（ISO，如 `CN`；geoip_list 未命中且实时解析失败为空串，前端显示「未知」） |
+| country_name | string | 本地化国名（zh-CN 优先，如 `中国`；同上可为空串） |
+| province | string | 一级行政区（省/州，如 `广东省`；可为空串） |
+| city | string | 城市名（仅市，如 `深圳市`；可为空串） |
 | city | string | 客户端 GeoIP 省市（City 库解析；mmdb 未加载为空串） |
 | （扩展维度） | 不定 | 负载维度（如 `request_body`），由 obs 维度注册表定义，平铺输出 |
 
@@ -522,7 +526,7 @@ WebUI「可信代理」页数据源（实现 `internal/netutil/proxies_admin.go`
 |------|------|
 | `GET /admin/shield/metrics` | 实时拦截计数（内存滑动窗口，DB 未配置也可用）；query `window=1m\|5m\|15m\|1h`（缺省 1m 兼容现状；内存窗口固定 1 小时 = 60×1 分钟桶，按所选窗口由整分钟桶聚合、零误差）；响应 `{window,window_minutes,window_seconds,total,by_type,written,dropped}`，`written`/`dropped` 为本次运行累计落库/丢弃条数（重启清零） |
 | `GET /admin/shield/total` | 拦截事件**落库总数**（查库 `COUNT` 全范围，受保留期影响，清理会减少）；与 metrics 内存窗口口径不同；响应 `{"total":N}`；DB 未配置（记录器未启用）503。前端进页查一次、不跟随窗口刷新 |
-| `GET /admin/shield/events` | 拦截明细（JSONL）；query：`from`/`to`（日期或分钟精度）、`block_type`（1-10）、`client_ip`、`limit`（1-10000，缺省 500）、`offset`；总数经 `X-Total-Count` 头回传；每行 JSON 额外携带 `in_blacklist` 字段（bool，该行 IP 是否命中当前生效黑名单，内存快照判定与 stats TOP 同源，供前端「IP封禁」按钮置灰）；行含 `user_agent`/`country`/`city` 维度（`country` 为 ISO 码、`city` 为省市，mmdb 未加载时为空串） |
+| `GET /admin/shield/events` | 拦截明细（JSONL）；query：`from`/`to`（日期或分钟精度）、`block_type`（1-10）、`client_ip`、`limit`（1-10000，缺省 500）、`offset`；总数经 `X-Total-Count` 头回传；每行 JSON 额外携带 `in_blacklist` 字段（bool，该行 IP 是否命中当前生效黑名单，内存快照判定与 stats TOP 同源，供前端「IP封禁」按钮置灰）；行含 `user_agent` 与 geo 关联维度 `country_code`/`country_name`/`province`/`city`（GEOIP_LIST 方案：`LEFT JOIN geoip_list` 关联，未命中回退实时解析；全部失败为空串，前端显示「未知」） |
 | `GET /admin/shield/stats` | 聚合统计；响应 `{days,total,daily:[{day,block_type,cnt,type_name}],top_ips:[{client_ip,cnt,in_blacklist,country,city}],blacklist_addable}`（`in_blacklist`=该 IP 是否命中当前生效黑名单，与拦截判定同源；`blacklist_addable`=DB 黑名单是否可用，WebUI 据此显示勾选列与批量加黑按钮；Top IP 行 `country`/`city` 为 **geo 查询时逐行解析**（行数少免加列），GeoIP 未加载时不下发该两字段，前端显示占位「—」） |
 | `POST /admin/shield/prune` | 手动清理拦截明细；body `{"days":N}`（0-3650，缺省用配置默认值）；响应 `{"ok":true,"deleted":N}` |
 
@@ -552,7 +556,7 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 |------|------|
 | `GET /admin/db/schema` | 逐表比对期望与实际结构，返回差异项与自动项生成 SQL；无差异时 `items:[]`、`sql:""` |
 | `POST /admin/db/exec` | body `{sql}`；拆句（分号切分，感知字符串字面量与注释内分号）逐条执行、**遇错即停**（DDL 无跨方言统一事务语义），返回已执行到的位置；进程内互斥（已有执行在途回 409） |
-| `POST /admin/db/geoip_sync` | 无 body；同步回填并返回 `{ok,text,tables:[{table,ips,rows_updated,skipped,ip_sample,scanned,done,budget_stopped}]}`（`text` 为人读报告文案；`done=false` 表示该表仍有缺失行、再次点击从断点续填；`budget_stopped=true` 表示本轮因单趟预算到点/客户端断开提前收工，已完成部分已写入）；geo 未就绪（mmdb 缺失/未加载）回 503，响应文本为引导文案；上一趟进行中返回 `ok:false`（已提交批次不受影响） |
+| `POST /admin/db/geoip_sync` | 无 body；增量同步并返回 `{ok,text,tables:[{table,ips,rows_upserted,skipped,ip_sample,scanned,done,budget_stopped}]}`（`ips`=本趟处理的缺失 IP 数、`rows_upserted`=upsert geoip_list 行数、`text` 为人读报告文案；`done=false` 表示该表仍有未扫行、再次执行从断点续扫；`budget_stopped=true` 表示本轮因单趟预算到点/调用方断开提前收工，已完成部分已写入）；geo 未就绪（mmdb 缺失/未加载）回 503，响应文本为引导文案；上一趟进行中返回 `ok:false` |
 
 **`GET /admin/db/schema` 响应 200**：
 
@@ -698,7 +702,7 @@ SQLite 下为**两次** `dbstat` 过滤遍历（表数据一次、该表索引�
 - `req_ok` = 放行总数（**含静态资源、含放行后的 4xx/5xx**）；请求次数 = `req_ok + block_total`；
 - `req_pv` = `req_ok` 去静态资源后缀（`.js .css .map .ico .png .jpg .jpeg .gif .svg .webp .woff .woff2 .ttf .eot`）；
 - `uv` = `COUNT(DISTINCT client_ip, user_agent)`（历史数据 UA 为空串时退化为纯 IP 口径）；
-- geo 空串的展示兜底链「市空退省/省空退国」只做在读侧显示（库列保持真实语义）：country 级空串计「未知」、province 级空串显示「中国」（该查询已限定 country='CN'），均参与排序不悄悄丢量。
+- geo 空串的展示兜底链「市→省→国名→未知」只做在读侧显示（geoip_list 列保持真实解析语义）：country 级空串（未同步/不可解析 IP）计「未知」、province 级空串显示「中国」（该查询已限定 country_code='CN'），均参与排序不悄悄丢量。
 
 **延迟字段（METRICS_WINDOW）**：`lat_avg / lat_p50 / lat_p95 / lat_p99`（毫秒，int）——范围内 access_log.total_ms 的平均与分位数精确统计；范围内无行时为 `null`（前端显示"—"）。
 
@@ -718,7 +722,7 @@ SQLite 下为**两次** `dbstat` 过滤遍历（表数据一次、该表索引�
 |------|------|
 | `GET /admin/obs/traffic/summary` | query `from`/`to`（`YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`，必传）；响应见下 |
 | `GET /admin/obs/traffic/series` | query `from`/`to` + `bucket=hour\|day`（缺省自适应：跨度 ≤48h 用 hour，否则 day；非法值 400）；响应 `{bucket,series:[{bucket,ok_count,blocked_count}],cache_hit,cache_ttl_sec}`，`series[].bucket` 为 UTC 时间标签 |
-| `GET /admin/obs/traffic/geo` | query `from`/`to` + `source=access\|blocked`（缺省 access）+ `level=country\|province`（缺省 country；非法值 400）；country 级按国家计数倒序取 Top 10；province 级只统计 `country='CN'` 按 city 列「省/市」前缀聚合（中国地图专用）；响应 `{source,level,geo:[{country\|region,cnt}],cache_hit,geo_ready}`；`geo_ready`=GeoIP 是否就绪（未装配 mmdb 或加载失败为 false，前端据此显示常驻警告引导卡） |
+| `GET /admin/obs/traffic/geo` | query `from`/`to` + `source=access\|blocked`（缺省 access）+ `level=country\|province`（缺省 country；非法值 400）；country 级按国家计数倒序取 Top 10；province 级经 `geoip_list` 关联只统计 `country_code='CN'` 按 `province` 聚合（中国地图专用，去 city 前缀字符串切分）；country 级输出行附 `country_name`（中文国名随聚合带回）；响应 `{source,level,geo:[{country,country_name,cnt}\|{region,cnt}],cache_hit,geo_ready}`；`geo_ready`=GeoIP 是否就绪（未装配 mmdb 或加载失败为 false，前端据此显示常驻警告引导卡） |
 | `POST /admin/obs/traffic/cache_clear` | 无参数；清空流量统计结果缓存（只清缓存不改数据），响应 `{ok:true,text}`；WebUI 流量统计卡「清空缓存」按钮用，成功后前端强制重聚当前时间范围 |
 
 **`GET /admin/obs/traffic/summary` 响应 200**：
@@ -813,6 +817,7 @@ SQLite 下为**两次** `dbstat` 过滤遍历（表数据一次、该表索引�
 | 1.7 | 2026-08-29 | IP 黑名单增强：新增 `POST /admin/shield/blacklist/sync_file`（从文件同步）、`POST /admin/shield/blacklist/ban`（专用封禁，warn_times 累计满 5 转永久）、`GET /admin/shield/jail`（小黑屋在押预览）；黑名单列表 GET 新增 `sort` 排序参数（白名单映射固定倒序）；拦截明细 events 每行新增 `in_blacklist` 字段 |
 | 1.8 | 2026-09-08 | 新增 `GET /admin/system`（概览页运行时间瓦片 + 资源监控卡数据源，§3.17.1）：运行时长、机器/进程 CPU 与内存、Goroutines 等概况，字段不可得时为 null 前端降级 |
 | 1.9 | 2026-09-09 | 流量统计与 GeoIP：新增 §3.20 obs 流量统计端点组（`/admin/obs/traffic/summary` `/series` `/geo`，singleflight+TTL 缓存、503 引导降级、geo_ready）；`GET /admin/shield/metrics` 新增 `window` 参数（1m/5m/15m/1h，缺省 1m）；新增 `GET /admin/shield/total`（落库总数）；`/admin/shield/stats` 的 `top_ips` 行新增 `country`/`city`（geo 查询时解析，未加载不下发） |
+| 1.11 | 2026-09-15 | GEOIP_LIST 方案落地：新增 `GET /admin/schedule/list`（定时任务只读清单）；`POST /admin/db/geoip_sync` 语义改为 geoip_list 关联表增量构建（响应 `rows_updated`→`rows_upserted`，新增定时触发 `GEOIP_SYNC_INTERVAL`）；`GET /admin/logs` 与 `GET /admin/shield/events` 行 geo 字段改为 `country_code`/`country_name`/`province`/`city`（geoip_list 关联 + 未命中回退实时解析）；`GET /admin/obs/traffic/geo` country 级输出附 `country_name`、province 级经 geoip_list.province 聚合；两日志表 `country`/`city` 列删除（读侧关联）；`/admin/shield/stats` Top IP 维持查询时实时解析不变 |
 | 1.10 | 2026-09-11 | 访问日志与拦截明细展示补全：`GET /admin/logs` 响应新增 `user_agent`/`country`/`city`（原仅落库、查询未下发），`GET /admin/shield/events` 行新增 `country`/`city`；WebUI 访问日志主列表加「地区」列、详情显示客户端 User-Agent/国家/省市，WAF 拦截明细详情显示来源国家/省市（空值显示「未知」） |
 
 > 契约原则：只增不改删；新增字段不影响旧字段语义。

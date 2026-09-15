@@ -25,6 +25,7 @@
 | `HOT_FILES_WATCH_INTERVAL` | `3` | 外挂文件统一监控轮询间隔（秒，≥1；≤0 回落默认 3）。三类外挂文件经 ScriptHub 统一内容中枢监控，变更后 ≤ 本间隔自动生效（免重启、免借配置热更） |
 | `TRUSTED_PROXIES_FILE` | `trusted_proxies.txt` | 可信代理列表文件（相对 `HOT_SCRIPTS_DIR/trusted_proxies/` 外置目录，不允许绝对路径；外挂优先，缺失回退内嵌默认 `127.0.0.1`；改外挂文件 ≤3s 自动热更，无需重启） |
 | `GEOIP_MMDB_DIR` | `geoip` | GeoIP 数据目录（含 `GeoLite2-City.mmdb` / `GeoLite2-Country.mmdb`，逐文件独立按 **本目录 → 工作目录 → `~/geoip`** 查找）。未放置 mmdb 时地理位置统计降级为「未知」（启动日志告警一次，不阻断转发）；文件补放后**重启生效**（惰性加载，不做运行期热载） |
+| `GEOIP_SYNC_INTERVAL` | `60` | GeoIP 关联表（`geoip_list`）自动同步间隔，**int 分钟**（间隔内置开关语义，不设独立开关）：**0=关闭**自动同步（手动同步不受影响）；有效最小 **10**（防设置过小耗尽资源），<10（非 0）或非法回落 60。**生效前置 = mmdb 已加载**（未加载时定时器不启动，配置任意值均不生效；放置文件后须重启）；运行中修改**下一轮生效**。登记与状态见 WebUI「配置 → 定时任务」页 |
 
 ## 可信代理模型
 
@@ -92,10 +93,15 @@ REWRITE_RULES = /api/v1/=uri|/api/;header=X-Proxy-Tag:rewrite
 # 流量统计结果缓存 TTL（秒，缺省 600=10 分钟，0=禁用缓存）；命中时响应 computed_at 保持首次计算时刻，支持热更
 OBS_TRAFFIC_CACHE_TTL = 600
 
-# ===== GeoIP（internal/geoip，写时解析填 access_log/shield_event 的 country/city 列）=====
+# ===== GeoIP（internal/geoip + geoip_list 关联表同步，GEOIP_LIST 方案）=====
 # 数据目录：逐文件独立按 本目录 → 工作目录 → ~/geoip 查找 GeoLite2-City.mmdb / GeoLite2-Country.mmdb；
 # 未放置时地理位置统计降级「未知」（日志告警一次），文件补放后重启生效
 GEOIP_MMDB_DIR = geoip
+
+# 自动同步间隔（分钟）：geoip_list 增量构建的唯一控制项（不设独立开关）
+#   0 = 关闭自动同步（手动同步不受影响）；最小 10（更小/非法回落 60）；默认 60（=1 小时）
+#   生效前置 = mmdb 已加载（未加载时定时器不启动）；运行中修改下一轮生效
+GEOIP_SYNC_INTERVAL = 60
 
 # ===== 抄送 copy =====
 COPY_TARGETS =

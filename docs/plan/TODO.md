@@ -2,7 +2,7 @@
 
 > 执行依据：docs/plan/README.md（计划目录工作宪法）——记号语义、状态机、关口与裁决以宪法为准。
 
-项目状态：进行中（GEOIP_LIST）
+项目状态：待人类验收（GEOIP_LIST；终验已全绿，呈报见 GEOIP_LIST_PLAN §8）
 
 > 关口记录：用户 2026-09-15 指令「执行 docs/plan/GEOIP_LIST_PLAN.md 开发方案，期间自主验收，提交Git，并推送远程」视为母文档定稿确认（宪法 §2.2 认可认定）；git 破例授权同步授予，范围 = 本项目 STEP 的 master 分支提交与推送，禁止 force push（宪法 §3.9）。
 
@@ -22,7 +22,7 @@
 | 3 | geoip_list/STEP3_登记与端点.md | schedule_list 装配期 upsert 登记（系统级重启重置）+ GET /admin/schedule/list + geoip_sync 状态回写 | 1,2 | 已实施 |
 | 4 | geoip_list/STEP4_读侧.md | /admin/logs、/admin/shield/events 明细 JOIN + 读侧回退 Lookup；traffic geo 聚合端点适配新 SQL | 1 | 已实施 |
 | 5 | geoip_list/STEP5_前端.md | #/schedule 只读页；数据库页同步卡改文案+上次同步时间；概览地理位置卡同步按钮+能力边界注记；logs/waf/topIPs 字段适配 | 3,4 | 已实施 |
-| 6 | geoip_list/STEP6_文档.md | DATA_DICT/webui-api/COMPONENTS/webui/CONFIGURATION/PROJECT_STRUCTURE/sql README 同步 | 1-5 | 待实施 |
+| 6 | geoip_list/STEP6_文档.md | DATA_DICT/webui-api/COMPONENTS/webui/CONFIGURATION/PROJECT_STRUCTURE/sql README 同步 | 1-5 | 已实施 |
 
 ## §2 执行期红线（自仓库法摘录，冲突时以仓库法原文为准）
 - 构建/测试一律原生命令行：`go build -tags dev -o bin/rocksys ./cmd/rocksys`、`go test ./...`、`go vet ./...`；不调 make。
@@ -41,3 +41,4 @@
 | 2026-09-15 | Claude | STEP3 | schedule_list 登记 + 端点 + 状态回写完成（reset 脚本改全列覆写 upsert）；提交 |
 | 2026-09-15 | Claude | STEP4 | 读侧明细回填 Lookup + TrafficGeo 适配完成；提交 |
 | 2026-09-15 | Claude | STEP5 | 前端五页面实看验收通过（含浏览器截图）；顺带修复 Country.Names v2 解码为空的存量缺陷；提交 |
+| 2026-09-15 | Claude | STEP6 | 文档同步 + 终验全绿（生产 build/vet/test）+ PLAN §8 回填；项目转「待人类验收」 |

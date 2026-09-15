@@ -260,7 +260,20 @@ CREATE TABLE IF NOT EXISTS {table} (
 **已知边界（设计期已定，终验核对）**
 
 - 同步间隔（默认 1 小时）内新出现的 IP，在实时聚合视图（概览页地理位置卡）中暂不计入；手动点击同步按钮可立即补齐（D29/D31，页面已注记）。
-- 已入表 IP 的解析结果不随 mmdb 数据文件更换自动刷新（增量只补新 IP）；本期不做刷新机制（D33）——需要时删 `geoip_list` 后全量同步重建。
+- 已入表 IP 的解析结果不随 mmdb 数据文件更换自动刷新（增量只补新 IP）；本期不做刷新机制（D33）——需要时删 `geoip_list` 后全量同步重建（本库验收时已按此口径重建过一次）。
 - 冷启动多轮追平：单趟受 5000 IP 上限与 20 秒时间预算限制（沿用现有 `geoip_sync.go` 常量），存量唯一 IP 多的库首次构建需多轮（每小时一轮）逐步追平；期间 `last_status` 显示 success 但地图数据仍在分批补齐，属预期（手动连点可加速）。
+- **实施期新增**：mmdb zh-CN 省份名实测多为短名（「广东」），部分为全称（「北京市」）——非「恒为全称」（原假设过强）。短名与中国地图 geojson 短名直连、全称经前端 chinaShort 映射，两者均正确着色，D9 意图（地图不错位）不受影响；`province` 列口径 = mmdb zh-CN 实际返回（数据不造假）。
+- **实施期修复存量缺陷**：maxminddb-golang v2 对嵌套包装结构体承接 `Country.Names` 解码为空（省/市与数组形态正常）——`internal/geoip` 改直写 `map[string]string` 后 zh-CN 国名正常；此前 `country_name` 从未真实生效过。
 
-**验收结论**（待实施与终验后回填）
+**验收结论**（2026-09-15 终验通过）
+
+1. ✅ `geoip_list`（7 列）/`schedule_list`（11 列）三方言建表/索引/upsert/重置/清单/状态回写脚本齐备并入 `buildTableSpecs`（数据库页 schema 同步可见，旧库残留 country/city 列为 F 级仅提示）；`docs/DATA_DICT.md` §2.9/§2.10/§3.5 同步登记。
+2. ✅ 同步器对开发库（access_log 65 万行）实测：单趟预算内 upsert 745~758 个新 IP、私网/回环不入表、幂等重跑 0 行；`/admin/logs` 抽样「可解析而未入表」差集随同步轮次收敛（间隔内新行除外，属 D29 已知边界）。
+3. ✅ 两表建表脚本已删 4 列与 `idx_*_time_country`；新库经 EnsureTable 建表即无该列；旧库残留列 F 级提示、不自动 DROP（数据库页实看确认）。
+4. ✅ `/admin/logs`、`/admin/shield/events` 经 JOIN 返回 `country_code/country_name/province/city`（接口直验 + WAF 详情弹层实看「美国 / 爱荷华州/康瑟尔布拉夫斯」）；「市→省→国名→未知」兜底在读侧生效。
+5. ✅ `/admin/obs/traffic/geo` 聚合改经 geoip_list（`substr/instr` 字符串切分已从三方言脚本移除，单测覆盖）；概览页世界地图（ISO2 着色）与中国地图（省名直连/映射）实看正常、Top 榜中文国名；JOIN 聚合在开发库实测响应正常（未触发 D24 备选）；同步间隔内新 IP 暂缺已注记（D31）。
+6. ✅ `schedule_list` 登记可配型 4 + 系统级 7；装配期 upsert（系统级整行重置，reset 脚本实施期修为全列覆写 upsert 以支持全新库首登）；`#/schedule` 只读页实看正常；`GEOIP_SYNC_INTERVAL` 语义 0=关闭/最小 10/默认 60（纯函数单测覆盖），mmdb 未加载不启动定时器且登记行注明；定时器实测启动约 1 分钟后自动执行并回写 `last_run_at/last_status`；手动两入口（数据库页同步卡、概览卡「立即同步」实点验证）可触发并显示上次同步时间；geo 同步成功后统计缓存自动失效（同步后排名即时增长验证）。
+7. ✅ `go build`（dev 与生产）/`go vet ./...`/`go test ./... -count=1` 全绿；前端实看并截图留证（定时任务页、概览世界/中国地图、数据库页同步卡）。
+8. ✅ 文档同步完成：DATA_DICT / webui-api（含 1.11 变更记录与 client_ip 带端口示例修正）/ COMPONENTS / webui（新增 §4.16）/ CONFIGURATION / PROJECT_STRUCTURE / sql README ×3。
+
+**临时决策**：无（`geoip_list_DECISIONS.md` 未创建——实施中的偏差均为设计文档内的实现细节取舍，已记录于各 STEP 回填区）。
