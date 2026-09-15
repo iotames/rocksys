@@ -136,8 +136,6 @@ type ShieldEvent struct {
 	RawURL     string // 含查询串的原始 URL（攻击特征常在此）
 	UserAgent  string
 	Host       string
-	Country    string // 攻击来源 GeoIP 国家码（mmdb 未加载为空串，统计计「未知」）
-	City       string // 攻击来源 GeoIP 省市（mmdb 未加载为空串）
 	StatusCode int    // 拦截响应码（403/413/429）
 	RuleHit    string // 命中的规则/特征名（如 sql_pattern / crawler_ua）
 	ReqBytes   int64
@@ -307,25 +305,15 @@ func (r *EventRecorder) Record(ctx *chain.Context, bt BlockType, ruleHit string)
 		return
 	}
 	select {
-	case r.ch <- r.newGeoEvent(ctx, bt, ruleHit):
+	case r.ch <- newEvent(ctx, bt, ruleHit):
 	default:
 		// 通道满（拦截洪流）丢弃该条并计数，绝不阻塞转发。
 		r.dropped.Add(1)
 	}
 }
 
-// SetGeoip 注入 GeoIP 解析器（装配期一次，写时解析填 country/city 列；nil=不解析）。
+// SetGeoip 注入 GeoIP 解析器（装配期一次；读侧明细 JOIN 未命中时回退实时解析，nil=不回退）。
 func (r *EventRecorder) SetGeoip(res *geoip.Resolver) { r.geo = res }
-
-// newGeoEvent 构造拦截事件并写时解析 geo（解析失败/未装配返回空串，统计计「未知」，不阻断）。
-func (r *EventRecorder) newGeoEvent(ctx *chain.Context, bt BlockType, ruleHit string) *ShieldEvent {
-	ev := newEvent(ctx, bt, ruleHit)
-	if r.geo != nil {
-		gi := r.geo.Lookup(ev.ClientIP)
-		ev.Country, ev.City = gi.Code, gi.City
-	}
-	return ev
-}
 
 // LoggingEnabled 拦截明细是否落库（SHIELD_EVENT_LOG_ENABLED 实值；obs 流量统计输出 null 与否用）。
 func (r *EventRecorder) LoggingEnabled() bool { return r.logEnabled }
@@ -337,16 +325,19 @@ func (r *EventRecorder) Stats() (written, dropped int64) {
 
 // ── SQL 执行（SQL 外置铁律：脚本位于 sql/<dbtype>/，禁止 Go 内联）──────
 
-// sqlText 读取脚本并替换 {table} 表名占位符（表名来自配置注册项，非用户输入，安全）。
+// sqlText 读取脚本并替换 {table} 表名占位符与 {geo}(geoip_list) 关联表占位符
+//（表名来自配置注册项，非用户输入，安全）。
 func (r *EventRecorder) sqlText(name string) (string, error) {
 	txt, err := r.sqls.SQL(name)
 	if err != nil {
 		return "", fmt.Errorf("shield: 读取 SQL 脚本 %s 失败（切换数据库时缺少 sql/<dbtype>/ 下对应脚本）: %w", name, err)
 	}
-	return strings.ReplaceAll(txt, "{table}", r.tableName), nil
+	txt = strings.ReplaceAll(txt, "{table}", r.tableName)
+	return strings.ReplaceAll(txt, "{geo}", db.TableGeoipList), nil
 }
 
-// EnsureTable 幂等建表 + 索引。
+// EnsureTable 幂等建表 + 索引。shield_event 明细查询 LEFT JOIN geoip_list（GEOIP_LIST 方案），
+// 故随本表一并幂等确保关联表存在（新库未走 schema 同步时查询不因缺表失败）。
 func (r *EventRecorder) EnsureTable() error {
 	ddl, err := r.sqlText("shield_event_create_table.sql")
 	if err != nil {
@@ -354,6 +345,11 @@ func (r *EventRecorder) EnsureTable() error {
 	}
 	if _, err := r.edb.Exec(ddl); err != nil {
 		return fmt.Errorf("shield: 建拦截事件表失败: %w", err)
+	}
+	if geo, err := r.sqls.SQL("geoip_list_create_table.sql"); err == nil {
+		if _, err := r.edb.Exec(strings.ReplaceAll(geo, "{table}", db.TableGeoipList)); err != nil {
+			return fmt.Errorf("shield: 建 geoip_list 关联表失败: %w", err)
+		}
 	}
 	idx, err := r.sqlText("shield_event_create_index.sql")
 	if err != nil {
@@ -425,7 +421,7 @@ func (r *EventRecorder) writeBatch(batch []*ShieldEvent) {
 		if _, err := r.edb.Exec(ins,
 			ev.Time.UTC(),
 			ev.TraceID, int(ev.BlockType), ev.ClientIP, ev.Method,
-			ev.Path, ev.RawURL, ev.UserAgent, ev.Host, ev.Country, ev.City,
+			ev.Path, ev.RawURL, ev.UserAgent, ev.Host,
 			ev.StatusCode, ev.RuleHit, ev.ReqBytes, ev.Extra,
 		); err != nil {
 			lastErr = err

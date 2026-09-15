@@ -11,11 +11,12 @@ import (
 
 // fakeDB 假 reader：按库名返回固定结果，用于覆盖分支而不依赖二进制 fixture。
 type fakeDB struct {
+	province string
 	code, country, city string
 }
 
 func (f *fakeDB) lookup(netip.Addr) GeoInfo {
-	return GeoInfo{Code: f.code, Country: f.country, City: f.city}
+	return GeoInfo{Code: f.code, Country: f.country, Province: f.province, City: f.city}
 }
 
 // newTestResolver 构造注入假 factory 的 Resolver；home 指向指定目录以隔离真实 $HOME。
@@ -63,15 +64,15 @@ func TestLookupSplitDirs(t *testing.T) {
 	}
 	// 配置目录设为 dirB：Country 在配置目录命中，City 回落到 $HOME/geoip(dirA) 命中。
 	r, calls := newTestResolver(dirB, dirA, map[string]dbHandle{
-		cityPath:    &fakeDB{code: "CN", city: "广东省/深圳市"},
+		cityPath:    &fakeDB{code: "CN", province: "广东省", city: "深圳市"},
 		countryPath: &fakeDB{code: "CN"},
 	})
 	if !r.Ready() {
 		t.Fatal("两库分别命中后 Ready 应为 true")
 	}
 	gi := r.Lookup("8.8.8.8")
-	if gi.Code != "CN" || gi.City != "广东省/深圳市" {
-		t.Fatalf("期望 CN/广东省/深圳市，实际 %q/%q", gi.Code, gi.City)
+	if gi.Code != "CN" || gi.Province != "广东省" || gi.City != "深圳市" {
+		t.Fatalf("期望 CN/广东省/深圳市，实际 %q/%q/%q", gi.Code, gi.Province, gi.City)
 	}
 	if *calls != 2 {
 		t.Fatalf("两库各打开一次，期望 factory 调用 2 次，实际 %d", *calls)
@@ -104,7 +105,7 @@ func TestInvalidAndPrivateIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, calls := newTestResolver(dirA, dirA, map[string]dbHandle{
-		cityPath: &fakeDB{code: "CN", city: "广东省/深圳市"},
+		cityPath: &fakeDB{code: "CN", province: "广东省", city: "深圳市"},
 	})
 	for _, ip := range []string{"", "not-an-ip", "192.168.1.1", "127.0.0.1", "10.0.0.1", "169.254.1.1", "::1", "fe80::1"} {
 		if gi := r.Lookup(ip); !gi.empty() {
@@ -162,7 +163,7 @@ func TestConcurrentLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, _ := newTestResolver(dir, dir, map[string]dbHandle{
-		path: &fakeDB{country: "CN", city: "广东省/深圳市"},
+		path: &fakeDB{country: "CN", province: "广东省", city: "深圳市"},
 	})
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
@@ -176,22 +177,19 @@ func TestConcurrentLookup(t *testing.T) {
 	wg.Wait()
 }
 
-// TestJoinNames 省市拼接：中文名优先、空段不产多余分隔符、无省市返回空。
-func TestJoinNames(t *testing.T) {
+// TestFirstSubdivision 一级行政区取值：取首个非空本地化名（zh-CN 优先），无则空串。
+func TestFirstSubdivision(t *testing.T) {
 	cases := []struct {
 		subs []nameMap
-		city nameMap
 		want string
 	}{
-		{[]nameMap{{map[string]string{"zh-CN": "广东省", "en": "Guangdong"}}},
-			nameMap{map[string]string{"zh-CN": "深圳市", "en": "Shenzhen"}}, "广东省/深圳市"},
-		{[]nameMap{{map[string]string{"en": "California"}}},
-			nameMap{map[string]string{"en": "Mountain View"}}, "California/Mountain View"},
-		{[]nameMap{{map[string]string{"zh-CN": "广东省"}}}, nameMap{nil}, "广东省"},
-		{[]nameMap{}, nameMap{nil}, ""},
+		{[]nameMap{{map[string]string{"zh-CN": "广东省", "en": "Guangdong"}}}, "广东省"},
+		{[]nameMap{{map[string]string{"en": "California"}}}, "California"},
+		{[]nameMap{{map[string]string{"en": ""}}, {map[string]string{"en": "Texas"}}}, "Texas"},
+		{[]nameMap{}, ""},
 	}
 	for i, c := range cases {
-		if got := joinNames(c.subs, c.city); got != c.want {
+		if got := firstSubdivision(c.subs); got != c.want {
 			t.Fatalf("用例 %d：期望 %q，实际 %q", i, c.want, got)
 		}
 	}

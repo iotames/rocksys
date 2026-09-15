@@ -18,7 +18,6 @@
 --   err4xx/err5xx = access 侧 status_code 400-499 / 500-599；block4xx = shield 侧 400-499。
 --   延迟口径：total_ms 的 AVG / PERCENT_RANK 秩分位数（≤ 分位取最大值；排序集复用 CTE a，
 --                一次排序同时产出三分位，METRICS_WINDOW 拆分项，随所选范围精确统计）；无行时为 NULL。
---   geo 缺失（country 空串）不影响本脚本。
 WITH a AS MATERIALIZED (
   SELECT client_ip, user_agent, status_code, total_ms,
          LOWER(SUBSTR(path, 1, INSTR(path || '?', '?') - 1)) AS ppath

@@ -18,8 +18,6 @@ egress_ms   BIGINT NOT NULL DEFAULT 0,         -- 出网耗时（ms）＝响应�
     req_bytes   BIGINT NOT NULL DEFAULT 0,         -- 请求体字节数
     resp_bytes  BIGINT NOT NULL DEFAULT 0,         -- 响应体字节数
     user_agent  TEXT NOT NULL DEFAULT '',          -- 客户端 User-Agent（UV 口径=IP+UA）
-    country     TEXT NOT NULL DEFAULT '',          -- 客户端 GeoIP 国家码（ISO 如 CN；mmdb 未加载为空串，统计计「未知」）
-    city        TEXT NOT NULL DEFAULT '',          -- 客户端 GeoIP 省市（City 库解析；mmdb 未加载为空串）
     extra       TEXT NOT NULL DEFAULT '{}'         -- 扩展字段（JSON，向前兼容）
 );
 COMMENT ON TABLE {table} IS '访问日志表：放行请求的访问明细，与 shield_event（拦截记录）分开记录';
@@ -39,6 +37,4 @@ COMMENT ON COLUMN {table}.egress_ms IS '出网耗时（ms）＝响应写回客�
 COMMENT ON COLUMN {table}.req_bytes IS '请求体字节数';
 COMMENT ON COLUMN {table}.resp_bytes IS '响应体字节数';
 COMMENT ON COLUMN {table}.user_agent IS '客户端 User-Agent（UV 口径=IP+UA）';
-COMMENT ON COLUMN {table}.country IS '客户端 GeoIP 国家码（ISO 如 CN；mmdb 未加载为空串，统计计「未知」）';
-COMMENT ON COLUMN {table}.city IS '客户端 GeoIP 省市（City 库解析；mmdb 未加载为空串）';
 COMMENT ON COLUMN {table}.extra IS '扩展字段（JSON，向前兼容）';

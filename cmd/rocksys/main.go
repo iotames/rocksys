@@ -74,6 +74,8 @@ type Server struct {
 	dataDB   *db.DB                // 统一数据访问层（DB_DRIVER/DB_DSN），mq 等插件复用；nil 表示未启用
 	recorder *shield.EventRecorder // WAF 拦截事件记录器（dataDB 就绪时创建，setter 注入 shield；nil 表示未启用）
 	autoBan  *shield.AutoBanEngine // 自动拉黑引擎（dataDB 就绪时创建，按配置启动；nil 表示未启用）
+
+	geoSyncStop chan struct{} // GeoIP 自动同步定时器停止通道（nil=未启动：dataDB 未就绪或 mmdb 未加载）
 }
 
 func main() {
@@ -144,6 +146,9 @@ func main() {
 	}
 	if srv.recorder != nil {
 		srv.recorder.Stop()
+	}
+	if srv.geoSyncStop != nil {
+		close(srv.geoSyncStop) // 停止 GeoIP 自动同步定时器
 	}
 	if srv.dataDB != nil {
 		_ = srv.dataDB.Close() // mq/obs/admin 均复用 dataDB 连接，一并关闭
@@ -321,6 +326,17 @@ func buildServer(args []string) (*Server, error) {
 	}
 	geoRes := geoip.NewResolver(geoipDir)
 
+	// ── GeoIP 自动同步间隔（GEOIP_LIST D29/D34：间隔内置开关语义，不设独立开关）──
+	// int 分钟：0=关闭自动同步（手动不受影响）；有效最小 10（防设置过小耗尽资源）；
+	// <10（非 0）或非法回落默认 60。生效前置 = mmdb 已加载（未加载则定时器不启动，见下方启动处）；
+	// 运行中改值下一轮生效（每轮触发时重读本变量当前值，含 0=关闭的动态判定）。
+	if err := cfgMgr.Register(&geoipSyncIntervalMin, "GEOIP_SYNC_INTERVAL", "60",
+		"GeoIP 关联表（geoip_list）自动同步间隔（分钟；0=关闭自动同步，手动同步不受影响；最小 10，更小值回落默认 60）",
+		"生效前置：GeoLite2 mmdb 已加载（未加载时定时器不启动，放置文件后须重启）；运行中修改下一轮生效",
+	); err != nil {
+		return nil, fmt.Errorf("register GEOIP_SYNC_INTERVAL: %w", err)
+	}
+
 	// ── WAF 拦截监控统计 ───────────────────────────────────────────────
 	// 拦截请求在 shield 处短路（obs 在 Tail 槽位看不到），故记录器必须在 shield 拦截点采集。
 	// 装配方式：DB 就绪后经 setter 注入（shield.New 签名不变，保持挂件独立性）；
@@ -424,25 +440,28 @@ func buildServer(args []string) (*Server, error) {
 		// 表结构同步：表清单在装配处注册（表名在这里已知，无法从脚本文件名推断），
 		// 数据连接与清单一并注入（详见 buildTableSpecs）。
 		adminSrv.SetTableSpecs(dataDB, buildTableSpecs(db.TableShieldEvent))
-		// GeoIP 历史回填（数据库页入口，POST 才生效）：对两表「有 IP 但 geo 缺失」的行
-		// 按 mmdb 批量回填 country/city；mmdb 未加载时 503 引导（先放置数据文件并重启）。
+		// GeoIP 增量同步（数据库页入口，POST 才生效）：增量构建/刷新 geoip_list 关联表；
+		// mmdb 未加载时 503 引导（先放置数据文件并重启）。
 		adminSrv.RegisterPlugin("/admin/db/geoip_sync", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
-				http.Error(w, "回填为维护操作，仅接受 POST", http.StatusMethodNotAllowed)
+				http.Error(w, "同步为维护操作，仅接受 POST", http.StatusMethodNotAllowed)
 				return
 			}
 			if geoRes == nil || !geoRes.Ready() {
-				http.Error(w, "geoip: mmdb 未加载，无法回填；请放置 GeoLite2 mmdb（见概览页引导卡）并重启服务后重试", http.StatusServiceUnavailable)
+				http.Error(w, "geoip: mmdb 未加载，无法同步；请放置 GeoLite2 mmdb（见概览页引导卡）并重启服务后重试", http.StatusServiceUnavailable)
 				return
 			}
 			// 绑定请求上下文 + 单趟时间预算：客户端断开或到点即在块/批边界收工，
-			// 已提交批次保留，互斥锁立即释放（不出现服务端脱离调用方长时间读写）。
+			// 已完成部分保留，互斥锁立即释放（不出现服务端脱离调用方长时间读写）。
 			reps, err := geoSyncAll(r.Context(), dataDB, geoRes, geoSyncBudget)
 			w.Header().Set("Content-Type", "application/json")
 			errText := ""
 			if err != nil {
-				log.Error("geoip: 历史回填失败", "err", err.Error())
+				log.Error("geoip: 同步失败", "err", err.Error())
 				errText = err.Error()
+			} else {
+				// 同步成功清流量统计缓存（D25）：聚合视图下次查询重新计算，立即见新数据。
+				obsMw.PurgeTrafficCache()
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok":     err == nil,
@@ -620,15 +639,34 @@ func buildServer(args []string) (*Server, error) {
 		autoBan.Start()
 	}
 
+	// GeoIP 自动同步定时器（GEOIP_LIST D29/D34）：mmdb 已加载才启动（生效前置）；
+	// 手动端点与定时触发收敛 geoSyncAll 唯一入口（D31），同步成功后清流量统计缓存（D25）。
+	var geoSyncStop chan struct{}
+	if dataDB != nil {
+		geoSyncStop = startGeoSyncTimer(geoRes, func(ctx context.Context) {
+			reps, err := geoSyncAll(ctx, dataDB, geoRes, 0) // ctx 已绑定单趟时间预算
+			if err != nil {
+				log.Warn("geoip: 自动同步失败（下一轮到点重试）", "err", err.Error())
+				return
+			}
+			obsMw.PurgeTrafficCache()
+			log.Info("geoip: 自动同步完成", "report", geoSyncReportText(reps))
+		})
+		if geoSyncStop == nil {
+			log.Info("geoip: mmdb 未加载，自动同步未启动（放置 GeoLite2 mmdb 并重启后生效）")
+		}
+	}
+
 	return &Server{
-		cfgMgr:   cfgMgr,
-		chain:    ch,
-		eng:      eng,
-		mgr:      mgr,
-		adminSrv: adminSrv,
-		dataDB:   dataDB,
-		recorder: recorder,
-		autoBan:  autoBan,
+		cfgMgr:      cfgMgr,
+		chain:       ch,
+		eng:         eng,
+		mgr:         mgr,
+		adminSrv:    adminSrv,
+		dataDB:      dataDB,
+		recorder:    recorder,
+		autoBan:     autoBan,
+		geoSyncStop: geoSyncStop,
 	}, nil
 }
 
@@ -725,6 +763,8 @@ func buildTableSpecs(shieldEventTable string) []db.TableSpec {
 		{Table: db.TableAccessLog, CreateScript: "access_log_create_table.sql", IndexScript: "access_log_create_index.sql"},
 		{Table: "sql_exec_log", CreateScript: "sql_exec_log_create_table.sql", IndexScript: "sql_exec_log_create_index.sql"},
 		{Table: "outbox", CreateScript: "mq_create_table.sql", IndexScript: "mq_create_index.sql"},
+		{Table: db.TableGeoipList, CreateScript: "geoip_list_create_table.sql", IndexScript: "geoip_list_create_index.sql"},
+		{Table: db.TableScheduleList, CreateScript: "schedule_list_create_table.sql"},
 	}
 }
 

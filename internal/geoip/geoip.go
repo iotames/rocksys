@@ -44,20 +44,22 @@ type geoRecord struct {
 	City         nameMap   `maxminddb:"city"`
 }
 
-// GeoInfo 一次查询的完整地理信息（借鉴 netguard GeoIpInfo 并增强）：
-//   - Code    ISO 国家码（如 "CN"，入库/聚合口径）
-//   - Country 国名（本地化优先 zh-CN，缺失回落 en，如 "中国"；无则为空）
-//   - City    省市拼接（如 "广东省/深圳市"）
+// GeoInfo 一次查询的完整地理信息（GEOIP_LIST_PLAN §4.1：名实相符、省与市分离）：
+//   - Code     ISO 国家码（如 "CN"，聚合口径）
+//   - Country  国名（本地化优先 zh-CN，缺失回落 en，如 "中国"；无则为空）
+//   - Province 一级行政区全称（zh-CN 优先，如 "广东省"/"California"；中国地图着色依赖全称）
+//   - City     城市名（仅市，如 "深圳市"；不再与省拼接）
 //
 // 任何失败路径字段均为空串（零值可用）。
 type GeoInfo struct {
-	Code    string
-	Country string
-	City    string
+	Code     string
+	Country  string
+	Province string
+	City     string
 }
 
 // empty 判断是否无有效地理信息。
-func (g GeoInfo) empty() bool { return g.Code == "" && g.Country == "" && g.City == "" }
+func (g GeoInfo) empty() bool { return g.Code == "" && g.Country == "" && g.Province == "" && g.City == "" }
 
 // dbHandle 抽象单个 mmdb 库的查询能力，便于单测注入假 reader 覆盖分支，
 // 无需往仓库提交二进制 fixture（真实文件路径走环境变量门控的集成测试）。
@@ -82,9 +84,10 @@ func (m *maxmindDB) lookup(ip netip.Addr) GeoInfo {
 		return GeoInfo{}
 	}
 	return GeoInfo{
-		Code:    rec.Country.ISOCode,
-		Country: pickName(rec.Country.Names),
-		City:    joinNames(rec.Subdivisions, rec.City),
+		Code:     rec.Country.ISOCode,
+		Country:  pickName(rec.Country.Names),
+		Province: firstSubdivision(rec.Subdivisions),
+		City:     pickName(rec.City),
 	}
 }
 
@@ -96,22 +99,14 @@ func pickName(m nameMap) string {
 	return m.Names["en"]
 }
 
-// joinNames 拼"省/市"，避免空段产生多余分隔符。
-func joinNames(subs []nameMap, city nameMap) string {
-	out := ""
+// firstSubdivision 取首个一级行政区（省/州）本地化名称；无则空串。
+func firstSubdivision(subs []nameMap) string {
 	for _, s := range subs {
 		if name := pickName(s); name != "" {
-			out += name + "/"
+			return name
 		}
 	}
-	if name := pickName(city); name != "" {
-		out += name
-	}
-	// 去掉末尾可能悬空的分隔符（有省无市的情形）。
-	for len(out) > 0 && out[len(out)-1] == '/' {
-		out = out[:len(out)-1]
-	}
-	return out
+	return ""
 }
 
 // lazyDB 单个库的惰性加载器：once 保证只定位一次，失败/缺失结论一并缓存。
@@ -179,6 +174,9 @@ func (r *Resolver) Lookup(ipStr string) GeoInfo {
 			}
 			if info.Country == "" {
 				info.Country = ci.Country
+			}
+			if info.Province == "" {
+				info.Province = ci.Province
 			}
 			info.City = ci.City
 		}

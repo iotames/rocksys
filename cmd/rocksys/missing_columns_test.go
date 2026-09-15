@@ -1,5 +1,5 @@
 // missing_columns_test.go：启动缺列检测（TRAFFIC_ANALYSIS D16）单测。
-// 验证：旧版两表 → 报缺 user_agent/country/city（access_log）与 country/city（shield_event）；
+// 验证：旧版两表 → 报缺 user_agent（access_log；country/city 已随 GEOIP_LIST 方案删除）；
 // 新版全列表 → 零缺列；缺表 → 不误报缺列（缺表交给既有建表流程）。
 package main
 
@@ -34,12 +34,15 @@ func TestMissingLogColumns(t *testing.T) {
 
 	t.Run("旧版两表报缺列", func(t *testing.T) {
 		d := openTestDB(t)
-		// 旧表 = 全量 DDL 剔除本期新增三列（模拟升级前老库，其余列齐备）。
-		exec(t, d, ddlWithout(d, t, "access_log_create_table.sql", "access_log", "user_agent", "country", "city"))
-		exec(t, d, ddlWithout(d, t, "shield_event_create_table.sql", "shield_event", "country", "city"))
+		// 旧表 = 全量 DDL 剔除本期新增列（模拟升级前老库，其余列齐备；country/city 已随
+		// GEOIP_LIST 方案从建表脚本删除，不再参与缺列检测）。
+		exec(t, d, ddlWithout(d, t, "access_log_create_table.sql", "access_log", "user_agent"))
+		exec(t, d, ddlWithout(d, t, "shield_event_create_table.sql", "shield_event"))
 		got := missingLogColumns(d, specs)
-		assertCols(t, got["access_log"], "user_agent", "country", "city")
-		assertCols(t, got["shield_event"], "country", "city")
+		assertCols(t, got["access_log"], "user_agent")
+		if got["shield_event"] != nil {
+			t.Fatalf("shield_event 无新增列不应报缺列，got %v", got["shield_event"])
+		}
 	})
 
 	t.Run("全列表零缺列", func(t *testing.T) {

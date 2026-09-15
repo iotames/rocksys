@@ -224,7 +224,7 @@ func New(cfgMgr conf.Manager, dataDB *db.DB) *Obs {
 	return o
 }
 
-// SetGeoip 注入 GeoIP 解析器（装配期一次；写时解析填 country/city 列，nil=不解析）。
+// SetGeoip 注入 GeoIP 解析器（装配期一次；读侧明细 JOIN 未命中时回退实时解析，nil=不回退）。
 func (o *Obs) SetGeoip(res *geoip.Resolver) { o.geo = res }
 
 // Name 中间件名（hotswap 按此名启停）。
@@ -262,6 +262,10 @@ func (o *Obs) StoreStats() (dropCount, consecutiveFails int64) {
 	as := o.sink.Load().(*AsyncStore)
 	return as.DropCount(), as.ConsecutiveFails()
 }
+
+// PurgeTrafficCache 清空流量统计结果缓存（GEOIP_LIST D25：geoip_list 同步成功后调用，
+// 避免聚合视图读到同步前的旧结果；与手动「清空缓存」端点同效，仅清缓存不改数据）。
+func (o *Obs) PurgeTrafficCache() { o.tcache.purge() }
 
 // Query 按条件查询访问日志（转发当前启用的存储后端）。
 func (o *Obs) Query(q Query) ([]map[string]any, error) {
@@ -314,12 +318,8 @@ func (o *Obs) OnDone(ctx *chain.Context) {
 		RespBytes:  int64(len(ctx.RespBody)),
 		UserAgent:  ctx.R.UserAgent(),
 	}
-	// geo 写时解析：装配期注入的共享 Resolver（未注入=nil 时保持空串，统计计「未知」，不阻断转发）。
-	if o.geo != nil {
-		// country 列存 ISO 码（聚合口径），city 列存省市
-		gi := o.geo.Lookup(al.ClientIP)
-		al.Country, al.City = gi.Code, gi.City
-	}
+	// geo 不再写时解析落列：地理信息由 geoip_list 关联表承载（GEOIP_LIST_PLAN D1/D5），
+	// 明细/聚合读侧经 JOIN + 未命中回退实时 Lookup 取得。
 	// 负载维度预留点：后期采集纯文本 POST 请求体等扩展字段时，
 	// 先在 dim.go Dims 注册 payload 维度，再在此写 Extras（存储零改动）。
 	o.sink.Load().(*AsyncStore).Write(al)

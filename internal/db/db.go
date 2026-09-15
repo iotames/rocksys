@@ -37,6 +37,8 @@ type SQLSource interface {
 const (
 	TableShieldEvent = "shield_event" // WAF 拦截事件表（plugins/shield）
 	TableAccessLog   = "access_log"   // 访问日志表（plugins/obs）
+	TableGeoipList   = "geoip_list"   // IP 地理信息关联表（一 IP 一行，cmd/rocksys 同步器维护）
+	TableScheduleList = "schedule_list" // 定时任务只读登记表（cmd/rocksys 装配期登记）
 )
 
 // scriptSubDir db 业务在 HOT_SCRIPTS_DIR 统一外挂根下的固定子目录：

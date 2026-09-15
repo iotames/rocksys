@@ -37,16 +37,18 @@ func NewDBStore(d *db.DB, tableName string) *DBStore {
 // Name 后端名。
 func (s *DBStore) Name() string { return "db" }
 
-// sqlText 读取脚本并替换 {table} 表名占位符。
+// sqlText 读取脚本并替换 {table} 表名占位符与 {geo}(geoip_list) 关联表占位符。
 func (s *DBStore) sqlText(name string) (string, error) {
 	txt, err := s.sqls.SQL(name)
 	if err != nil {
 		return "", fmt.Errorf("obs: 读取 SQL 脚本 %s 失败（切换数据库时缺少 sql/<dbtype>/ 下对应脚本）: %w", name, err)
 	}
-	return strings.ReplaceAll(txt, "{table}", s.tableName), nil
+	txt = strings.ReplaceAll(txt, "{table}", s.tableName)
+	return strings.ReplaceAll(txt, "{geo}", db.TableGeoipList), nil
 }
 
-// EnsureTable 幂等建表 + 索引。
+// EnsureTable 幂等建表 + 索引。access_log 明细查询 LEFT JOIN geoip_list（GEOIP_LIST 方案），
+// 故随本表一并幂等确保关联表存在（新库未走 schema 同步时查询不因缺表失败）。
 func (s *DBStore) EnsureTable() error {
 	ddl, err := s.sqlText("access_log_create_table.sql")
 	if err != nil {
@@ -54,6 +56,11 @@ func (s *DBStore) EnsureTable() error {
 	}
 	if _, err := s.edb.Exec(ddl); err != nil {
 		return fmt.Errorf("obs: 建访问日志表失败: %w", err)
+	}
+	if geo := s.geoDDL(); geo != "" {
+		if _, err := s.edb.Exec(geo); err != nil {
+			return fmt.Errorf("obs: 建 geoip_list 关联表失败: %w", err)
+		}
 	}
 	idx, err := s.sqlText("access_log_create_index.sql")
 	if err != nil {
@@ -73,6 +80,15 @@ func (s *DBStore) EnsureTable() error {
 	return nil
 }
 
+// geoDDL 读 geoip_list 建表脚本并替换 {table} 占位符（脚本缺失返回空串由建表流程显式告警）。
+func (s *DBStore) geoDDL() string {
+	txt, err := s.sqls.SQL("geoip_list_create_table.sql")
+	if err != nil {
+		return ""
+	}
+	return strings.ReplaceAll(txt, "{table}", db.TableGeoipList)
+}
+
 // Write 同步逐条插入一批记录。
 func (s *DBStore) Write(batch []*AccessRecord) error {
 	ins, err := s.sqlText("access_log_insert.sql")
@@ -88,8 +104,7 @@ func (s *DBStore) Write(batch []*AccessRecord) error {
 			r.Time.UTC(),
 			r.TraceID, r.TenantID, r.Path, r.Method, r.ClientIP, r.StatusCode,
 			r.Upstream, r.ShieldMs, r.BizMs, r.TotalMs, r.EgressMs, r.ReqBytes, r.RespBytes,
-			r.UserAgent, r.Country, r.City,
-			extra,
+			r.UserAgent, extra,
 		); err != nil {
 			return fmt.Errorf("obs: 插入访问日志失败: %w", err)
 		}

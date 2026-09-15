@@ -4,6 +4,5 @@ CREATE INDEX IF NOT EXISTS idx_access_log_path ON {table}(path)
 CREATE INDEX IF NOT EXISTS idx_access_log_status ON {table}(status_code)
 CREATE INDEX IF NOT EXISTS idx_access_log_client_ip ON {table}(client_ip)
 
--- 统计聚合复合索引（traffic summary/geo：时间范围 + status_code / country 组合过滤）
+-- 统计聚合复合索引（traffic summary：时间范围 + status_code 组合过滤；geo 聚合已改经 geoip_list 关联）
 CREATE INDEX IF NOT EXISTS idx_access_log_time_status ON {table}(time, status_code)
-CREATE INDEX IF NOT EXISTS idx_access_log_time_country ON {table}(time, country)

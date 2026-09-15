@@ -34,7 +34,8 @@ func trafficScript(t *testing.T, d *db.DB, name, accessTable, shieldTable string
 		t.Fatalf("SQL(%s): %v", name, err)
 	}
 	txt = strings.ReplaceAll(txt, "{table}", accessTable)
-	return strings.ReplaceAll(txt, "{table2}", shieldTable)
+	txt = strings.ReplaceAll(txt, "{table2}", shieldTable)
+	return strings.ReplaceAll(txt, "{geo}", "geoip_list")
 }
 
 // trafficCreateTables 幂等建 access/shield 两表（直跑建表脚本）。
@@ -43,6 +44,7 @@ func trafficCreateTables(t *testing.T, d *db.DB, accessTable, shieldTable string
 	for _, p := range []struct{ name, table string }{
 		{"access_log_create_table.sql", accessTable},
 		{"shield_event_create_table.sql", shieldTable},
+		{"geoip_list_create_table.sql", "geoip_list"},
 	} {
 		// 建表脚本只有 {table} 单占位符，直接替换为本表名
 		txt, err := d.SQL(p.name)
@@ -72,10 +74,11 @@ func trafficSeed(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 	edb := d.EasyDB()
 	ph := func(i int) string { return trafficPh(d.Driver(), i) }
 
-	// 列：time(1) trace_id(2) path(3) method(4) client_ip(5) status_code(6) user_agent(7) country(8) city(9)
+	// 列：time(1) trace_id(2) path(3) method(4) client_ip(5) status_code(6) user_agent(7)
+	// （geo 不再逐行落列，由 geoip_list 按 client_ip 关联）
 	accIns := fmt.Sprintf(
-		"INSERT INTO %s (time, trace_id, path, method, client_ip, status_code, user_agent, country, city, extra) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'{}')",
-		accessTable, ph(1), ph(2), ph(3), ph(4), ph(5), ph(6), ph(7), ph(8), ph(9))
+		"INSERT INTO %s (time, trace_id, path, method, client_ip, status_code, user_agent, extra) VALUES (%s,%s,%s,%s,%s,%s,%s,'{}')",
+		accessTable, ph(1), ph(2), ph(3), ph(4), ph(5), ph(6), ph(7))
 	accRows := []struct {
 		at    time.Time
 		trace string
@@ -83,44 +86,57 @@ func trafficSeed(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 		ip    string
 		code  int
 		ua    string
-		ctry  string
-		city  string
 	}{
-		{trafficTestBase.Add(5 * time.Minute), "t1", "/api/order/1", "1.1.1.1", 200, "UA-A", "CN", "广东省/深圳市"},
-		{trafficTestBase.Add(15 * time.Minute), "t2", "/api/user/list", "1.1.1.1", 404, "UA-B", "CN", "广东省/广州市"},
-		{trafficTestBase.Add(65 * time.Minute), "t3", "/api/z", "1.1.1.1", 500, "", "", ""},
-		{trafficTestBase.Add(20 * time.Minute), "t4", "/static/app.js", "2.2.2.2", 200, "UA-A", "US", "California/Irvine"},
-		{trafficTestBase.Add(70 * time.Minute), "t5", "/img/logo.png", "2.2.2.2", 200, "UA-A", "CN", "江苏省/南京市"},
-		{trafficTestBase.Add(90 * time.Minute), "t6", "/api/w", "3.3.3.3", 502, "UA-C", "US", ""},
+		{trafficTestBase.Add(5 * time.Minute), "t1", "/api/order/1", "1.1.1.1", 200, "UA-A"},
+		{trafficTestBase.Add(15 * time.Minute), "t2", "/api/user/list", "1.1.1.1", 404, "UA-B"},
+		{trafficTestBase.Add(65 * time.Minute), "t3", "/api/z", "1.1.1.1", 500, ""},
+		{trafficTestBase.Add(20 * time.Minute), "t4", "/static/app.js", "2.2.2.2", 200, "UA-A"},
+		{trafficTestBase.Add(70 * time.Minute), "t5", "/img/logo.png", "2.2.2.2", 200, "UA-A"},
+		{trafficTestBase.Add(90 * time.Minute), "t6", "/api/w", "3.3.3.3", 502, "UA-C"},
 		// 静态资源：大写后缀 + 查询串（验证 LOWER 与 '?' 前路径段匹配）
-		{trafficTestBase.Add(110 * time.Minute), "t7", "/assets/app.CSS?ver=1", "4.4.4.4", 200, "UA-D", "", ""},
+		{trafficTestBase.Add(110 * time.Minute), "t7", "/assets/app.CSS?ver=1", "4.4.4.4", 200, "UA-D"},
 	}
 	for _, r := range accRows {
-		if _, err := edb.Exec(accIns, r.at, r.trace, r.path, "GET", r.ip, r.code, r.ua, r.ctry, r.city); err != nil {
+		if _, err := edb.Exec(accIns, r.at, r.trace, r.path, "GET", r.ip, r.code, r.ua); err != nil {
 			t.Fatalf("插入 access 行 %s: %v", r.trace, err)
 		}
 	}
 
-	// 列：time(1) block_type(2) client_ip(3) path(4) status_code(5) country(6) city(7)
+	// 列：time(1) block_type(2) client_ip(3) status_code(4)
 	// （path/extra 在 MySQL 方言无默认值，必须显式给值）
-	shIns := fmt.Sprintf("INSERT INTO %s (time, block_type, client_ip, path, status_code, country, city, extra) VALUES (%s,%s,%s,'/x',%s,%s,%s,'{}')",
-		shieldTable, ph(1), ph(2), ph(3), ph(4), ph(5), ph(6))
+	shIns := fmt.Sprintf("INSERT INTO %s (time, block_type, client_ip, path, status_code, extra) VALUES (%s,%s,%s,'/x',%s,'{}')",
+		shieldTable, ph(1), ph(2), ph(3), ph(4))
 	shRows := []struct {
 		at   time.Time
 		btyp int
 		ip   string
 		code int
-		ctry string
-		city string
 	}{
-		{trafficTestBase.Add(10 * time.Minute), 1, "9.9.9.9", 403, "CN", "四川省/成都市"},
-		{trafficTestBase.Add(80 * time.Minute), 7, "9.9.9.9", 403, "CN", "四川省/绵阳市"},
-		{trafficTestBase.Add(100 * time.Minute), 2, "8.8.8.8", 429, "", ""},
-		{trafficTestBase.Add(40 * time.Minute), 3, "7.7.7.7", 403, "US", ""},
+		{trafficTestBase.Add(10 * time.Minute), 1, "9.9.9.9", 403},
+		{trafficTestBase.Add(80 * time.Minute), 7, "9.9.9.9", 403},
+		{trafficTestBase.Add(100 * time.Minute), 2, "8.8.8.8", 429},
+		{trafficTestBase.Add(40 * time.Minute), 3, "7.7.7.7", 403},
 	}
 	for _, r := range shRows {
-		if _, err := edb.Exec(shIns, r.at, r.btyp, r.ip, r.code, r.ctry, r.city); err != nil {
+		if _, err := edb.Exec(shIns, r.at, r.btyp, r.ip, r.code); err != nil {
 			t.Fatalf("插入 shield 行 %s: %v", r.ip, err)
+		}
+	}
+
+	// geoip_list：一 IP 一行（4.4.4.4 / 8.8.8.8 不入表——读侧 LEFT JOIN 空串计「未知」不丢量）
+	geoIns := fmt.Sprintf("INSERT INTO geoip_list (ip, country_code, country_name, province, city, created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+		ph(1), ph(2), ph(3), ph(4), ph(5), ph(6), ph(7))
+	now := trafficTestBase
+	geoRows := []struct{ ip, code, name, prov, city string }{
+		{"1.1.1.1", "CN", "中国", "广东省", "深圳市"},
+		{"2.2.2.2", "US", "美国", "加利福尼亚州", "尔湾"},
+		{"3.3.3.3", "US", "美国", "", ""},
+		{"9.9.9.9", "CN", "中国", "四川省", "成都市"},
+		{"7.7.7.7", "US", "美国", "", ""},
+	}
+	for _, g := range geoRows {
+		if _, err := edb.Exec(geoIns, g.ip, g.code, g.name, g.prov, g.city, now, now); err != nil {
+			t.Fatalf("插入 geoip_list 行 %s: %v", g.ip, err)
 		}
 	}
 }
@@ -221,8 +237,10 @@ func trafficAssert(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 	checkSeries("traffic_series_hour.sql", "2026-09-09 10:00:00", 7, 4, 2)
 	checkSeries("traffic_series_day.sql", "2026-09-09", 7, 4, 1)
 
-	// ③ geo_top：access 侧 CN=3 / US=2 / ""=2（空串参与计数排序不丢量）；blocked 侧 CN=2。
-	runGeo := func(source string, wantTotal int64, wantFirst string, wantFirstCnt int64) {
+	// ③ geo_top（geoip_list 关联后按 IP 归一）：
+	// access 侧 CN=3（1.1.1.1×3）/ US=3（2.2.2.2×2 + 3.3.3.3）/ ""=1（4.4.4.4 未入表，不丢量）；
+	// CN 与 US 并列 3，同计数排序不稳定，首行允许任一；blocked 侧 CN=2（9.9.9.9×2）/ US=1 / ""=1。
+	runGeo := func(source string, wantTotal int64, wantFirstAny []string, wantFirstCnt int64) {
 		// PG 占位符可复用（$3/$4 同值传两次）；sqlite/mysql 的 ? 不可复用，传 7 个。
 		geoArgs := []any{from, to, source, from, to, source, 10}
 		if d.Driver() == "postgres" {
@@ -236,8 +254,15 @@ func trafficAssert(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 			cnt := trafficAsInt(t, r["cnt"])
 			total += cnt
 			if i == 0 {
-				if ctry != wantFirst || cnt != wantFirstCnt {
-					t.Errorf("geo(%s) 首行 = (%q,%d), want (%q,%d)", source, ctry, cnt, wantFirst, wantFirstCnt)
+				okFirst := false
+				for _, w := range wantFirstAny {
+					if ctry == w && cnt == wantFirstCnt {
+						okFirst = true
+						break
+					}
+				}
+				if !okFirst {
+					t.Errorf("geo(%s) 首行 = (%q,%d), want %v×%d", source, ctry, cnt, wantFirstAny, wantFirstCnt)
 				}
 			}
 			if i > 0 && cnt > trafficAsInt(t, rows[i-1]["cnt"]) {
@@ -248,8 +273,8 @@ func trafficAssert(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 			t.Errorf("geo(%s) 各行计数之和 = %d, want %d", source, total, wantTotal)
 		}
 	}
-	runGeo("access", 7, "CN", 3)
-	runGeo("blocked", 4, "CN", 2)
+	runGeo("access", 7, []string{"CN", "US"}, 3)
+	runGeo("blocked", 4, []string{"CN"}, 2)
 	// 空串 country 必须出现在结果里（映射「未知」由读侧做，SQL 侧原样输出不丢量）
 	geoAccessArgs := []any{from, to, "access", from, to, "access", 10}
 	if d.Driver() == "postgres" { // PG 占位符可复用
@@ -267,8 +292,9 @@ func trafficAssert(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 		t.Error("geo(access) 结果应包含空串 country（计「未知」，不丢量）")
 	}
 
-	// ④ geo_province_top：只统计 country='CN'，按 city 首段（省名）聚合。
-	// access 侧 CN=3：广东省 2 / 江苏省 1（无空 city，无「未知」）；blocked 侧 CN=2：四川省 2。
+	// ④ geo_province_top：只统计 country_code='CN'，按 geoip_list.province（zh-CN 全称）聚合。
+	// access 侧 CN=3：广东省 3（1.1.1.1×3；t3 原行 country 为空但按 IP 关联归入广东省）；
+	// blocked 侧 CN=2：四川省 2（9.9.9.9×2）。
 	runProv := func(source string, wantTotal int64, wantFirst string, wantFirstCnt int64) {
 		provArgs := []any{from, to, source, from, to, source, 10}
 		if d.Driver() == "postgres" {
@@ -289,7 +315,7 @@ func trafficAssert(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 			t.Errorf("geo_province(%s) 各行计数之和 = %d, want %d", source, total, wantTotal)
 		}
 	}
-	runProv("access", 3, "广东省", 2)
+	runProv("access", 3, "广东省", 3)
 	runProv("blocked", 2, "四川省", 2)
 }
 

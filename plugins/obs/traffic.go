@@ -54,14 +54,15 @@ var trafficBlockAvailable = true
 // SetBlockAvailable 注入拦截侧可用性（SHIELD_EVENT_LOG_ENABLED 实值；false=统计输出 null）。
 func SetBlockAvailable(ok bool) { trafficBlockAvailable = ok }
 
-// trafficScript 读统计脚本并替换 {table}(access_log)/{table2}(shield_event) 占位符。
+// trafficScript 读统计脚本并替换 {table}(access_log)/{table2}(shield_event)/{geo}(geoip_list) 占位符。
 func (o *Obs) trafficScript(name string) (string, error) {
 	txt, err := o.dataDB.SQL(name)
 	if err != nil {
 		return "", fmt.Errorf("obs: 读取统计脚本 %s 失败: %w", name, err)
 	}
 	txt = strings.ReplaceAll(txt, "{table}", accessLogTable)
-	return strings.ReplaceAll(txt, "{table2}", trafficShieldTable), nil
+	txt = strings.ReplaceAll(txt, "{table2}", trafficShieldTable)
+	return strings.ReplaceAll(txt, "{geo}", db.TableGeoipList), nil
 }
 
 // trafficQueryCtx 带超时的统计查询：经 QueryContext 下推取消到底层驱动，

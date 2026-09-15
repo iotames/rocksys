@@ -6,4 +6,3 @@ CREATE INDEX IF NOT EXISTS idx_{table}_client_ip ON {table}(client_ip)
 CREATE INDEX IF NOT EXISTS idx_{table}_time_type ON {table}(time, block_type)
 
 -- 统计聚合复合索引（traffic geo blocked：时间范围 + country 组合）
-CREATE INDEX IF NOT EXISTS idx_{table}_time_country ON {table}(time, country)
