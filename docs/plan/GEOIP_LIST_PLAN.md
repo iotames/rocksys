@@ -273,7 +273,7 @@ CREATE TABLE IF NOT EXISTS {table} (
 4. ✅ `/admin/logs`、`/admin/shield/events` 经 JOIN 返回 `country_code/country_name/province/city`（接口直验 + WAF 详情弹层实看「美国 / 爱荷华州/康瑟尔布拉夫斯」）；「市→省→国名→未知」兜底在读侧生效。
 5. ✅ `/admin/obs/traffic/geo` 聚合改经 geoip_list（`substr/instr` 字符串切分已从三方言脚本移除，单测覆盖）；概览页世界地图（ISO2 着色）与中国地图（省名直连/映射）实看正常、Top 榜中文国名；JOIN 聚合在开发库实测响应正常（未触发 D24 备选）；同步间隔内新 IP 暂缺已注记（D31）。
 6. ✅ `schedule_list` 登记可配型 4 + 系统级 7；装配期 upsert（系统级整行重置，reset 脚本实施期修为全列覆写 upsert 以支持全新库首登）；`#/schedule` 只读页实看正常；`GEOIP_SYNC_INTERVAL` 语义 0=关闭/最小 10/默认 60（纯函数单测覆盖），mmdb 未加载不启动定时器且登记行注明；定时器实测启动约 1 分钟后自动执行并回写 `last_run_at/last_status`；手动两入口（数据库页同步卡、概览卡「立即同步」实点验证）可触发并显示上次同步时间；geo 同步成功后统计缓存自动失效（同步后排名即时增长验证）。
-7. ✅ `go build`（dev 与生产）/`go vet ./...`/`go test ./... -count=1` 全绿；前端实看并截图留证（定时任务页、概览世界/中国地图、数据库页同步卡）。
+7. ✅ `go build`（dev 与生产）/`go vet ./...`/`go test ./... -count=1` 全绿；前端实看并截图留证（定时任务页、概览世界/中国地图、数据库页同步卡）。**真库补验（同日）**：MySQL/PG 真库集成套件全绿（含 traffic 三方言冒烟连跑两轮）+ 端到端冒烟（真实服务分别挂 MySQL/PG：登记 11 行、同步与状态回写 success、PG 重启登记幂等且运行态保留）。
 8. ✅ 文档同步完成：DATA_DICT / webui-api（含 1.11 变更记录与 client_ip 带端口示例修正）/ COMPONENTS / webui（新增 §4.16）/ CONFIGURATION / PROJECT_STRUCTURE / sql README ×3。
 
 **临时决策**：无（`geoip_list_DECISIONS.md` 未创建——实施中的偏差均为设计文档内的实现细节取舍，已记录于各 STEP 回填区）。

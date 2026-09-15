@@ -42,3 +42,4 @@
 | 2026-09-15 | Claude | STEP4 | 读侧明细回填 Lookup + TrafficGeo 适配完成；提交 |
 | 2026-09-15 | Claude | STEP5 | 前端五页面实看验收通过（含浏览器截图）；顺带修复 Country.Names v2 解码为空的存量缺陷；提交 |
 | 2026-09-15 | Claude | STEP6 | 文档同步 + 终验全绿（生产 build/vet/test）+ PLAN §8 回填；项目转「待人类验收」 |
+| 2026-09-15 | Claude | 终验补 | 用户指正后补跑 MySQL/PG 真库：集成套件全绿 + 双库端到端冒烟通过；修复 traffic 真库测试 geoip_list 清理；推送 |

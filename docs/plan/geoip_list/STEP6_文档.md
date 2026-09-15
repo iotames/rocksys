@@ -31,3 +31,4 @@
 - PLAN §8 验收结论按 §5 八条逐条回填（全部 ✅）
 ### 偏差与现场记录
 - 无新增；实施期发现（reset upsert / Country.Names 解码 / 省份短名）已分别记录于 STEP3/STEP2/PLAN §8。
+- **真库补验（2026-09-15，本地默认凭据 root:root / postgres:postgres）**：初版终验仅覆盖 SQLite，经用户指正补跑——① MySQL/PG 真库集成套件全量绿（internal/db、adminapi、shield、obs traffic MySQL/PG 冒烟，连跑两轮）；② 端到端冒烟：真实服务分别挂 MySQL/PG 启动 → schedule/list 登记 11 行 → 手动同步 + 状态回写 success → PG 二次启动登记幂等且运行态保留；③ 顺带修复 obs traffic 真库测试的 geoip_list 清理逻辑（固定表名未入 DROP 清单，二跑撞主键）。

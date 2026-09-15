@@ -124,6 +124,9 @@ func trafficSeed(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 	}
 
 	// geoip_list：一 IP 一行（4.4.4.4 / 8.8.8.8 不入表——读侧 LEFT JOIN 空串计「未知」不丢量）
+	if _, err := edb.Exec("DELETE FROM geoip_list"); err != nil {
+		t.Fatalf("清理 geoip_list 残留: %v", err)
+	}
 	geoIns := fmt.Sprintf("INSERT INTO geoip_list (ip, country_code, country_name, province, city, created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
 		ph(1), ph(2), ph(3), ph(4), ph(5), ph(6), ph(7))
 	now := trafficTestBase
@@ -320,9 +323,10 @@ func trafficAssert(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 }
 
 // dropTrafficTables 建表前先 DROP 残留（历史失败运行可能遗留带数据的表，污染计数断言）。
+// geoip_list 为固定表名（脚本 {geo} 占位符不随后缀），一并列 入 DROP 清理范围。
 func dropTrafficTables(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 	t.Helper()
-	for _, tb := range []string{accessTable, shieldTable} {
+	for _, tb := range []string{accessTable, shieldTable, "geoip_list"} {
 		if _, err := d.EasyDB().Exec("DROP TABLE IF EXISTS " + tb); err != nil {
 			t.Fatalf("DROP 残留表 %s: %v", tb, err)
 		}
