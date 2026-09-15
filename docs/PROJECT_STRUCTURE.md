@@ -15,7 +15,8 @@ rocksys/
 │   ├── chain/                    # 转发链编排 + 中间件接口
 │   ├── dataflow/                 # 请求级数据流：trace_id/三时间戳/租户（串联）
 │   ├── hotswap/                  # ★ 生产热运维引擎：配置热更/组件热切/脚本热载
-│   ├── adminapi/                 # Admin API handler（回环地址，不对外网）
+│   ├── adminapi/                 # Admin API handler（回环地址，不对外网；含数据库端点组 dbschema/dsn/migrate/tasks）
+│   ├── taskcenter/               # 长任务执行中心（迁移/结构对齐/GeoIP 同步/SQL 后台执行统一注册与观测；纯内存）
 │   ├── geoip/                    # GeoIP 解析器（GeoLite2 mmdb，省/市/国名四字段，obs/shield 共享；geoip_list 关联表数据源）
 │   └── conf/                     # 底座配置封装（基于 easyconf）
 ├── plugins/                      # ★ 可选挂件（默认全关，可热插拔，可独立演进）
@@ -96,6 +97,14 @@ xxx/
   管理端点 `internal/adminapi/dbschema.go`（`GET /admin/db/schema`、`POST /admin/db/exec`）→
   前端 `webui/assets/js/views/database.js`（检查 / 差异表 / SQL 编辑器 / danger 强确认执行）；
   表清单（`表名 ↔ 建表脚本`，文件名 ≠ 表名）在 `cmd/rocksys/main.go` 装配处注册。
+- **数据迁移与任务执行链路**（「服务 → 数据库 → 表数据」页）：外部数据源管理
+  `internal/adminapi/dsn.go`（`/admin/db/dsn*`，底座 `easydb/dsn`，持久化 `<CONF_DIR>/dsn.json`）→
+  目标库结构对齐 `internal/adminapi/migrate.go`（复用上表结构同步链路的
+  `DiffSchema`/`GenerateSQL`，对目标连接执行 DDL）→ 数据迁移执行器（同文件：流式读 + 攒批 +
+  占位符预算切子批 + 冲突策略 + 自增序列重置）；长任务统一经 `internal/taskcenter`（纯内存任务
+  执行中心：全局单任务互斥、panic 收口、终态限量保留）承载，管理端点 `/admin/tasks`、`/admin/tasks/{id}`、
+  `/admin/tasks/{id}/cancel` 见 `internal/adminapi/tasks.go`；前端共用「提交→轮询→进度」交互见
+  `webui/assets/js/views/database.js`。
 - 底座（反向代理转发引擎）**不直连业务数据库**（架构红线），本层仅服务可插拔组件（mq 等）。
 - **GeoIP 与流量统计链路**：`internal/geoip`（查找链 `GEOIP_MMDB_DIR` → 工作目录 → `~/geoip`，逐文件独立，惰性加载、缺失降级告警、重启生效）在 `cmd/rocksys/main.go` 构造后注入两处——geo 不再写时落列，由 `cmd/rocksys/geoip_sync.go` 增量构建 `geoip_list` 关联表（手动端点 + `GEOIP_SYNC_INTERVAL` 定时器收敛 `geoSyncAll` 单入口），读侧明细/聚合 JOIN + 未命中回退解析；`cmd/rocksys/schedule.go` 登记 `schedule_list` 定时任务只读清单（`GET /admin/schedule/list`）；读侧报表归 obs 插件：`plugins/obs/traffic.go`（`GET /admin/obs/traffic/summary|series|geo`，两表 SQL 聚合，`traffic_cache.go` singleflight+TTL 缓存）+ shield 读侧 `plugins/shield/admin.go`（`metrics?window=` / `total` / stats Top IP geo 逐行解析）。契约见 `docs/webui-api.md` §3.18/§3.20。
 

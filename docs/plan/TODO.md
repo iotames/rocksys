@@ -2,7 +2,7 @@
 
 > 执行依据：docs/plan/README.md（计划目录工作宪法）——记号语义、状态机、关口与裁决以宪法为准。
 
-项目状态：进行中（DATA_MIGRATION，设计已定稿，git 破例授权：一个 STEP 验证通过即提交）
+项目状态：待人类验收（DATA_MIGRATION 全部 7 步已实施，终验通过，等待人类验收与归档确认）
 
 ## §0 断点续传（接手者从这里开始）
 1. 读项目状态行与 §1 总表；
@@ -20,7 +20,7 @@
 | 4 | data_migration/STEP4_数据迁移执行器.md | migrate.go 执行器（流式读/攒批/子批/冲突策略/序列重置）+ 三端点 | 3 | 已实施 |
 | 5 | data_migration/STEP5_GeoIP与SQL任务化.md | geoip_sync 后台任务化 + exec 后台执行开关 | 1 | 已实施 |
 | 6 | data_migration/STEP6_前端表数据页签.md | database.js 页签 + 四卡 + 共用提交→轮询组件（含页面恢复） | 1–5 | 已实施 |
-| 7 | data_migration/STEP7_文档与终验.md | 文档同步 + 全量测试/vet/构建 + 浏览器实看 + 终验回写 | 6 | 待实施 |
+| 7 | data_migration/STEP7_文档与终验.md | 文档同步 + 全量测试/vet/构建 + 浏览器实看 + 终验回写 | 6 | 已实施 |
 
 ## §2 执行期红线（自仓库法摘录，冲突时以仓库法原文为准）
 - 构建/测试用原生命令行：`go build -tags dev -o bin/rocksys ./cmd/rocksys` / `go test ./...` / `go vet ./...`；
@@ -41,3 +41,4 @@
 | 2026-09-15 | ZCode | STEP4 | 已实施：SQLite 双库真跑（行数/抽样/序列重置/宽表子批/clamp/整任务取消）全绿 |
 | 2026-09-15 | ZCode | STEP5 | 已实施：geoip_sync 任务化 + exec background 分支，构建/vet/单测全绿 |
 | 2026-09-15 | ZCode | STEP6 | 已实施：四卡+轮询组件浏览器实测通过；修复拆句吞终止符与后台执行开关复位两个真 bug |
+| 2026-09-15 | ZCode | STEP7 | 已实施：跨方言集成测试（迁移+对齐）真库通过、四份文档同步、全量测试/vet/构建全绿、浏览器终验、§8 回写 |

@@ -293,4 +293,34 @@ GeoIP 同步卡（`database.js:420 geoSyncHTML`，`overviewHTML()` 末尾 `datab
 - 表清单来源=期望结构业务表：源库中不在期望结构的表不参与迁移（边界内语义，页面文案注明）。
 - 源库读侧：应用层逐行流式（内存占用与表行数解耦），但 PG/MySQL 协议特性使服务端仍会物化/推送完整结果集——超大表迁移需评估源库侧内存与连接占用（本期不做游标式真流式与分页降级）。
 
-**验收结论**（待实施与终验后回填）
+**验收结论**（2026-09-15 终验通过）
+
+终验环境：Windows + Go 1.26.5；运行库 SQLite（95 万行 access_log、52 万行 shield_event、675 行 geoip_list）；
+跨方言真库 MySQL 8（`MYSQL_TEST_DSN`）与 PostgreSQL（`PG_TEST_DSN`）本机实例；WebUI 用 `-tags dev` 构建后浏览器实测。
+
+*自动化验证（命令 → 结果）*
+
+- `go test ./...`：27 个包全绿（含新增 taskcenter 全部单测、adminapi 数据源/对齐/迁移/后台执行单测）。
+- `go vet ./...`：无告警；生产构建 `go build -o bin/rocksys ./cmd/rocksys` 通过（`--version` 正常）。
+- `go test -tags integration -run TestMigrateCrossDialect ./internal/adminapi/`：SQLite→MySQL 2500 行迁移（行数一致、抽样字段一致、自增序列重置后补写主键 = max+1、33 列宽表 2000 行 × 批次 1000 经预算切子批不撞方言占位符上限）、MySQL→PostgreSQL 同口径通过。
+- `go test -tags integration -run TestMigrateSchemaAlignCrossDialect ./internal/adminapi/`：MySQL 与 PG 各在临时库上跑「空库 diff 非空 → 后台任务执行对齐 DDL → 复检零差异」，两方言全过（临时库自建自清）。
+- `go test -tags integration ./internal/db/`：既有表同步集成用例中 `TestSchemaSyncMySQL` 因外部测试库残留历史表（`geoip_list`）报 F 级「多余表」——该用例要求目标库为空，属环境残留而非本次改动缺陷；已如实记录，未擅自删除外部库数据。
+
+*浏览器实测（含截图留证）*
+
+- 页签顺序为 表同步 → 表概览 → 表数据 → SQL历史；「表数据」页签四卡自上而下渲染正常，GeoIP 卡已自表概览移入并更名「GeoIP 数据同步」，表概览页签恢复纯统计。
+- 数据源：新增 sqlite 目标源成功落盘并刷新列表；重复连接名提交得到常驻 error toast（文案含原因与下一步）。
+- 表结构对齐：检查差异得到 10 张表 27 条 DDL → 执行对齐后台任务 27/27 成功 → 复检「结构与期望一致，无需对齐」。
+- 数据迁移：geoip_list 675 行 + schedule_list 11 行迁移完成（进度区「2/2 表完成」），目标库行数与抽样字段逐项核对一致，自增序列重置后补写新记录主键为 max+1；95 万行 access_log 迁移进行中**刷新页面进度自动恢复**（10000/950332 → 续轮询）；整任务取消后任务终态 `cancelled`、剩余表置「已取消」、目标库已写入 2 万行保留（重跑幂等）。
+- 互斥：迁移进行中从概览页/表数据页提交 GeoIP 同步均被拒，提示含进行中任务 ID 与标题；GeoIP 同步单趟 20 秒完成，全程无 HTTP 超时错误。
+- SQL 后台执行：勾选「后台执行」提交后立即返回任务，逐条结果经任务查询回填「最近一次执行结果（成功 1/失败 0）」，`sql_exec_log` 审计 `source=webui-background`。
+- 概览页「立即同步」回归复验：按钮进入「同步中…」→ 任务 `done` → 按钮复位并重拉地理位置数据。
+
+*实施期发现并已修复的缺陷（均补回归测试或有实测复验）*
+
+1. `db.SplitStatements` 行尾注释吞终止符（`语句 -- 注释;`）导致语句融合，目标库执行报 `near "CREATE"`——修解析器并在注释中部分号场景加保护（`TestSplitStatementsTrailingCommentSemicolon`）。
+2. 前端「后台执行」勾选态未入 state，页面每次重渲染即复位 → 后台分支永不触发——改为状态驱动渲染与回显。
+3. MySQL 自增序列重置用参数占位符 `ALTER TABLE ... AUTO_INCREMENT = ?`，MySQL DDL 不走预处理直接报语法错——改为校验后的数值内联。
+4. PostgreSQL 批量 INSERT 用 `?` 占位符，lib/pq 要求 `$N` 编号占位符——占位符生成改为方言感知。
+5. `sql/mysql/access_log_create_index.sql` 对 `client_ip` 建 `(255)` 前缀索引，超出该列 `VARCHAR(64)` 宽度（MySQL 报 Error 1089）——改为整列索引；对齐执行同步补「对象已存在」类幂等容错（与 obs/mq 建索引容错同口径），使重复对齐不再失败。
+6. 概览页「立即同步」沿用旧同步响应结构，端点任务化后必然误报——改为共用任务轮询组件（`Rock.ui.pollTask`，数据库页与概览页同一实现）。

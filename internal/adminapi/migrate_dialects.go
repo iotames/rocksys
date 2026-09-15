@@ -6,6 +6,7 @@ package adminapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -138,14 +139,17 @@ func resetAutoIncrement(ctx context.Context, d *db.DB, table string) error {
 		}
 		return nil
 	case "mysql":
-		var maxVal any
+		// MySQL 的 ALTER TABLE ... AUTO_INCREMENT 不接受参数占位符（DDL 不走预处理），
+		// 必须内联数值；值来自 MAX() 的整型结果，非用户输入，无注入面。
+		var maxVal sql.NullInt64
 		if err := sqldb.QueryRowContext(ctx, "SELECT MAX("+q+pkCol+q+") FROM "+q+table+q).Scan(&maxVal); err != nil {
 			return err
 		}
-		if maxVal == nil {
+		if !maxVal.Valid {
 			return nil // 空表无需重置
 		}
-		_, err := sqldb.ExecContext(ctx, "ALTER TABLE "+q+table+q+" AUTO_INCREMENT = ?", maxVal)
+		_, err := sqldb.ExecContext(ctx,
+			fmt.Sprintf("ALTER TABLE %s%s%s AUTO_INCREMENT = %d", q, table, q, maxVal.Int64))
 		return err
 	case "postgres":
 		var seqName string

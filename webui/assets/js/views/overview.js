@@ -905,15 +905,30 @@
         geoSyncing = true;
         renderGeoCard();
         try {
-          const r = await api.post('/admin/db/geoip_sync', 30000)();
-          if (r && r.ok === false) throw new Error(r.err || '同步失败');
-          toast('GeoIP 同步完成：' + (r && r.text || ''), 'success');
-          geo = null; geoErr = null;
-          loadGeo({ manual: true });
+          // 后台任务模式：提交即返回任务 ID（同步可能远超 HTTP 超时），轮询任务详情取进度与报告；
+          // 同步成功后服务端已清统计缓存，重拉当前位置分布即见新数据。
+          const r = await api.post('/admin/db/geoip_sync')();
+          Rock.ui.pollTask(r && r.task_id, {
+            onRunning: function () {},
+            onDone: function (task) {
+              const text = (task.progress && task.progress.text) || task.result || '';
+              toast('GeoIP 同步完成：' + text, 'success');
+              geo = null; geoErr = null;
+              loadGeo({ manual: true });
+              geoSyncing = false;
+              renderGeoCard();
+            },
+            onFailed: function (task) {
+              toast('GeoIP 同步失败：' + (task.result || '未知错误') +
+                '。同步分趟执行，已完成部分已写入，稍候再次点击即从断点继续', 'error');
+              geoSyncing = false;
+              renderGeoCard();
+            },
+          });
         } catch (e) {
-          const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务' : '';
-          toast('GeoIP 同步失败：' + (e.message || '未知错误') + hint, 'error');
-        } finally {
+          const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务'
+            : (e && e.status === 409 ? '。已有长任务进行中，请待其结束或到「数据库 → 表数据」页取消后再试' : '');
+          toast('GeoIP 同步提交失败：' + (e.message || '未知错误') + hint, 'error');
           geoSyncing = false;
           renderGeoCard();
         }

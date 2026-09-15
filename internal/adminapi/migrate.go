@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -169,6 +170,20 @@ func runSchemaApply(ctx context.Context, driver, dsnStr string, stmts []string, 
 		}
 		item := schemaApplyResult{Seq: i + 1, SQL: stmt}
 		if _, err := target.EasyDB().GetSqlDB().ExecContext(ctx, stmt); err != nil {
+			// 索引幂等容错：MySQL 的 CREATE INDEX 不支持 IF NOT EXISTS，重复执行报
+			// "Duplicate key name"；"already exists" 覆盖 sqlite/PG 已存在对象场景。
+			// 与 obs/mq/execlogstore 的建索引容错同口径（仅索引/已存在语义被忽略，
+			// 其余错误照旧遇错即停）。
+			if isAlreadyExistsErr(err) {
+				item.OK = true
+				results = append(results, item)
+				executed++
+				setProgress(&taskcenter.Progress{
+					Text:   fmt.Sprintf("已执行 %d/%d 条（含已存在对象跳过）", executed, len(stmts)),
+					Detail: results,
+				})
+				continue
+			}
 			item.Error = err.Error()
 			results = append(results, item)
 			setProgress(&taskcenter.Progress{
@@ -187,6 +202,14 @@ func runSchemaApply(ctx context.Context, driver, dsnStr string, stmts []string, 
 		})
 	}
 	return nil
+}
+
+// isAlreadyExistsErr 判定"对象已存在"类幂等错误（重复建索引/建表）。
+func isAlreadyExistsErr(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "already exists") ||
+		strings.Contains(msg, "Duplicate key name") ||
+		strings.Contains(msg, "duplicate key")
 }
 
 // writeTaskRefJSON 输出任务引用响应（统一字段名 task_id，前端提交→轮询组件按此解析）。
@@ -655,7 +678,7 @@ func writeSubBatches(ctx context.Context, tgt *db.DB, table, insertStmt string, 
 			end = len(batchVals)
 		}
 		part := batchVals[start:end]
-		sqlText := insertStmt + multiValues(len(part), len(cols))
+		sqlText := insertStmt + multiValues(tgt.Driver(), len(part), len(cols))
 		args := make([]any, 0, len(part)*len(cols))
 		for _, v := range part {
 			args = append(args, v...)
@@ -693,8 +716,11 @@ func buildInsertSQL(driver, table string, cols []string, mode string) string {
 }
 
 // multiValues 生成 nRows 行 × nCols 列的 VALUES 占位符段（如 (?,?),(?,?)）。
-func multiValues(nRows, nCols int) string {
+// 占位符方言差异：PostgreSQL（lib/pq）用编号占位符 $1..$N 且跨行连续编号，
+// 其余方言（sqlite/mysql）统一用 ?。
+func multiValues(driver string, nRows, nCols int) string {
 	var b strings.Builder
+	n := 0
 	for r := 0; r < nRows; r++ {
 		if r > 0 {
 			b.WriteByte(',')
@@ -703,6 +729,12 @@ func multiValues(nRows, nCols int) string {
 		for c := 0; c < nCols; c++ {
 			if c > 0 {
 				b.WriteByte(',')
+			}
+			n++
+			if driver == "postgres" {
+				b.WriteByte('$')
+				b.WriteString(strconv.Itoa(n))
+				continue
 			}
 			b.WriteByte('?')
 		}

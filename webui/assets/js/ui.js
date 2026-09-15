@@ -181,8 +181,60 @@
     if (unauthorizedHandler) unauthorizedHandler();
   }
 
+  // pollTask 后台任务轮询（提交→轮询→进度/结果 共用组件）。
+  // backend 契约：GET /admin/tasks/{id} 返回 {status, progress:{text,detail}, result, created_at, finished_at}；
+  // status ∈ running/done/failed/cancelled（终态不再变化），不存在返回 404。
+  // handlers: { onRunning(task), onDone(task), onFailed(task) }；返回停止函数（离开页面/重提交时停旧轮询）。
+  function pollTask(taskId, handlers) {
+    var opts = handlers || {};
+    var stopped = false;
+    (async function tick() {
+      while (!stopped) {
+        try {
+          var t = await window.Rock.api.get('/admin/tasks/' + encodeURIComponent(taskId));
+          if (stopped) return;
+          if (t.status === 'running') {
+            if (opts.onRunning) opts.onRunning(t);
+          } else if (t.status === 'done') {
+            if (opts.onDone) opts.onDone(t);
+            return;
+          } else {
+            if (opts.onFailed) opts.onFailed(t);
+            return;
+          }
+        } catch (e) {
+          if (e && e.status === 404) return; // 记录被淘汰或服务重启：静默终止
+        }
+        await new Promise(function (r) { setTimeout(r, 1000); });
+      }
+    })();
+    return function () { stopped = true; };
+  }
+
+  // findRunningTask 查任务列表中指定来源（created_by）仍在运行的最近任务（页面恢复用）。
+  async function findRunningTask(createdBy) {
+    try {
+      var r = await window.Rock.api.get('/admin/tasks');
+      var items = (r && r.items) || [];
+      return items.filter(function (t) { return t.created_by === createdBy && t.status === 'running'; })[0] || null;
+    } catch (e) { return null; }
+  }
+
+  // fmtTaskCost 耗时文案：终态 = 结束−创建；运行中 = 现在−创建。
+  function fmtTaskCost(t) {
+    if (!t || !t.created_at) return '';
+    var start = new Date(String(t.created_at).replace(' ', 'T')).getTime();
+    if (isNaN(start)) return '';
+    var end = t.finished_at ? new Date(String(t.finished_at).replace(' ', 'T')).getTime() : Date.now();
+    var sec = Math.max(0, Math.round((end - start) / 1000));
+    return sec >= 60 ? Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒' : sec + ' 秒';
+  }
+
   window.Rock.ui = {
     toast,
+    pollTask,
+    findRunningTask,
+    fmtTaskCost,
     clearToasts,
     confirmDialog,
     openModal,

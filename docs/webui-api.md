@@ -65,11 +65,23 @@
 | 39 | GET | `/admin/proxy/trusted/file` | 读可信代理文件当前生效内容 + 内嵌默认内容（`?name=`，仅允许装配的 `TRUSTED_PROXIES_FILE`） |
 | 40 | POST | `/admin/proxy/trusted/save` | 保存可信代理文件到 `HOT_SCRIPTS_DIR/trusted_proxies/`（原子写，保存前先解析校验非法 IP/CIDR 直接 400；ScriptHub ≤3s 自动热更生效；body `{name, content}`，上限 512KB） |
 | 41 | GET | `/admin/db/schema` | 表结构检查（期望 = 运行期 SQL 源脚本，实际 = 当前数据连接 catalog；返回 A-F 分级差异与自动项生成 SQL） |
-| 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；每条语句落 `sql_exec_log` 审计留痕；danger 级危险操作，服务端不做语句白名单） |
+| 42 | POST | `/admin/db/exec` | 执行 SQL（拆句逐条执行、遇错即停，返回逐条结果；每条语句落 `sql_exec_log` 审计留痕；danger 级危险操作，服务端不做语句白名单）。**混合模式**：body 带 `background:true` 时改提交任务执行中心后台执行、立即返回 `{ok,task_id,total}`，逐条结果经 `GET /admin/tasks/{id}` 的 `progress.detail` 取回（长语句摆脱 HTTP 超时；`source` 记为 `webui-background`） |
 | 43 | GET | `/admin/db/execlog` | SQL 执行历史查询（`sql_exec_log` 表，时间倒序 + offset 服务端分页） |
 | 44 | GET | `/admin/db/size` | 数据库空间占用统计（表名/备注/精确条数 + 库级总空间；逐表占用含数据/索引拆分，只取缓存，未计算返回 `bytes_known=false`）；`GET /admin/db/table_size?table=` 单表精确占用按需计算（白名单校验 + 10 分钟缓存） |
-| 45 | POST | `/admin/db/geoip_sync` | GeoIP 关联表增量同步（GEOIP_LIST 方案）：扫 access_log / shield_event 中「`client_ip` 未入 `geoip_list`」的 IP，按已加载 mmdb 逐 IP 解析后 upsert `geoip_list`（一 IP 一行；**发现阶段按 id 主键游标分块增量扫描 + 对 geoip_list IN 点查内存求差（禁无界 DISTINCT）**；单趟受固定 20 秒预算（代码常量）与请求上下文双重约束，到点或客户端断开即在块边界收工并返回已完成进度（响应含 `budget_stopped`），游标只在回写未被中断时推进；未扫完返回 `done=false`；上一趟进行中返回 `ok:false` 拒绝并发；geo 未就绪 503；私网/回环/解析不出的 IP 跳过并计数；同步成功后自动清流量统计缓存；手动与定时触发（`GEOIP_SYNC_INTERVAL`）收敛本入口，结束均回写 `schedule_list` 的 `geoip_sync` 行） |
+| 45 | POST | `/admin/db/geoip_sync` | GeoIP 关联表增量同步：扫 access_log / shield_event 中「`client_ip` 未入 `geoip_list`」的 IP，按已加载 mmdb 逐 IP 解析后 upsert `geoip_list`（一 IP 一行；发现阶段按 id 主键游标分块增量扫描 + 对 geoip_list IN 点查内存求差；单趟受固定 20 秒预算与任务取消双重约束，到点即在块边界收工、重复执行自动续接；geo 未就绪 503；私网/回环/解析不出的 IP 跳过并计数；同步成功后自动清流量统计缓存；结束回写 `schedule_list` 的 `geoip_sync` 行）。**后台任务模式**：提交即返回 `{ok,task_id}`，进度与报告文本经 `GET /admin/tasks/{id}` 查询（不再受 HTTP 15 秒超时压制）；重复提交（已有任务在跑）返回 409 |
 | 45a | GET | `/admin/schedule/list` | 定时任务只读清单（GEOIP_LIST D15/D18）：`schedule_list` 登记行 + 行内 `enabled`（bool，服务端读 `config_key` 对应 easyconf 现值；空 `config_key` 系统级恒 true；`GEOIP_SYNC_INTERVAL` 按 0=关闭语义判定且 mmdb 未就绪视为停用）。响应 `{ok,tasks:[{name,title,kind,config_key,plan,last_run_at,last_status,last_message,remark,enabled}]}`；`last_run_at=null` 表示「未登记」（非「从未执行」）。只读，无写端点 |
+| 46 | GET | `/admin/db/dsn` | 外部数据源列表（DSN 脱敏：mysql/postgres 凭据段打码，sqlite 路径原样；`{code,name,driver,dsn}`）。数据源为迁移目标与备选源，配置持久化在 `<CONF_DIR>/dsn.json` |
+| 47 | POST | `/admin/db/dsn` | 添加数据源：body `{name,driver,dsn[,test]}`。校验驱动白名单（sqlite/mysql/postgres）与已注册、`name` 唯一、DSN 重复（同 Code）拦截、MySQL 密码裸 `@` 预检；`test:true` 时先连通测试再落盘。成功返回 `{ok,code}` |
+| 48 | POST | `/admin/db/dsn/delete` | 删除数据源：body `{code}`；有数据迁移/结构对齐任务进行中时 409 拒绝（防删除在用目标） |
+| 49 | POST | `/admin/db/dsn/test` | 连通测试：body `{driver,dsn}`，`sql.Open`+Ping+版本回显（sqlite 报内置版本），不落盘，可测未保存的连接串 |
+| 50 | GET | `/admin/db/migrate/schema` | 目标库结构差异预览：`?code=<数据源 Code>`，期望 = 本系统内嵌 SQL 脚本（与表同步同源），返回 `{driver,items,sql}`（只读） |
+| 51 | POST | `/admin/db/migrate/schema_apply` | 对目标库执行对齐 DDL：`?code=`；**一律后台任务化**（长 DDL 必超 HTTP 超时），零差异直接返回 `{ok,noop:true}`，否则返回 `{ok,task_id,total}`；拆句逐条执行、遇错即停（索引「已存在」类错误幂等跳过），逐条结果经任务 `progress.detail` 取回。**不写运行库 `sql_exec_log`**（目标库动作不属于运行库审计域） |
+| 52 | POST | `/admin/db/migrate/start` | 启动数据迁移：body `{source,target,tables[],batch,mode}`（`source` 缺省/`self`=本机运行库；`target` 必须是外部数据源，指向运行库被拒；`mode` ∈ replace/skip；`batch` clamp 100–10000，缺省 1000，仅存任务内存态不落盘）。返回 `{ok,task_id,tables,batch,mode}`；已有任务在跑 409 |
+| 53 | GET | `/admin/db/migrate/status` | 迁移任务状态便捷视图：`{state,task_id?,result?,tables:[{table,status,rows_done,rows_total,err?}]}`，无任务时 `state=idle` |
+| 54 | POST | `/admin/db/migrate/cancel` | 取消迁移：body `{table}` 取消该待迁移表（仅 pending 可取消）；空 body 取消整任务（当前批事务完成后停止，已写入行保留、重跑幂等续接） |
+| 55 | GET | `/admin/tasks` | 任务执行中心任务列表：`{items:[Task]}`，含 running 与保留期内终态（终态仅留最近 100 条），按新→旧排序。Task = `{id,created_by,title,status,progress{text,detail},result,created_at,finished_at}` |
+| 56 | GET | `/admin/tasks/{id}` | 单任务详情（`progress`/`status`/`result`/时间字段）；不存在（含已淘汰/重启后旧 ID）返回 404 |
+| 57 | POST | `/admin/tasks/{id}/cancel` | 统一取消（context 送达，落点由业务定）：返回 `{ok,message,task}`；任务已终态时返回该终态与提示、不报错；不存在返回 404 |
 | 43 | POST | `/admin/shield/blacklist/sync_file` | 从外挂规则文件 `rules/ip_blacklist.txt` 同步 IP 入库（block_type=11，幂等） |
 | 44 | POST | `/admin/shield/blacklist/ban` | 专用封禁端点（三态：入库 / 活跃 400 / 软删过期恢复续封，warn_times 累计） |
 | 45 | GET | `/admin/shield/jail` | 小黑屋：当前在押的全部封禁条目（含永久；首页页签数据源） |
@@ -548,7 +560,7 @@ WebUI「可信代理」页数据源（实现 `internal/netutil/proxies_admin.go`
 
 ---
 
-### 3.19 数据库表结构同步端点组 — 表结构检查 + SQL 执行（实现 `internal/adminapi/dbschema.go`）
+### 3.19 数据库端点组 — 表结构同步 / 外部数据源 / 数据迁移 / 任务执行中心（实现 `internal/adminapi/dbschema.go`、`dsn.go`、`migrate.go`、`tasks.go`）
 
 WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运行期 SQL 源（`HOT_SCRIPTS_DIR/sql/` 外挂优先、内嵌兜底，与各挂件实际建表同源）经 DDL 解析器产出；实际结构 = 当前数据连接 catalog（`sql/<dbtype>/schema_query_*.sql`，三方言）。仅 `DB_DRIVER`/`DB_DSN` 配置且表清单已装配时可用，否则 503。
 
@@ -556,7 +568,7 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 |------|------|
 | `GET /admin/db/schema` | 逐表比对期望与实际结构，返回差异项与自动项生成 SQL；无差异时 `items:[]`、`sql:""` |
 | `POST /admin/db/exec` | body `{sql}`；拆句（分号切分，感知字符串字面量与注释内分号）逐条执行、**遇错即停**（DDL 无跨方言统一事务语义），返回已执行到的位置；进程内互斥（已有执行在途回 409） |
-| `POST /admin/db/geoip_sync` | 无 body；增量同步并返回 `{ok,text,tables:[{table,ips,rows_upserted,skipped,ip_sample,scanned,done,budget_stopped}]}`（`ips`=本趟处理的缺失 IP 数、`rows_upserted`=upsert geoip_list 行数、`text` 为人读报告文案；`done=false` 表示该表仍有未扫行、再次执行从断点续扫；`budget_stopped=true` 表示本轮因单趟预算到点/调用方断开提前收工，已完成部分已写入）；geo 未就绪（mmdb 缺失/未加载）回 503，响应文本为引导文案；上一趟进行中返回 `ok:false` |
+| `POST /admin/db/geoip_sync` | 无 body；**后台任务模式**——提交即返回 `{ok,task_id}`，同步进度/报告文本经 `GET /admin/tasks/{id}` 的 `progress.text` 与 `progress.detail` 取回；geo 未就绪（mmdb 缺失/未加载）回 503，响应文本为引导文案；已有任务在跑回 409 |
 
 **`GET /admin/db/schema` 响应 200**：
 
@@ -596,6 +608,8 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 | F | 库中多余列/表 | 仅提示：不生成 DROP（危险，可能是历史遗留或有数据） |
 
 **`POST /admin/db/exec` 请求体**：
+
+**后台执行**：请求体加 `"background": true` 时提交任务执行中心后台执行（立即返回 `{ok,task_id,total}`），逐条结果与失败位置经 `GET /admin/tasks/{id}` 的 `progress.detail`（元素 `{seq,sql,ok,rows,cost_ms,error}`）取回；`sql_exec_log` 照常留痕（`source=webui-background`）。同步路径行为与审计口径不变。
 
 ```json
 { "sql": "ALTER TABLE ip_blacklist ADD COLUMN warn_times INTEGER NOT NULL DEFAULT 0;" }
