@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/iotames/easydb"
 	"github.com/iotames/easyserver"
@@ -24,6 +25,7 @@ import (
 	"rocksys/internal/conf"
 	"rocksys/internal/db"
 	"rocksys/internal/hotswap"
+	"rocksys/internal/taskcenter"
 )
 
 // 内建端点路径（§8.1 表）。
@@ -69,6 +71,7 @@ type AdminServer struct {
 	edb          *easydb.EasyDb      // 用户存储数据库连接（dataDB.EasyDB()，可 nil）
 	sqls         db.SQLSource        // 用户存储 SQL 脚本源（dataDB，可 nil）
 	dataDB       *db.DB              // 表结构同步数据连接（SetTableSpecs 注入，可 nil = 功能不可用）
+	tasks        *taskcenter.Center  // 任务执行中心（长任务统一注册/查询，D20–D29；New 内自建）
 	tableSpecs   []db.TableSpec      // 表结构同步表清单（装配处单一事实来源，SetTableSpecs 注入）
 	execLogOnce  sync.Once           // SQL 执行审计存储惰性构造（跟随 dataDB 生命周期）
 	execLog      *execLogStore       // SQL 执行审计存储（可 nil = 审计不可用）
@@ -120,6 +123,9 @@ func New(addr string, confMgr conf.Manager, hotswapMgr *hotswap.Manager, edb *ea
 	}
 	s.initUsers()
 	s.auth = newAdminAuth(confMgr, s.initialized, s.jwtSecret, s.adminToken, s.users, addr)
+	// 任务执行中心（D20）：纯内存、零配置，随管理接口生命周期；端点经头部中间件前缀拦截（tasks.go）。
+	s.tasks = taskcenter.New(time.Now().Unix())
+	s.srv.AddMiddleHead(s.newTasksMiddleware())
 	s.registerBuiltin()
 	return s
 }
