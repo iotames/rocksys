@@ -35,10 +35,12 @@ type nameMap struct {
 }
 
 // geoRecord 只声明需要的字段，避免整棵 GeoIP2 记录树的解码开销（热路径）。
+// 注意：Country.Names 必须直写 map[string]string——经嵌套包装结构体间接承接时
+// maxminddb-golang v2 解码结果为空 map（省/市与数组元素形态均正常，实测 2026-09-15）。
 type geoRecord struct {
 	Country struct {
-		ISOCode string  `maxminddb:"iso_code"`
-		Names   nameMap `maxminddb:"names"`
+		ISOCode string            `maxminddb:"iso_code"`
+		Names   map[string]string `maxminddb:"names"`
 	} `maxminddb:"country"`
 	Subdivisions []nameMap `maxminddb:"subdivisions"`
 	City         nameMap   `maxminddb:"city"`
@@ -87,22 +89,24 @@ func (m *maxmindDB) lookup(ip netip.Addr) GeoInfo {
 		Code:     rec.Country.ISOCode,
 		Country:  pickName(rec.Country.Names),
 		Province: firstSubdivision(rec.Subdivisions),
-		City:     pickName(rec.City),
+		City:     pickName(rec.City.Names),
 	}
 }
 
 // pickName 名称字典取值：优先中文，缺失回落英文（部分区域无 zh-CN 译名）。
-func pickName(m nameMap) string {
-	if v := m.Names["zh-CN"]; v != "" {
+func pickName(m map[string]string) string {
+	if v := m["zh-CN"]; v != "" {
 		return v
 	}
-	return m.Names["en"]
+	return m["en"]
 }
 
 // firstSubdivision 取首个一级行政区（省/州）本地化名称；无则空串。
+// 值以 mmdb zh-CN 实际返回为准（多为短名如「广东」，部分为全称如「北京市」）；
+// 前端中国地图对全称经 chinaShort 映射、短名与 geojson 直连，两者均正确着色。
 func firstSubdivision(subs []nameMap) string {
 	for _, s := range subs {
-		if name := pickName(s); name != "" {
+		if name := pickName(s.Names); name != "" {
 			return name
 		}
 	}

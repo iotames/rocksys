@@ -99,7 +99,9 @@
       req_bytes: Number(r.req_bytes) || 0,
       resp_bytes: Number(r.resp_bytes) || 0,
       user_agent: r.user_agent || '',
-      country: r.country || '',
+      country_code: r.country_code || '',
+      country_name: r.country_name || '',
+      province: r.province || '',
       city: r.city || '',
       extras: r, // 保留扩展维度（负载字段如 request_body），详情展开时平铺展示
     };
@@ -183,12 +185,14 @@
   }
 
   // 详情字段：核心字段 + 扩展维度（extra 平铺字段，非核心字段自动列出）
-  const KNOWN = new Set(['time', 'trace_id', 'tenant_id', 'path', 'method', 'client_ip', 'status_code', 'upstream', 'shield_ms', 'biz_ms', 'total_ms', 'egress_ms', 'req_bytes', 'resp_bytes', 'user_agent', 'country', 'city']);
+  const KNOWN = new Set(['time', 'trace_id', 'tenant_id', 'path', 'method', 'client_ip', 'status_code', 'upstream', 'shield_ms', 'biz_ms', 'total_ms', 'egress_ms', 'req_bytes', 'resp_bytes', 'user_agent', 'country_code', 'country_name', 'province', 'city']);
 
-  // 地区展示：国家（ISO 码）/省市 拼接；均空时占位「未知」（与 WAF 页 geo 缺失约定一致）
+  // 地区展示：国名/省/市 拼接（geoip_list 关联列；未同步 IP 无国名时回落 ISO 码）；
+  // 均空时占位「未知」（读侧兜底链末端，与 WAF 页约定一致）
   function geoText(r) {
-    const parts = [String(r.country || '').trim(), String(r.city || '').trim()].filter(Boolean);
-    return parts.length ? parts.join('/') : '未知';
+    const parts = [String(r.country_name || '').trim(), String(r.province || '').trim(), String(r.city || '').trim()].filter(Boolean);
+    if (parts.length) return parts.join('/');
+    return String(r.country_code || '').trim() || '未知';
   }
 
   // 耗时分段条：入网（蓝）→ 转发（业务）（绿）→ 出网（橙），段宽 = 段耗时/总耗时；
@@ -220,8 +224,9 @@
       { key: 'trace_id', label: '请求标识', copy: true },
       { key: 'tenant_id', label: '租户' },
       { key: 'client_ip', label: '请求来源', copy: true },
-      { key: 'country', label: '客户端国家', render: row => esc(row.country || '未知') },
-      { key: 'city', label: '客户端省市', render: row => esc(row.city || '未知') },
+      { key: 'country_name', label: '国家', render: row => esc(row.country_name || row.country_code || '未知') },
+      { key: 'province', label: '省/州', render: row => esc(row.province || '未知') },
+      { key: 'city', label: '城市', render: row => esc(row.city || '未知') },
       { key: 'user_agent', label: '客户端 User-Agent', pre: true, copy: true, render: row => esc(row.user_agent || '未知') },
       { key: 'method', label: '方法' },
       { key: 'path', label: '路径', pre: true, copy: true },

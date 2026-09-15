@@ -51,8 +51,10 @@
       calcTable: '',    // 正在按需计算占用的表名（逐表精确占用，避免全库页遍历）
       totalBytes: 0, tables: [],
     },
-    geo: {              // GeoIP 历史回填（TRAFFIC_ANALYSIS 增量：两表 country/city 缺失行批量补齐）
+    geo: {              // GeoIP 关联表同步（GEOIP_LIST：geoip_list 增量构建/刷新）
       running: false, result: null, error: null,
+      lastRunAt: '',      // 上次同步时间（schedule_list.geoip_sync 行 last_run_at）
+      lastStatus: '',     // 上次同步状态 success/failed
     },
   };
 
@@ -216,6 +218,7 @@
     const host = $('#page-database');
     if (!state.loaded && host && !host.innerHTML.trim()) host.innerHTML = skeletonHTML(5);
     loadSize(); // 空间占用异步加载（不阻塞表结构检查主流程，失败静默走占位）
+    loadGeoSyncMeta(); // 上次同步时间（定时任务登记行，失败静默走「未登记」占位）
     try {
       const res = await api.get('/admin/db/schema');
       state.driver = String(res.driver || '');
@@ -316,6 +319,20 @@
   // 该端点为精确统计（大库 COUNT(*) 秒级~十秒级），显式放宽超时到 60 秒，避免被默认 5 秒误掐断。
   // force=true 表示用户主动触发（点「加载」/「⟳」）：失败必须给出统一报错提示；
   // 自动加载（页面进入）失败仅在服务端有响应时提示，网络不可达静默并由状态栏占位承载。
+  // 上次同步时间（GEOIP_LIST D7）：读 schedule_list 登记行 geoip_sync 的 last_run_at；
+  // 静默刷新（失败不弹 toast，卡片显示「未登记」占位），同步成功后由 runGeoSync 触发重拉。
+  async function loadGeoSyncMeta() {
+    try {
+      const r = await api.get('/admin/schedule/list');
+      const row = ((r && r.tasks) || []).find(function (t) { return t.name === 'geoip_sync'; });
+      if (row) {
+        state.geo.lastRunAt = String(row.last_run_at || '');
+        state.geo.lastStatus = String(row.last_status || '');
+        render();
+      }
+    } catch (e) { /* 静默：保持占位文案 */ }
+  }
+
   async function loadSize(force) {
     if (state.size.loading) return;
     if (state.size.loaded && !force) { render(); return; }
@@ -415,40 +432,44 @@
     return html;
   }
 
-  // GeoIP 历史回填卡（TRAFFIC_ANALYSIS 增量）：两表 country/city 缺失行按 mmdb 批量补齐。
-  // 只补缺失行（WHERE country=''），已回填/有值的行不动；无地理信息的 IP（私网等）跳过并计数。
+  // GeoIP 关联表同步卡（GEOIP_LIST 方案）：增量构建/刷新 geoip_list（一 IP 一行，
+  // 与 access_log / shield_event 按 client_ip 关联），显示上次同步时间（schedule_list.geoip_sync 行）。
   function geoSyncHTML() {
     const g = state.geo;
+    const lastSync = g.lastRunAt
+      ? '上次同步：' + esc(String(g.lastRunAt).replace('T', ' ').slice(0, 19)) + ' UTC' +
+        (g.lastStatus ? '（' + esc(g.lastStatus) + '）' : '')
+      : '上次同步：未登记（尚未执行过同步）';
     let body;
     if (g.error) {
       body = '<div class="alert alert-warn" style="margin-bottom:8px">' + esc(g.error) + '</div>' +
         '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync">重试同步</button>';
     } else if (g.result) {
       body = '<div class="alert alert-info" style="margin-bottom:8px">' + esc(g.result.text || '完成') + '</div>' +
-        '<button class="btn btn-sm" data-act="db-geoip-sync">再次同步（处理新增缺失行）</button>';
+        '<button class="btn btn-sm" data-act="db-geoip-sync">再次同步（处理新增缺失 IP）</button>';
     } else {
       body = '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync"' + (g.running ? ' disabled' : '') + '>' +
         (g.running ? '同步中…' : '开始同步') + '</button>';
     }
     return '<div class="card"><div class="card-title">GeoIP 同步' +
       '<span class="tag tag-blue">维护工具</span></div>' +
-      '<div class="form-hint" style="margin-bottom:8px">对 access_log / shield_event 中「有 IP 但国家/城市缺失」的历史行，' +
-      '按当前已加载的 mmdb 数据批量回填 country / city。只补缺失行，不影响已有值；' +
-      '私网/回环等无地理信息的 IP 会跳过并计数。回填分批执行（断点续填）：每趟有服务端时间上限' +
-      '（约 20 秒），到点返回已完成进度；再次点击即从断点继续，' +
-      '多趟累计完成全量回填。' +
-      '回填后流量统计的地理位置分布即覆盖历史数据。</div>' +
+      '<div class="form-hint" style="margin-bottom:4px">' + lastSync + '。</div>' +
+      '<div class="form-hint" style="margin-bottom:8px">扫描 access_log / shield_event 中「尚未入 geoip_list 关联表」的 IP，' +
+      '按当前已加载的 mmdb 数据逐 IP 解析后写入 geoip_list（一 IP 一行，明细与统计经 client_ip 关联取地理信息）。' +
+      '私网/回环等无地理信息的 IP 跳过并计数；同步分趟执行：每趟有服务端时间上限（约 20 秒），' +
+      '到点返回已完成进度，再次点击即从断点继续，多趟累计完成全量构建。' +
+      '自动同步间隔经 GEOIP_SYNC_INTERVAL 配置（见「定时任务」页）。</div>' +
       body + '</div>';
   }
 
-  // 执行回填（POST /admin/db/geoip_sync；POST-only，防本机恶意页面 GET 触发批量写）
+  // 执行同步（POST /admin/db/geoip_sync；POST-only，防本机恶意页面 GET 触发批量写）
   async function runGeoSync() {
     if (state.geo.running) return;
     const ok = await confirmDialog({
-      title: 'GeoIP 历史回填',
-      message: '将按当前 mmdb 数据，批量更新 access_log / shield_event 中 geo 缺失的行' +
-        '（仅写 country/city 两列的空值行，其他数据不动）。是否继续？',
-      confirmText: '开始回填',
+      title: 'GeoIP 关联表同步',
+      message: '将按当前 mmdb 数据，把 access_log / shield_event 中尚未入 geoip_list 的 IP ' +
+        '解析后写入关联表（一 IP 一行；已入表 IP 不动，其他数据不变）。是否继续？',
+      confirmText: '开始同步',
     });
     if (!ok) return;
     state.geo.running = true;
@@ -456,17 +477,18 @@
     try {
       // 单趟时间上限由服务端固定 20 秒预算控制（到点即返回已完成进度），前端等待上限 30 秒仅作兜底。
       const r = await api.post('/admin/db/geoip_sync', 30000)();
-      if (r && r.ok === false) throw new Error(r.err || '回填失败');
+      if (r && r.ok === false) throw new Error(r.err || '同步失败');
       state.geo.result = r || { text: '完成' };
       state.geo.error = null;
-      toast('GeoIP 回填完成：' + (r && r.text || ''), 'success');
-      loadSize(true); // 回填不改行数但刷新概览无妨
+      toast('GeoIP 同步完成：' + (r && r.text || ''), 'success');
+      loadGeoSyncMeta(); // 上次同步时间随本次执行刷新
+      loadSize(true); // 同步不改两表行数但刷新概览无妨
     } catch (e) {
-      state.geo.error = e.message || '回填失败';
+      state.geo.error = e.message || '同步失败';
       // mmdb 提示仅在服务端真返回 503（geo 未就绪）时附带，避免误导
       const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务'
-        : '。回填分批执行，已完成的批次已写入，稍候再次点击即从断点继续';
-      toast('GeoIP 回填失败：' + state.geo.error + hint, 'error');
+        : '。同步分趟执行，已完成部分已写入，稍候再次点击即从断点继续';
+      toast('GeoIP 同步失败：' + state.geo.error + hint, 'error');
     }
     state.geo.running = false;
     render();

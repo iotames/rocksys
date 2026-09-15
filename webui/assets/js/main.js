@@ -18,7 +18,7 @@
   // 路由表：1 = 固定页；'param' = 带二级参数（组件/服务详情）
   const ROUTES = {
     overview: 1, components: 'param', services: 'param',
-    scripts: 1, config: 1, waf: 1, logs: 1, syslogs: 1, database: 1,
+    scripts: 1, config: 1, waf: 1, logs: 1, syslogs: 1, database: 1, schedule: 1,
   };
   // （侧边栏分组展开已泛化为按激活项归属判断，见 activateNav；分组折叠由 .menu-parent 点击统一处理）
 
@@ -50,7 +50,7 @@
     ['util', 'theme', 'ui', 'api', 'state', 'auth'].forEach(function (k) { has([k]); });
     ['head', 'empty', 'select', 'tabs', 'dataTable', 'detailModal', 'filterBar', 'dateRange', 'logStream', 'luaEditor',
       'componentState', 'dataflow', 'metrics', 'chart', 'configEditor'].forEach(function (k) { has(['comp', k]); });
-    ['overview', 'detail', 'config', 'scripts', 'waf', 'blacklist', 'ualist', 'topIPs', 'logs', 'syslogs', 'fileEditor', 'ruleFiles', 'database'].forEach(function (k) { has(['views', k]); });
+    ['overview', 'detail', 'config', 'scripts', 'waf', 'blacklist', 'ualist', 'topIPs', 'logs', 'syslogs', 'fileEditor', 'ruleFiles', 'database', 'schedule'].forEach(function (k) { has(['views', k]); });
     if (missing.length) {
       console.error('[RockSys] 前端模块缺失（script 加载顺序或遗漏）：', missing.join(', '));
       const b = $('#prune-banner');
@@ -125,6 +125,7 @@
     logs:       { fetch: o => views.logs.loadPage(Object.assign({ force: true }, o || {})), lazy: true },
     syslogs:    { fetch: o => views.syslogs.load(o || {}), lazy: false },
     database:   { fetch: o => views.database.load(o || {}), lazy: true },
+    schedule:   { fetch: o => views.schedule.load(o || {}), lazy: false },
   };
 
   // 顶栏只保留全局常驻项（品牌/在线状态/管理地址/主题）；

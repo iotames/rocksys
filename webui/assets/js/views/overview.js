@@ -46,6 +46,7 @@
   let geo = null; // 拉取结果 { level, source, geo:[{country|region,cnt}], geo_ready }
   let geoErr = null; // 行内错误兜底（toast 按 UX 红线在 loadGeo 里弹）
   let geoLoading = false; // 地理分布拉取中（同样是请求锁）
+  let geoSyncing = false; // GeoIP 手动同步进行中（按钮禁用防连点；三触发源共用服务端互斥）
 
   // 小黑屋数据缓存（切页签/静默重载时刷新；拉取失败保留旧数据 + 行内提示）
   let jailRows = [];
@@ -485,9 +486,11 @@
       '</div>';
   }
 
-  // 排名地区显示名：世界=ISO 码转中文国名（浏览器内建本地化），中国=省名原样
-  function geoDisplayName(name) {
+  // 排名地区显示名：世界=ISO 码转中文国名（浏览器内建本地化），中国=省名原样；
+  // 后端已随聚合带回 country_name（中文国名）时优先使用
+  function geoDisplayName(name, preferCn) {
     if (!name || name === '未知') return '未知';
+    if (preferCn) return preferCn;
     return geoScope === 'world' ? Rock.comp.geoMap.isoToCn(name) : name;
   }
 
@@ -496,8 +499,9 @@
     const max = rows[0].cnt || 1;
     const rowsHtml = rows.map(function (g) {
       const name = g.region || g.country || '';
+      const shown = geoDisplayName(name, g.country_name);
       const pct = Math.max(2, Math.round((g.cnt / max) * 100));
-      return '<div class="geo-row"><span class="geo-name" title="' + esc(geoDisplayName(name)) + '">' + esc(geoDisplayName(name)) + '</span>' +
+      return '<div class="geo-row"><span class="geo-name" title="' + esc(shown) + '">' + esc(shown) + '</span>' +
         '<span class="geo-bar"><span style="width:' + pct + '%"></span></span>' +
         '<span class="geo-cnt">' + esc(Rock.util.fmtInt(g.cnt)) + '</span></div>';
     }).join('');
@@ -524,8 +528,13 @@
         srcLabel + '口径 · ' + scopeLabel + '</span></div>' + geoRankHTML(geo.geo || []) + '</div>' +
         '</div>', geoLoading);
     }
-    // 并入流量统计卡内的分区样式（同运行状态卡「资源」分区的 border-top 风格）
-    return '<div style="border-top:1px solid rgba(127,127,127,.15);margin-top:12px;padding-top:10px"><div class="geo-card-head"><div class="card-title">地理位置 <span class="card-sub">按范围查库聚合 · 地图与排名联动</span></div>' +
+    // 并入流量统计卡内的分区样式（同运行状态卡「资源」分区的 border-top 风格）。
+    // 能力边界注记（GEOIP_LIST D31）：聚合基于 geoip_list 关联表，按同步间隔更新，
+    // 最近一个间隔内新访问的 IP 暂不计入；「立即同步」按钮手动补齐。
+    return '<div style="border-top:1px solid rgba(127,127,127,.15);margin-top:12px;padding-top:10px"><div class="geo-card-head"><div class="card-title">地理位置 <span class="card-sub">按范围查库聚合 · 地图与排名联动</span>' +
+      '<button class="btn btn-sm" data-act="geo-sync"' + (geoSyncing ? ' disabled' : '') + ' style="margin-left:8px">' +
+      (geoSyncing ? '同步中…' : '立即同步') + '</button></div>' +
+      '<div class="form-hint" style="margin:-2px 0 6px">数据按 GeoIP 同步间隔更新（默认 1 小时，可在「配置 → 定时任务」调整），最近一个间隔内新访问的 IP 暂不计入地图与省级榜；点击「立即同步」可立即补齐。</div>' +
       geoTogglesHTML() + '</div>' + body + '</div>';
   }
 
@@ -878,6 +887,26 @@
       'traffic-summary-retry': function () { loadSummary({ manual: true }); },
       'traffic-series-retry': function () { loadSeries({ manual: true }); },
       'geo-retry': function () { loadGeo({ manual: true }); },
+      // GeoIP 立即同步（GEOIP_LIST D31）：复用 POST /admin/db/geoip_sync 唯一端点；
+      // 同步成功后服务端已清统计缓存，重拉当前位置分布即见新数据
+      'geo-sync': async function () {
+        if (geoSyncing) return;
+        geoSyncing = true;
+        renderGeoCard();
+        try {
+          const r = await api.post('/admin/db/geoip_sync', 30000)();
+          if (r && r.ok === false) throw new Error(r.err || '同步失败');
+          toast('GeoIP 同步完成：' + (r && r.text || ''), 'success');
+          geo = null; geoErr = null;
+          loadGeo({ manual: true });
+        } catch (e) {
+          const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务' : '';
+          toast('GeoIP 同步失败：' + (e.message || '未知错误') + hint, 'error');
+        } finally {
+          geoSyncing = false;
+          renderGeoCard();
+        }
+      },
       // 流量统计：清空服务端结果缓存（POST；成功后重新聚合当前范围，立见最新数据）
       'traffic-cache-clear': async function (el) {
         if (trafficBusy()) { busyHint(); return; }
