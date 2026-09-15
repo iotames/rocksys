@@ -350,6 +350,21 @@ func (r *EventRecorder) EnsureTable() error {
 		if _, err := r.edb.Exec(strings.ReplaceAll(geo, "{table}", db.TableGeoipList)); err != nil {
 			return fmt.Errorf("shield: 建 geoip_list 关联表失败: %w", err)
 		}
+		// 索引脚本三方言内嵌必有（外挂缺失走内嵌兜底），读取失败即真异常，显式报错
+		idxGeo, err := r.sqls.SQL("geoip_list_create_index.sql")
+		if err != nil {
+			return fmt.Errorf("shield: 读取 geoip_list 索引脚本失败: %w", err)
+		}
+		{ // 索引幂等容错（MySQL 无 IF NOT EXISTS，重复执行报 Duplicate key name 忽略）
+			for _, stmt := range db.SplitSQLStatements(strings.ReplaceAll(idxGeo, "{table}", db.TableGeoipList)) {
+				if _, err := r.edb.Exec(stmt); err != nil {
+					if msg := err.Error(); strings.Contains(msg, "already exists") || strings.Contains(msg, "Duplicate key name") || strings.Contains(msg, "duplicate key") {
+						continue
+					}
+					return fmt.Errorf("shield: 建 geoip_list 索引失败: %w", err)
+				}
+			}
+		}
 	}
 	idx, err := r.sqlText("shield_event_create_index.sql")
 	if err != nil {

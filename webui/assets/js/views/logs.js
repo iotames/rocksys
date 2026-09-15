@@ -134,7 +134,7 @@
     const params = buildLogParams();
     loadStorage(); // 存储占用（不阻塞日志主流程）
     try {
-      const r = await api.textMeta('/admin/logs?' + params.toString());
+      const r = await api.textMeta('/admin/logs?' + params.toString(), 0, '日志数据加载中…');
       store.logs = Rock.util.parseNdjson(r.text, normalizeLogRow);
       store.logsTotal = r.total;
       store.logsLoaded = true;
@@ -159,7 +159,7 @@
   // 加载存储占用：文件日志 + 数据库日志表总空间（当前存储全量，与启用后端无关）
   async function loadStorage() {
     try {
-      const s = await api.get('/admin/logs/storage');
+      const s = await api.get('/admin/logs/storage', 0, '日志存储信息加载中…');
       store.logsStorage = s || null;
       store.storageError = null;
     } catch (e) {
@@ -340,7 +340,7 @@
     params.set('offset', '0');
     let rows;
     try {
-      const r = await api.textMeta('/admin/logs?' + params.toString());
+      const r = await api.textMeta('/admin/logs?' + params.toString(), 0, '日志数据加载中…');
       rows = Rock.util.parseNdjson(r.text, normalizeLogRow);
     } catch (e) {
       toast('导出失败：' + e.message, 'error');

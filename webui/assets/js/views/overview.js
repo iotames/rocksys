@@ -38,7 +38,7 @@
   // 谁先成功谁先渲染，互不等待；loading 同时是请求锁（进行中拒绝重复触发，防慢 SQL 连点）。
   let smState = { data: null, err: null, loading: false }; // 指标卡（/traffic/summary）
   let seState = { data: null, bucket: 'hour', err: null, loading: false }; // 趋势图（/traffic/series）
-  const trafficTimeoutMs = 30000; // 查库聚合是重操作，超时放宽到 30 秒（默认 5 秒易误报）
+  const trafficTimeoutMs = 30000; // 查库聚合是重操作，超时放宽到 30 秒（默认 15 秒对重聚合仍偏紧）
   const TRAFFIC_LOADING_TEXT = '数据加载中，请耐心等待';
   // 地理位置卡片状态：scope=世界/中国地图切换，source=访问/总拦截切换（联动地图热力与 Top 排名）
   let geoScope = 'china'; // 'world' | 'china'
@@ -223,7 +223,7 @@
     ).join('');
     return '<div class="card hoverable gw-bar" data-act="goto-config" title="点击进入全局配置">' +
       items +
-      '<a class="link-like gw-bar-link">进入全局配置 →</a>' +
+      '<a class="link-like gw-bar-link">配置 →</a>' +
       '</div>';
   }
 
@@ -412,21 +412,32 @@
     const qs = rangeQS(range) + '&source=' + source + '&level=' + level;
     geoLoading = true;
     renderGeoCard();
+    let staleDone = false; // 期间已切换维度 → 本次结果作废且由最新请求负责渲染，finally 里跳过重绘
     try {
       const res = await api.get('/admin/obs/traffic/geo?' + qs, trafficTimeoutMs);
-      if (res.level !== level || res.source !== source || stale()) return;
+      if (stale()) { staleDone = true; return; }
+      if (!res || res.level !== level || res.source !== source) {
+        // 响应维度与请求不一致（服务端过旧未回显 level/source、或返回异常体）：
+        // 必须走错误路径复位忙标志，否则 trafficBusy 永久为真、「刷新中…」角标卡死
+        throw new Error('geo 响应维度与请求不一致（level/source 不匹配，服务端版本可能过旧）');
+      }
       geo = res;
       geoErr = null;
     } catch (e) {
-      if (stale()) return;
+      if (stale()) { staleDone = true; return; }
       geoErr = e.message || '加载失败';
       if (!opts.silent && e.status !== 0 && !obsOffErr(e)) {
         toast('地理位置分布加载失败：' + geoErr + '，可点「重试」再试', 'error');
       }
+    } finally {
+      geoLoading = false;
+      if (!staleDone) {
+        // 角标「刷新中…」在卡片标题（trafficBodyHTML）里，须整卡重绘才能随 busy 状态消失；
+        // 只重绘 geo 子区会让标题角标残留（summary/series 先完成时画上的角标无人更新）
+        renderTrafficBody();
+        maybeGeoToast();
+      }
     }
-    geoLoading = false;
-    renderGeoCard();
-    maybeGeoToast();
   }
 
   // D17：依赖 geo 的页面会话内首次进入且 geo 未就绪时弹一次统一警告 toast（sessionStorage 标记防刷屏）

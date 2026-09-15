@@ -82,8 +82,10 @@ func (l *loginLimiter) reset(ip string) {
 // handleAuthStatus 返回管理接口认证状态（WebUI 启动引导用）。
 func (s *AdminServer) handleAuthStatus(ctx httpsvr.Context) {
 	username := ""
-	if u, _ := s.users.get(); u != nil {
-		username = u.Username
+	if s.users != nil {
+		if u, _ := s.users.get(); u != nil {
+			username = u.Username
+		}
 	}
 	_ = writeJSON(ctx.Writer, map[string]any{
 		"auth_required": s.auth.authRequired(),

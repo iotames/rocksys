@@ -61,6 +61,21 @@ func (s *DBStore) EnsureTable() error {
 		if _, err := s.edb.Exec(geo); err != nil {
 			return fmt.Errorf("obs: 建 geoip_list 关联表失败: %w", err)
 		}
+		idx, err := s.geoIndexDDL()
+		if err != nil {
+			return err
+		}
+		if idx != "" {
+			// 索引幂等容错（MySQL 无 IF NOT EXISTS，重复执行报 Duplicate key name 忽略）
+			for _, stmt := range db.SplitSQLStatements(idx) {
+				if _, err := s.edb.Exec(stmt); err != nil {
+					if msg := err.Error(); strings.Contains(msg, "already exists") || strings.Contains(msg, "Duplicate key name") || strings.Contains(msg, "duplicate key") {
+						continue
+					}
+					return fmt.Errorf("obs: 建 geoip_list 索引失败: %w", err)
+				}
+			}
+		}
 	}
 	idx, err := s.sqlText("access_log_create_index.sql")
 	if err != nil {
@@ -89,6 +104,16 @@ func (s *DBStore) geoDDL() string {
 	return strings.ReplaceAll(txt, "{table}", db.TableGeoipList)
 }
 
+// geoIndexDDL 读 geoip_list 索引脚本并替换 {table} 占位符。
+// 与 geoDDL 的容错跳过不同：索引脚本三方言内嵌必有（外挂缺失走内嵌兜底），读取失败即真异常，显式报错。
+func (s *DBStore) geoIndexDDL() (string, error) {
+	txt, err := s.sqls.SQL("geoip_list_create_index.sql")
+	if err != nil {
+		return "", err
+	}
+	return strings.ReplaceAll(txt, "{table}", db.TableGeoipList), nil
+}
+
 // Write 同步逐条插入一批记录。
 func (s *DBStore) Write(batch []*AccessRecord) error {
 	ins, err := s.sqlText("access_log_insert.sql")
@@ -112,13 +137,35 @@ func (s *DBStore) Write(batch []*AccessRecord) error {
 	return nil
 }
 
-// Query 按条件查询，返回平铺维度 map（extra 已合并进顶层）。
-// 支持状态分组/仅异常/耗时排序与 offset 服务端分页（参数顺序见 access_log_query.sql 注释）。
-func (s *DBStore) Query(q Query) ([]map[string]any, error) {
-	sel, err := s.sqlText("access_log_query.sql")
-	if err != nil {
-		return nil, err
+// statusBounds 将状态过滤合成闭区间 [lo, hi]（SQL 侧 status_code BETWEEN，可走状态索引）：
+// 不过滤 → 0..999999；status_group '2'-'5' → 200..299 等；仅异常 → lo 提到 400。
+// 契约仅支持 '2'-'5'（webui-api §3.20），其余取值（含 '1'/'9'/非法串）一律视为不过滤（全量区间）。
+// 两者同时生效取交集（下界取更严者、上界保持分组界，可能为空集，与旧 AND 语义一致）。
+func statusBounds(q Query) (lo, hi int) {
+	lo, hi = 0, 999999
+	if g := q.StatusGroup; g >= "2" && g <= "5" {
+		if n := int(g[0]-'0') * 100; n > lo {
+			lo = n
+		}
+		hi = lo + 99
 	}
+	if q.OnlyError && lo < 400 {
+		lo = 400
+	}
+	return lo, hi
+}
+
+// statusFilterArgs 前置过滤参数（两查询脚本与计数脚本共用，保证 WHERE 条件口径一致）。
+func statusFilterArgs(q Query) []any {
+	lo, hi := statusBounds(q)
+	return []any{q.Path, q.Path, q.PathLike, q.PathLike, q.TraceID, q.TraceID, lo, hi}
+}
+
+// Query 按条件查询，返回平铺维度 map（extra 已合并进顶层）。
+// 缺省排序（time_desc）走 access_log_query_time.sql（主键倒序免临时排序，高频路径）；
+// 耗时排序走 access_log_query.sql（CASE 排序需物化，低频可接受）。
+// 状态分组/仅异常已合成区间条件（见 statusBounds），offset 服务端分页。
+func (s *DBStore) Query(q Query) ([]map[string]any, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = defaultQueryLimit
@@ -127,17 +174,20 @@ func (s *DBStore) Query(q Query) ([]map[string]any, error) {
 	if offset < 0 {
 		offset = 0
 	}
-	onlyError := 0
-	if q.OnlyError {
-		onlyError = 1
+	var script string
+	var args []any
+	if q.sortCode() == 0 {
+		script = "access_log_query_time.sql"
+		args = append([]any{q.From.UTC(), q.To.UTC()}, statusFilterArgs(q)...)
+		args = append(args, limit, offset)
+	} else {
+		script = "access_log_query.sql"
+		args = append([]any{q.From.UTC(), q.To.UTC()}, statusFilterArgs(q)...)
+		args = append(args, q.sortCode(), q.sortCode(), limit, offset)
 	}
-	sortCode := q.sortCode()
-	args := []any{
-		q.From.UTC(), q.To.UTC(),
-		q.Path, q.Path, q.PathLike, q.PathLike, q.TraceID, q.TraceID,
-		q.StatusGroup, q.StatusGroup, onlyError,
-		sortCode, sortCode,
-		limit, offset,
+	sel, err := s.sqlText(script)
+	if err != nil {
+		return nil, err
 	}
 	var rows []map[string]any
 	if err := s.edb.GetMany(sel, &rows, args...); err != nil {
@@ -156,15 +206,7 @@ func (s *DBStore) Count(q Query) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	onlyError := 0
-	if q.OnlyError {
-		onlyError = 1
-	}
-	args := []any{
-		q.From.UTC(), q.To.UTC(),
-		q.Path, q.Path, q.PathLike, q.PathLike, q.TraceID, q.TraceID,
-		q.StatusGroup, q.StatusGroup, onlyError,
-	}
+	args := append([]any{q.From.UTC(), q.To.UTC()}, statusFilterArgs(q)...)
 	var rows []map[string]any
 	if err := s.edb.GetMany(cnt, &rows, args...); err != nil {
 		return 0, fmt.Errorf("obs: 统计访问日志总数失败: %w", err)

@@ -1,10 +1,11 @@
--- 按条件统计访问日志总数（服务端分页 X-Total-Count 用）；status_group 传状态码首字符（'2'-'5'）。
--- 参数顺序：from, to, path, path, path_like, path_like, trace_id, trace_id, status_group, status_group, only_error
+-- 按条件统计访问日志总数（服务端分页 X-Total-Count 用）。
+-- 状态过滤已可索引化：status_lo/status_hi 区间闭区间
+-- （不过滤传 0/999999；status_group '2'-'5' → 200-299 等；仅异常 → 400-999999，Go 侧合成）。
+-- 参数顺序：from, to, path, path, path_like, path_like, trace_id, trace_id, status_lo, status_hi
 SELECT COUNT(*) AS cnt
 FROM {table}
 WHERE time >= ? AND time <= ?
   AND (? = '' OR path = ?)
   AND (? = '' OR path LIKE '%' || ? || '%')
   AND (? = '' OR trace_id LIKE '%' || ? || '%')
-  AND (? = '' OR SUBSTR(CAST(status_code AS TEXT), 1, 1) = ?)
-  AND (? = 0 OR status_code >= 400)
+  AND status_code >= ? AND status_code <= ?

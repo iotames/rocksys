@@ -87,8 +87,14 @@ func (s *userStore) ensureTable() error {
 	return err
 }
 
+// errNilUserStore 用户存储未初始化（DB 未配置或建表失败降级）时统一返回该错误。
+var errNilUserStore = errors.New("adminapi: 用户存储未初始化（数据库未配置，认证已降级为静态 token / 回环信任）")
+
 // count 返回已注册管理员数量（0 = 尚未初始化）。
 func (s *userStore) count() (int, error) {
+	if s == nil {
+		return 0, errNilUserStore
+	}
 	q, err := s.sqlText("admin_users_count.sql")
 	if err != nil {
 		return 0, err
@@ -103,6 +109,9 @@ func (s *userStore) count() (int, error) {
 
 // get 返回唯一管理员（超管只有一个）。无记录时返回 nil, nil。
 func (s *userStore) get() (*adminUser, error) {
+	if s == nil {
+		return nil, errNilUserStore
+	}
 	q, err := s.sqlText("admin_users_get.sql")
 	if err != nil {
 		return nil, err
@@ -119,6 +128,9 @@ func (s *userStore) get() (*adminUser, error) {
 
 // getByUsername 按用户名查用户（登录用）。未找到返回 nil, nil。
 func (s *userStore) getByUsername(username string) (*adminUser, error) {
+	if s == nil {
+		return nil, errNilUserStore
+	}
 	q, err := s.sqlText("admin_users_get_by_username.sql")
 	if err != nil {
 		return nil, err
@@ -135,6 +147,9 @@ func (s *userStore) getByUsername(username string) (*adminUser, error) {
 
 // save 保存管理员：已存在则更新（支持重置改用户名/密码），否则插入。
 func (s *userStore) save(username, passwordHash string) error {
+	if s == nil {
+		return errNilUserStore
+	}
 	existing, err := s.get()
 	if err != nil {
 		return err
