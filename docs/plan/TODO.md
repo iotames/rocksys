@@ -42,3 +42,28 @@
 | 2026-09-15 | ZCode | STEP5 | 已实施：geoip_sync 任务化 + exec background 分支，构建/vet/单测全绿 |
 | 2026-09-15 | ZCode | STEP6 | 已实施：四卡+轮询组件浏览器实测通过；修复拆句吞终止符与后台执行开关复位两个真 bug |
 | 2026-09-15 | ZCode | STEP7 | 已实施：跨方言集成测试（迁移+对齐）真库通过、四份文档同步、全量测试/vet/构建全绿、浏览器终验、§8 回写 |
+| 2026-09-15 | ZCode | 验收后 | 用户实测提三问：①database.js 曾被误删已恢复 ②表单未统一（已抽公共组件）③schedule 与 taskcenter 域被混用（见 §4） |
+
+## §4 待决事项（阻塞于人类决策，未决前不动相关代码）
+
+### P1 schedule 登记语义被 taskcenter 终态词汇污染（用户 09-15 提出）
+- **现象**：`schedule_list.last_status` 现被写入 `cancelled`——该值只有「人手动提交的同步任务又被人取消」这一条路径才会产生（定时器路径不经 taskcenter、永不取消），等于一个字段承载两个来源的语义；标签「已取消」在「状态」列易被读成"该定时任务被停用"（旁边还有「关联开关/启用」列）。
+- **证据**（已机器核实）：`startGeoSyncTimer` 用 `context.WithTimeout(context.Background(), geoSyncBudget)` 直调 `geoSyncAll`，不提交任务中心、不响应取消；手动入口经 `adminSrv.SubmitTask` 可取消；两条路径同写 `schedule_list.geoip_sync` 一行（`geoSyncOnDone` 单点回写）。实测：取消 → 任务终态 `cancelled` + 登记行 `cancelled`；正常到点 → 任务 `done` + 登记行 `success`。
+- **域边界**：schedule = 只读登记 + 执行结果汇总（DB 持久、由各业务定时循环驱动、无进度/无取消/无互斥）；taskcenter = 长任务运行时（内存、人触发、有进度/取消/全局互斥）。`cancelled` 属后者。
+- **候选**（用户未定，**未决前不提交相关改动**）：
+  - A 保守：登记行回到 success/failed/skipped；手动取消记 success，message 写明"收工原因：任务被取消"；"被取消"由任务中心列表承载。
+  - B 最干净：登记行引入执行域词（如 `partial` = 本轮未跑完），定时到点与手动取消**统一**记它，success 只留给真跑完；需改归档方案"到点记 success"的明文约定。
+  - C 妥协：保留 `cancelled`，标签改「上轮已取消」+ 文档写明"指上一轮执行被中断，非任务停用"，接受同字段双来源。
+- **已落地但待定**（工作区未提交）：三方言脚本注释 + `docs/DATA_DICT.md` §3.5 + `cmd/rocksys/schedule.go` 权威常量 `ScheduleStatus*` + 前端 `schedule.js` 标签 + 收口按 ctx 区分到点/取消/失败（`geoipSyncOutcome`）。若选 A/B 需按新语义回改。
+
+### P2 定时 GeoIP 同步绕过任务中心「全局单任务」约束（同源问题）
+- **现象**：设计决策为「全局同一时刻仅 1 个长任务（含 GeoIP 同步）」，但**定时**同步不走 taskcenter，仅受 `geoSyncAll` 自身的 sync 级互斥保护 → 定时同步可与人工提交的数据迁移/结构对齐/SQL 后台执行**并发**（迁移读运行库、定时同步写 `geoip_list`、SQL 后台执行亦写运行库，存在锁竞争与"全局单任务"承诺落空）。
+- **候选**：① 让定时路径也经 taskcenter 提交（受全局互斥；但定时任务被人工长任务挤占时会跳过该轮，需定义跳过策略）；② 明确写下边界"定时任务不受全局互斥约束、只受任务级互斥"，并评估并发风险可接受。
+- **待办**：用户定方向后再改（涉及 D20 决策表述修订）。
+
+### P3 未提交的工作区改动（等用户允许后提交）
+- 恢复 `database.js` 被误删的 547 行（HEAD 上「表同步/表概览/SQL历史」页签曾失效）；
+- 新增公共表单组件 `webui/assets/js/components/form.js` + `style.css` 语义类，重构「表数据」三卡去内联样式，全局配置搜索框改走同一组件；
+- 上文 P1 相关实现（`geoip_sync.go` 收口/文案、`schedule.go` 常量与按字符截断、三方言脚本、DATA_DICT、前端标签）与 P2 的取证结论。
+- 修复既有缺陷 `msg[:255]` 按字节截断中文致非法 UTF-8（已改按字符截断 + 回归测试）。
+- 质量门：`go vet ./...` 干净、`go test ./...` 全绿、生产构建通过；测试残留已清理。
