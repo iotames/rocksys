@@ -440,6 +440,22 @@ func buildServer(args []string) (*Server, error) {
 		// 表结构同步：表清单在装配处注册（表名在这里已知，无法从脚本文件名推断），
 		// 数据连接与清单一并注入（详见 buildTableSpecs）。
 		adminSrv.SetTableSpecs(dataDB, buildTableSpecs(db.TableShieldEvent))
+		// 定时任务只读登记（GEOIP_LIST D13/D18/D19/D20）：装配期 upsert 登记（系统级整行重置），
+		// geoSyncAll 收口经 geoSyncOnDone 回写 geoip_sync 行运行状态（D21 单点）。
+		schedReg := NewScheduleRegistry(dataDB)
+		if err := schedReg.EnsureTable(); err != nil {
+			log.Warn("schedule: 登记表初始化失败（定时任务页降级）", "err", err.Error())
+		} else {
+			RegisterScheduleRows(schedReg, geoRes.Ready())
+			geoSyncOnDone = func(status, message string) {
+				if err := schedReg.UpdateRunStatus(schedGeoipSync, status, message); err != nil {
+					log.Warn("schedule: geoip_sync 状态回写失败", "err", err.Error())
+				}
+			}
+			if err := adminSrv.RegisterPlugin(PathScheduleList, ScheduleList(schedReg, cfgMgr, geoRes.Ready())); err != nil {
+				log.Warn("schedule: 端点注册失败", "err", err.Error())
+			}
+		}
 		// GeoIP 增量同步（数据库页入口，POST 才生效）：增量构建/刷新 geoip_list 关联表；
 		// mmdb 未加载时 503 引导（先放置数据文件并重启）。
 		adminSrv.RegisterPlugin("/admin/db/geoip_sync", func(w http.ResponseWriter, r *http.Request) {

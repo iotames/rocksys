@@ -19,7 +19,7 @@
 |---|------|------|------|------|
 | 1 | geoip_list/STEP1_数据层.md | geoip_list/schedule_list 三方言脚本 + 两表删 country/city 4 列与 idx_*_time_country + 聚合 SQL 去字符串切分 | — | 已实施 |
 | 2 | geoip_list/STEP2_同步器.md | geoip 包拆 Province；geoSyncAll 改增量构建 geoip_list；GEOIP_SYNC_INTERVAL 定时器；同步后清统计缓存 | 1 | 已实施 |
-| 3 | geoip_list/STEP3_登记与端点.md | schedule_list 装配期 upsert 登记（系统级重启重置）+ GET /admin/schedule/list + geoip_sync 状态回写 | 1,2 | 待实施 |
+| 3 | geoip_list/STEP3_登记与端点.md | schedule_list 装配期 upsert 登记（系统级重启重置）+ GET /admin/schedule/list + geoip_sync 状态回写 | 1,2 | 已实施 |
 | 4 | geoip_list/STEP4_读侧.md | /admin/logs、/admin/shield/events 明细 JOIN + 读侧回退 Lookup；traffic geo 聚合端点适配新 SQL | 1 | 待实施 |
 | 5 | geoip_list/STEP5_前端.md | #/schedule 只读页；数据库页同步卡改文案+上次同步时间；概览地理位置卡同步按钮+能力边界注记；logs/waf/topIPs 字段适配 | 3,4 | 待实施 |
 | 6 | geoip_list/STEP6_文档.md | DATA_DICT/webui-api/COMPONENTS/webui/CONFIGURATION/PROJECT_STRUCTURE/sql README 同步 | 1-5 | 待实施 |
@@ -37,3 +37,5 @@
 | 日期 | 执行者 | STEP | 结果 |
 |---|---|---|---|
 | 2026-09-15 | Claude | — | 现状排查完成；总纲与 STEP1-6 建纲；用户指令视为母文档确认+git 破例授权 |
+| 2026-09-15 | Claude | STEP1-2 | 数据层新表/删列 + 同步器改造完成并提交（写路径适配前置，两步合并提交） |
+| 2026-09-15 | Claude | STEP3 | schedule_list 登记 + 端点 + 状态回写完成（reset 脚本改全列覆写 upsert）；提交 |
