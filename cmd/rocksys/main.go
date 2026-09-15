@@ -25,6 +25,7 @@ import (
 	"rocksys/internal/geoip"
 	"rocksys/internal/hotswap"
 	"rocksys/internal/netutil"
+	"rocksys/internal/taskcenter"
 
 	"github.com/iotames/easydb"
 
@@ -456,7 +457,10 @@ func buildServer(args []string) (*Server, error) {
 				log.Warn("schedule: 端点注册失败", "err", err.Error())
 			}
 		}
-		// GeoIP 增量同步（数据库页入口，POST 才生效）：增量构建/刷新 geoip_list 关联表；
+		// GeoIP 增量同步（数据库页「表数据」页签入口，POST 才生效）：增量构建/刷新 geoip_list 关联表。
+		// 同步执行改造为后台任务模式：同步是大表批量读写，同步 HTTP 受超时压制且前端拿不到进度；
+		// 提交任务即返回任务 ID，前端轮询任务详情展示进度与结果。geoip 数据处理逻辑零改动：
+		// 单趟时间预算（geoSyncBudget）与块/批边界收工语义保持，取消经任务中心 context 送达。
 		// mmdb 未加载时 503 引导（先放置数据文件并重启）。
 		adminSrv.RegisterPlugin("/admin/db/geoip_sync", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
@@ -467,23 +471,32 @@ func buildServer(args []string) (*Server, error) {
 				http.Error(w, "geoip: mmdb 未加载，无法同步；请放置 GeoLite2 mmdb（见概览页引导卡）并重启服务后重试", http.StatusServiceUnavailable)
 				return
 			}
-			// 绑定请求上下文 + 单趟时间预算：客户端断开或到点即在块/批边界收工，
-			// 已完成部分保留，互斥锁立即释放（不出现服务端脱离调用方长时间读写）。
-			reps, err := geoSyncAll(r.Context(), dataDB, geoRes, geoSyncBudget)
-			w.Header().Set("Content-Type", "application/json")
-			errText := ""
+			taskID, err := adminSrv.SubmitTask(taskcenter.Spec{
+				CreatedBy: "geoip_sync",
+				Title:     "GeoIP 数据同步",
+				Run: func(ctx context.Context, setProgress taskcenter.SetProgressFn) error {
+					reps, err := geoSyncAll(ctx, dataDB, geoRes, geoSyncBudget)
+					setProgress(&taskcenter.Progress{
+						Text:   geoSyncReportText(reps),
+						Detail: reps,
+					})
+					if err != nil {
+						log.Error("geoip: 同步失败", "err", err.Error())
+						return err
+					}
+					// 同步成功清流量统计缓存：聚合视图下次查询重新计算，立即见新数据。
+					obsMw.PurgeTrafficCache()
+					return nil
+				},
+			})
 			if err != nil {
-				log.Error("geoip: 同步失败", "err", err.Error())
-				errText = err.Error()
-			} else {
-				// 同步成功清流量统计缓存（D25）：聚合视图下次查询重新计算，立即见新数据。
-				obsMw.PurgeTrafficCache()
+				http.Error(w, "提交 GeoIP 同步任务失败："+err.Error(), http.StatusConflict)
+				return
 			}
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":     err == nil,
-				"err":    errText,
-				"text":   geoSyncReportText(reps),
-				"tables": reps,
+				"ok":      true,
+				"task_id": taskID,
 			})
 		})
 

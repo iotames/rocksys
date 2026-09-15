@@ -12,6 +12,7 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 
 	"rocksys/internal/db"
 	"rocksys/internal/netutil"
+	"rocksys/internal/taskcenter"
 )
 
 // 数据库表结构同步端点路径（§8.1 表）。
@@ -73,19 +75,17 @@ func (s *AdminServer) handleDBSchema(w http.ResponseWriter, r *http.Request) {
 const dbExecMaxBody = 1 << 20
 
 // handleDBExec 执行 SQL：拆句逐条执行、遇错即停；返回逐条结果与已执行/失败计数。
-// 进程内互斥：DDL 无法回滚，两个会话并发执行会交叉产生不可预期状态，后者直接拒绝。
+// 混合模式（默认同步直返）：请求体 background=true 时改为提交任务中心后台执行，
+// 立即返回任务 ID——长语句摆脱 HTTP 超时，短语句保持同步直返零额外交互成本。
+// 进程内互斥仅约束同步路径（后台任务经任务中心全局互斥）。
 func (s *AdminServer) handleDBExec(w http.ResponseWriter, r *http.Request) {
 	if s.dataDB == nil {
 		http.Error(w, "SQL 执行不可用：数据连接未装配", http.StatusServiceUnavailable)
 		return
 	}
-	if !s.execMu.TryLock() {
-		http.Error(w, "已有另一批 SQL 正在执行（DDL 不可并发交叉），请等待其完成后再试；可刷新表结构检查确认当前状态", http.StatusConflict)
-		return
-	}
-	defer s.execMu.Unlock()
 	var body struct {
-		SQL string `json:"sql"`
+		SQL        string `json:"sql"`
+		Background bool   `json:"background"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, dbExecMaxBody)).Decode(&body); err != nil || strings.TrimSpace(body.SQL) == "" {
 		http.Error(w, "请求体须为 {\"sql\": \"...\"} 且内容非空（输入框为空时「执行SQL」按钮应置灰）", http.StatusBadRequest)
@@ -96,6 +96,31 @@ func (s *AdminServer) handleDBExec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "未解析出可执行语句：内容仅含注释或空白，请检查输入", http.StatusBadRequest)
 		return
 	}
+	if body.Background {
+		taskID, err := s.SubmitTask(taskcenter.Spec{
+			CreatedBy: "sql_exec",
+			Title:     fmt.Sprintf("SQL 后台执行（%d 条）", len(stmts)),
+			Run: func(ctx context.Context, setProgress taskcenter.SetProgressFn) error {
+				return s.runBackgroundExec(ctx, stmts, setProgress)
+			},
+		})
+		if err != nil {
+			http.Error(w, "提交后台执行任务失败："+err.Error(), http.StatusConflict)
+			return
+		}
+		_ = writeJSON(w, map[string]any{"ok": true, "task_id": taskID, "total": len(stmts)}, http.StatusOK)
+		return
+	}
+	s.execStatements(w, r, stmts)
+}
+
+// execStatements 同步执行路径：进程内互斥 + 逐条执行 + 审计 + HTTP 响应（现状行为不变）。
+func (s *AdminServer) execStatements(w http.ResponseWriter, r *http.Request, stmts []string) {
+	if !s.execMu.TryLock() {
+		http.Error(w, "已有另一批 SQL 正在执行（DDL 不可并发交叉），请等待其完成后再试；可刷新表结构检查确认当前状态", http.StatusConflict)
+		return
+	}
+	defer s.execMu.Unlock()
 	// 审计埋点准备：批次标识 + 客户端 IP（落 sql_exec_log 表，每条语句一行）。
 	batchID, err := newBatchID()
 	if err != nil {
@@ -153,6 +178,70 @@ func (s *AdminServer) handleDBExec(w http.ResponseWriter, r *http.Request) {
 		"executed": executed,
 		"failed":   failed,
 	}, http.StatusOK)
+}
+
+// execResult 后台执行的逐条结果（进度明细元素）。
+type execResult struct {
+	Seq    int    `json:"seq"`
+	SQL    string `json:"sql"`
+	OK     bool   `json:"ok"`
+	Rows   int64  `json:"rows,omitempty"`
+	Error  string `json:"error,omitempty"`
+	CostMS int64  `json:"cost_ms"`
+}
+
+// runBackgroundExec 后台执行路径：逐条执行遇错即停，逐条结果入进度、摘要入 Result；
+// 审计照常落 sql_exec_log（后台执行同属运行库审计域）。
+func (s *AdminServer) runBackgroundExec(ctx context.Context, stmts []string, setProgress taskcenter.SetProgressFn) error {
+	batchID, err := newBatchID()
+	if err != nil {
+		batchID = fmt.Sprintf("manual-%d", time.Now().UnixNano())
+	}
+	entries := make([]*ExecLogEntry, 0, len(stmts))
+	results := make([]execResult, 0, len(stmts))
+	executed := 0
+	for i, stmt := range stmts {
+		if err := ctx.Err(); err != nil {
+			s.recordExecLog(entries)
+			return fmt.Errorf("任务已取消（已执行 %d/%d 条，前序已生效不可回滚）", executed, len(stmts))
+		}
+		item := execResult{Seq: i + 1, SQL: stmt}
+		start := time.Now()
+		res, err := s.dataDB.EasyDB().GetSqlDB().ExecContext(ctx, stmt)
+		item.CostMS = time.Since(start).Milliseconds()
+		if err != nil {
+			item.Error = err.Error()
+			results = append(results, item)
+			entries = append(entries, &ExecLogEntry{
+				Time: time.Now().UTC(), BatchID: batchID, Seq: i + 1, SQLText: stmt,
+				OK: false, Error: err.Error(), DurationMS: item.CostMS, Source: "webui-background",
+			})
+			s.recordExecLog(entries)
+			setProgress(&taskcenter.Progress{
+				Text:   fmt.Sprintf("第 %d/%d 条执行失败：%s", i+1, len(stmts), err.Error()),
+				Detail: results,
+			})
+			return fmt.Errorf("第 %d 条执行失败：%s。前面 %d 条已生效且不可回滚；请修正后仅重发剩余部分", i+1, err.Error(), executed)
+		}
+		if res != nil {
+			if n, rerr := res.RowsAffected(); rerr == nil {
+				item.Rows = n
+			}
+		}
+		item.OK = true
+		results = append(results, item)
+		executed++
+		entries = append(entries, &ExecLogEntry{
+			Time: time.Now().UTC(), BatchID: batchID, Seq: i + 1, SQLText: stmt,
+			OK: true, RowsAffected: item.Rows, DurationMS: item.CostMS, Source: "webui-background",
+		})
+		setProgress(&taskcenter.Progress{
+			Text:   fmt.Sprintf("已执行 %d/%d 条", executed, len(stmts)),
+			Detail: results,
+		})
+	}
+	s.recordExecLog(entries)
+	return nil
 }
 
 // execLogStore 惰性构造 SQL 执行审计存储（dataDB 未装配时返回 nil——审计不可用，

@@ -2,12 +2,15 @@
 package adminapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"rocksys/internal/db"
+	"rocksys/internal/taskcenter"
 )
 
 // setupSchemaServer 构造带表清单的内存库管理服务器（真实脚本建全部表）。
@@ -180,5 +183,52 @@ func TestDBExecSuccessAndAbort(t *testing.T) {
 	rec = callHandler(t, s.handleDBExec, http.MethodPost, "/admin/db/exec", `{"sql":""}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("空 body 应 400，got %d", rec.Code)
+	}
+}
+
+// TestDBExecBackground 后台执行：background=true 提交任务即返回 ID，经任务查询拿到逐条结果。
+func TestDBExecBackground(t *testing.T) {
+	s, _ := setupSchemaServer(t, nil)
+
+	rec := callHandler(t, s.handleDBExec, http.MethodPost, "/admin/db/exec",
+		`{"sql":"CREATE TABLE bg_ok (id INTEGER);","background":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("后台提交应 200: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		TaskID string `json:"task_id"`
+		Total  int    `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || resp.TaskID == "" {
+		t.Fatalf("后台提交响应 = %s err=%v", rec.Body.String(), err)
+	}
+	if resp.Total != 1 {
+		t.Fatalf("total = %d, want 1", resp.Total)
+	}
+	// 等任务终态并校验逐条结果。
+	deadline := time.Now().Add(3 * time.Second)
+	var task taskcenter.Task
+	for time.Now().Before(deadline) {
+		if tk, ok := s.tasks.Get(resp.TaskID); ok && tk.Status.Terminal() {
+			task = tk
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if task.Status != taskcenter.StatusDone {
+		t.Fatalf("后台执行终态 = %s result=%q", task.Status, task.Result)
+	}
+	if task.CreatedBy != "sql_exec" || task.Progress == nil {
+		t.Fatalf("任务元数据 = %+v", task)
+	}
+	detail, _ := task.Progress.Detail.([]execResult)
+	if len(detail) != 1 || !detail[0].OK {
+		t.Fatalf("逐条结果 = %+v", task.Progress.Detail)
+	}
+	// 表确实建成。
+	var n int
+	if err := s.dataDB.EasyDB().GetSqlDB().QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE name='bg_ok'").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("bg_ok 表应已创建: n=%d err=%v", n, err)
 	}
 }
