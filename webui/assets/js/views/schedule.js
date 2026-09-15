@@ -32,6 +32,7 @@
     if (st === 'success') return '<span class="tag tag-green">成功</span>';
     if (st === 'failed') return '<span class="tag tag-red">失败</span>';
     if (st === 'skipped') return '<span class="tag">跳过</span>';
+    if (st === 'cancelled') return '<span class="tag tag-orange">已取消</span>';
     return esc(st);
   }
 

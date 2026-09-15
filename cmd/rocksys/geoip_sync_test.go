@@ -272,6 +272,33 @@ func TestGeoipSyncBusyGuard(t *testing.T) {
 	}
 }
 
+// TestGeoSyncStatusCancelledVsBudgetStop 取消与到点的登记状态必须可分辨：
+//   - 到点（DeadlineExceeded）：分趟同步的设计内节奏 → success；
+//   - 取消（Cancel）：人工终止 → cancelled；
+//   - 真错误 → failed。
+// 三者混记会让定时任务页把「被取消」显示成「成功」，用户误以为数据已补齐。
+func TestGeoSyncStatusCancelledVsBudgetStop(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus string
+		wantStop   bool
+	}{
+		{"无错误", nil, "success", false},
+		{"单趟到点", context.DeadlineExceeded, "success", true},
+		{"任务被取消", context.Canceled, "cancelled", true},
+		{"包装后的取消", fmt.Errorf("geoip: upsert 失败: %w", context.Canceled), "cancelled", true},
+		{"真错误", fmt.Errorf("geoip: 扫描缺失 IP 失败: disk I/O error"), "failed", false},
+	}
+	for _, c := range cases {
+		status, stop := geoipSyncOutcome(c.err)
+		if status != c.wantStatus || stop != c.wantStop {
+			t.Errorf("%s：geoipSyncOutcome(%v) = (%s, %v)，期望 (%s, %v)",
+				c.name, c.err, status, stop, c.wantStatus, c.wantStop)
+		}
+	}
+}
+
 // TestGeoSyncOnDone 状态回写钩子：成功与失败路径都应以单点收口方式回调（nil 不回写）。
 func TestGeoSyncOnDone(t *testing.T) {
 	resetGeoSyncState()

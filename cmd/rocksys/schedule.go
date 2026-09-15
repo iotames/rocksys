@@ -53,6 +53,19 @@ const (
 // PathScheduleList 定时任务只读清单端点（GET；装配期经 RegisterPlugin 注入）。
 const PathScheduleList = "/admin/schedule/list"
 
+// schedule_list.last_status 取值（权威定义，与 sql/<方言>/schedule_list_create_table.sql 注释、
+// docs/DATA_DICT.md §3.5 三处一一对应）：
+//   success   执行成功（含分趟同步「单趟到点收工、下次续接」——分趟是设计内节奏，非异常）
+//   failed    执行失败（真错误：库不可用、SQL 出错等）
+//   skipped   跳过（该轮未执行，如前置条件不满足）
+//   cancelled 被取消（人工经任务取消端点终止，或进程收尾中止）；已完成部分保留，重跑从断点续接
+const (
+	ScheduleStatusSuccess   = "success"
+	ScheduleStatusFailed    = "failed"
+	ScheduleStatusSkipped   = "skipped"
+	ScheduleStatusCancelled = "cancelled"
+)
+
 // ScheduleRegistry schedule_list 登记器：EnsureTable/Upsert/ResetSystem/List/UpdateRunStatus。
 type ScheduleRegistry struct {
 	d *db.DB
@@ -111,16 +124,29 @@ func (r *ScheduleRegistry) ResetSystem(row ScheduleRow) error {
 	return nil
 }
 
+// scheduleMessageMaxRunes last_message 列宽上限（VARCHAR(255)，MySQL/PG 按字符计）。
+const scheduleMessageMaxRunes = 255
+
+// truncateRunes 按「字符」截断（禁止按字节切：按字节截断会把汉字切成半个，写入非法
+// UTF-8，前端显示乱码——实测踩坑于同步报告的中文摘要）。
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
+}
+
 // UpdateRunStatus 回写任务运行状态（任务结束时单条原子 UPDATE；name=geoip_sync）。
 func (r *ScheduleRegistry) UpdateRunStatus(name, status, message string) error {
 	upd, err := r.sqlText("schedule_list_update_status.sql")
 	if err != nil {
 		return err
 	}
-	msg := message
-	if len(msg) > 255 { // last_message VARCHAR(255)，超长截断防回写失败
-		msg = msg[:255]
-	}
+	msg := truncateRunes(message, scheduleMessageMaxRunes)
 	if _, err := r.d.EasyDB().Exec(upd, time.Now().UTC(), status, msg, time.Now().UTC(), name); err != nil {
 		return fmt.Errorf("schedule: 回写任务 %s 状态失败: %w", name, err)
 	}

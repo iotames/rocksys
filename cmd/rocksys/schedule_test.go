@@ -5,6 +5,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"rocksys/internal/conf"
 	"rocksys/internal/db"
@@ -131,5 +132,32 @@ func TestScheduleRegisterRows(t *testing.T) {
 				t.Errorf("mmdb 就绪后 remark 不应再注明依赖未满足，got %q", remark)
 			}
 		}
+	}
+}
+
+// TestScheduleUpdateRunStatusTruncatesByRunes 超长中文摘要按「字符」截断：
+// 按字节截断会把汉字切成半个写入非法 UTF-8（实测踩坑：同步报告中文摘要回写后前端乱码）。
+func TestScheduleUpdateRunStatusTruncatesByRunes(t *testing.T) {
+	reg, d := mustScheduleRegistry(t)
+	if err := reg.Upsert(ScheduleRow{schedGeoipSync, "GeoIP 关联表同步", "configurable", "GEOIP_SYNC_INTERVAL", "every@N 分钟", ""}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	long := strings.Repeat("本轮被取消，已完成部分已写入（中文摘要超长截断验证）", 20)
+	if len([]rune(long)) <= scheduleMessageMaxRunes {
+		t.Fatalf("测试数据应超过 %d 字符", scheduleMessageMaxRunes)
+	}
+	if err := reg.UpdateRunStatus(schedGeoipSync, ScheduleStatusCancelled, long); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	var got string
+	if err := d.EasyDB().GetSqlDB().QueryRow(
+		"SELECT last_message FROM schedule_list WHERE name = ?", schedGeoipSync).Scan(&got); err != nil {
+		t.Fatalf("读取 last_message: %v", err)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("截断后必须是合法 UTF-8（按字节切会切坏汉字），got 尾部 %q", got[len(got)-6:])
+	}
+	if n := len([]rune(got)); n != scheduleMessageMaxRunes {
+		t.Fatalf("应按字符截断到 %d，got %d", scheduleMessageMaxRunes, n)
 	}
 }

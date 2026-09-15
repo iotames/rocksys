@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -327,17 +328,70 @@ func geoSyncAll(ctx context.Context, d *db.DB, res geoLookup, budget time.Durati
 			break
 		}
 	}
-	// 状态回写（单点收口）：成功/失败皆落 schedule_list（geoip_sync 行），报告摘要作 message。
-	if geoSyncOnDone != nil {
-		status := "success"
-		msg := geoSyncReportText(out)
-		if syncErr != nil {
-			status = "failed"
-			msg = syncErr.Error()
+	// 状态回写（单点收口）：结果落 schedule_list（geoip_sync 行），报告摘要作 message。
+	// 三态分清（取值权威定义见 schedule.go 常量 + sql 建表脚本注释 + docs/DATA_DICT.md §3.5）：
+	//   - 单趟到点（budget 超时）：分趟同步的设计内节奏，记 success（下次执行从断点续接）；
+	//   - 被取消（任务取消端点 / 进程收尾）：人工终止 ≠ 系统分趟——混记 success 会让
+	//     定时任务页误示「成功」，用户以为数据已补齐，故记 cancelled；
+	//   - 其余错误：真失败，记 failed。
+	// 原因判定以「ctx 停止原因」为准：表的读写路径在 ctx 取消时已按协作式收工转成
+	// BudgetStop 且 err=nil，只看 syncErr 会把「被取消」误判成正常完成（实测踩坑）。
+	stopErr := syncErr
+	if stopErr == nil {
+		stopErr = ctx.Err()
+	}
+	status, stopped := geoipSyncOutcome(stopErr)
+	msg := geoSyncReportText(out)
+	if stopped && hasBudgetStop(out) {
+		if errors.Is(stopErr, context.DeadlineExceeded) {
+			msg += "；收工原因：单趟时间到点（分趟续接，非异常）"
+		} else {
+			msg += "；收工原因：任务被取消（已完成部分已写入，再次执行从断点续接）"
 		}
+	} else if status == ScheduleStatusFailed {
+		msg = syncErr.Error()
+	}
+	if geoSyncOnDone != nil {
 		geoSyncOnDone(status, msg)
 	}
+	if stopped {
+		// 协作式收工（到点/取消）不上抛错误：任务中心已按取消请求裁定终态（取消先到 → cancelled），
+		// 上抛会把「中断」记成任务失败。
+		return out, nil
+	}
 	return out, syncErr
+}
+
+// geoipSyncOutcome 同步收口的结果裁定（纯函数，便于穷尽断言）：
+//   - nil                  → success（正常完成；含单趟把活干完）
+//   - DeadlineExceeded     → success（单趟时间到点收工：分趟同步的设计内节奏，下次续接）
+//   - Canceled             → cancelled（人工经任务取消端点终止，或进程收尾中止）
+//   - 其他                 → failed（真错误：库不可用、SQL 出错等）
+//
+// 返回的 stopped 为 true 表示「协作式收工」（到点/取消），属中断而非失败，不上抛错误。
+// 传入的 err 应为「真实的停止原因」：正常结束传 nil；协作式收工场景须传 ctx.Err()
+// （内层把 ctx 取消转为优雅收工、err 为 nil，只传 err 会把取消误判为成功完成）。
+func geoipSyncOutcome(err error) (status string, stopped bool) {
+	switch {
+	case err == nil:
+		return ScheduleStatusSuccess, false
+	case errors.Is(err, context.DeadlineExceeded):
+		return ScheduleStatusSuccess, true
+	case errors.Is(err, context.Canceled):
+		return ScheduleStatusCancelled, true
+	default:
+		return ScheduleStatusFailed, false
+	}
+}
+
+// hasBudgetStop 本趟是否存在提前收工的表（用于只在确有中断时追加收工原因文案）。
+func hasBudgetStop(reps []geoSyncReport) bool {
+	for _, r := range reps {
+		if r.BudgetStop {
+			return true
+		}
+	}
+	return false
 }
 
 // geoSyncReportText 报告转人读文案（日志/前端展示共用）。
@@ -348,7 +402,8 @@ func geoSyncReportText(reps []geoSyncReport) string {
 			r.Table, r.RowsUpsert, r.Scanned, r.Skipped)
 		switch {
 		case r.BudgetStop:
-			b.WriteString("；本轮已达单趟时间上限，已完成部分已写入，再次执行从断点继续")
+			// 原因中立体现在报告里（到点 vs 取消由收口按 ctx 判定后追加），避免把取消说成到点。
+			b.WriteString("；本轮提前收工，已完成部分已写入，再次执行从断点继续")
 		case !r.Done:
 			b.WriteString("；仍有未同步行未扫完，可再次执行继续")
 		}
