@@ -238,6 +238,9 @@ func (s *AdminServer) registerBuiltin() {
 	s.srv.AddHandler(http.MethodPost, PathDsn, check(func(ctx httpsvr.Context) { s.handleDsnAdd(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodPost, PathDsnDelete, check(func(ctx httpsvr.Context) { s.handleDsnDelete(ctx.Writer, ctx.Request) }))
 	s.srv.AddHandler(http.MethodPost, PathDsnTest, check(func(ctx httpsvr.Context) { s.handleDsnTest(ctx.Writer, ctx.Request) }))
+	// 目标库表结构对齐（数据迁移前置）：差异预览 GET，执行为后台任务 POST。
+	s.srv.AddHandler(http.MethodGet, PathMigrateSchema, check(func(ctx httpsvr.Context) { s.handleMigrateSchema(ctx.Writer, ctx.Request) }))
+	s.srv.AddHandler(http.MethodPost, PathMigrateSchemaApply, check(func(ctx httpsvr.Context) { s.handleMigrateSchemaApply(ctx.Writer, ctx.Request) }))
 }
 
 // RegisterWebUI 注册 WebUI 静态资源（管理控制台）。

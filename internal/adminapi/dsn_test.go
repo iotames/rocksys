@@ -24,7 +24,12 @@ func newDsnServer(t *testing.T) *AdminServer {
 func doJSON(s *AdminServer, method, path, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	w := httptest.NewRecorder()
-	switch path {
+	// 剥离查询串后按路径分发（handler 自行从 r.URL.Query() 取参）。
+	base := path
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		base = path[:i]
+	}
+	switch base {
 	case PathDsn:
 		if method == http.MethodGet {
 			s.handleDsnList(w, r)
@@ -35,6 +40,10 @@ func doJSON(s *AdminServer, method, path, body string) *httptest.ResponseRecorde
 		s.handleDsnDelete(w, r)
 	case PathDsnTest:
 		s.handleDsnTest(w, r)
+	case PathMigrateSchema:
+		s.handleMigrateSchema(w, r)
+	case PathMigrateSchemaApply:
+		s.handleMigrateSchemaApply(w, r)
 	}
 	return w
 }
