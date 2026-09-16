@@ -3,6 +3,7 @@ package taskcenter
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -325,4 +326,127 @@ func TestConcurrentGetListSafe(t *testing.T) {
 	}
 	wg.Wait()
 	waitStatus(t, c, id, StatusDone)
+}
+
+// TestResultTruncate 超长错误信息按上限截断并附提示；未超限原样保留。
+func TestResultTruncate(t *testing.T) {
+	c := newTestCenter()
+	long := strings.Repeat("错", resultMaxRunes+100)
+	id, err := c.Submit(Spec{CreatedBy: "x", Title: "超长错误", Run: func(ctx context.Context, setProgress SetProgressFn) error {
+		return errors.New(long)
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	task := waitStatus(t, c, id, StatusFailed)
+	const truncHint = "…（错误信息超长已截断，完整信息见业务日志）"
+	if got := []rune(task.Result); len(got) != resultMaxRunes+len([]rune(truncHint)) {
+		t.Fatalf("截断后 Result 长度 = %d, want %d（上限+提示后缀）", len(got), resultMaxRunes+len(truncHint))
+	}
+	if !strings.HasSuffix(task.Result, "…（错误信息超长已截断，完整信息见业务日志）") {
+		t.Fatalf("截断提示缺失: tail=%q", task.Result[len(task.Result)-30:])
+	}
+
+	// 未超限：原样保留
+	id2, _ := c.Submit(Spec{CreatedBy: "x", Title: "短错误", Run: func(ctx context.Context, setProgress SetProgressFn) error {
+		return errors.New("普通失败")
+	}})
+	task2 := waitStatus(t, c, id2, StatusFailed)
+	if task2.Result != "普通失败" {
+		t.Fatalf("短错误 Result = %q, want 原样", task2.Result)
+	}
+}
+
+// TestListLiteStripsTerminalDetail 轻量列表：终态任务仅留 progress.text，running 携带完整明细；
+// Get 单查始终完整。
+func TestListLiteStripsTerminalDetail(t *testing.T) {
+	c := newTestCenter()
+	id, err := c.Submit(Spec{CreatedBy: "x", Title: "带明细任务", Run: func(ctx context.Context, setProgress SetProgressFn) error {
+		setProgress(&Progress{Text: "做完了", Detail: map[string]string{"k": "v"}})
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	waitStatus(t, c, id, StatusDone)
+
+	lite, _ := c.ListLite(0)
+	var liteTask Task
+	for _, tsk := range lite {
+		if tsk.ID == id {
+			liteTask = tsk
+		}
+	}
+	if liteTask.Progress == nil || liteTask.Progress.Text != "做完了" {
+		t.Fatalf("轻量列表应保留 text, got %+v", liteTask.Progress)
+	}
+	if liteTask.Progress.Detail != nil {
+		t.Fatalf("轻量列表终态应剥除 detail, got %+v", liteTask.Progress.Detail)
+	}
+
+	full := c.List()
+	for _, tsk := range full {
+		if tsk.ID == id && (tsk.Progress == nil || tsk.Progress.Detail == nil) {
+			t.Fatal("完整列表终态应保留 detail")
+		}
+	}
+
+	// limit 截断：仅 1 条终态时 limit=1 不截断；limit 语义对 running 不生效
+	if tasks, more := c.ListLite(1); more || len(tasks) < 1 {
+		t.Fatalf("limit 不小于终态数时不应截断, more=%v n=%d", more, len(tasks))
+	}
+
+	got, _ := c.Get(id)
+	if got.Progress == nil || got.Progress.Detail == nil {
+		t.Fatal("Get 单查应保留完整明细")
+	}
+}
+
+// TestListLiteLimit 轻量列表 limit 截断：终态只留最近 N 条、hasMore 如实上报，running 不受 limit 限制。
+func TestListLiteLimit(t *testing.T) {
+	c := newTestCenter()
+	// 先占一个运行中任务（不应被 limit 截掉）
+	runID, err := c.Submit(Spec{CreatedBy: "x", Title: "长任务", Run: func(ctx context.Context, setProgress SetProgressFn) error {
+		<-ctx.Done()
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	// 3 条终态：另一来源提交，避开与运行中任务同标签的互斥
+	c.RegisterCreators("y")
+	for i := 0; i < 3; i++ {
+		id, err := c.Submit(Spec{CreatedBy: "y", Title: "短任务", Run: func(ctx context.Context, setProgress SetProgressFn) error {
+			return nil
+		}})
+		if err != nil {
+			t.Fatalf("Submit #%d: %v", i, err)
+		}
+		waitStatus(t, c, id, StatusDone)
+	}
+
+	tasks, more := c.ListLite(2)
+	terminal := 0
+	foundRun := false
+	for _, tsk := range tasks {
+		if tsk.Status == StatusRunning {
+			foundRun = foundRun || tsk.ID == runID
+			continue
+		}
+		terminal++
+	}
+	if terminal != 2 || !more {
+		t.Fatalf("limit=2 应截断为 2 条终态且 hasMore=true, got terminal=%d more=%v", terminal, more)
+	}
+	if !foundRun {
+		t.Fatal("running 任务不受 limit 限制，应始终在列表中")
+	}
+	// limit=0 = 全量
+	tasks, more = c.ListLite(0)
+	if more {
+		t.Fatal("limit=0 全量不应截断")
+	}
+	if n := len(tasks); n < 4 {
+		t.Fatalf("limit=0 应含全部任务, got %d", n)
+	}
 }

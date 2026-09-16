@@ -11,12 +11,16 @@ package adminapi
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/iotames/easyserver/httpsvr"
 
 	"rocksys/internal/taskcenter"
 )
+
+// tasksDefaultLimit 任务列表默认返回的终态条数上限（?limit 可覆盖；running 不受限）。
+const tasksDefaultLimit = 20
 
 // PathTasksPrefix 任务中心端点前缀。
 const PathTasksPrefix = "/admin/tasks"
@@ -46,8 +50,19 @@ func (s *AdminServer) routeTasks(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "" && r.Method == http.MethodGet:
 		// 并发管控配置一并透出（内存态），后台任务页原样展示：来源白名单 + 互斥规则三件套。
+		// 列表用轻量分页：终态任务不带进度明细（轮询高频，明细是死数据），且默认只取最近
+		// tasksDefaultLimit 条（?limit=N 自定义，0/缺省=全量；running 始终全带不受限），
+		// 需要明细或更早记录时经单查/全量参数获取。
+		limit := tasksDefaultLimit
+		if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				limit = n // 0 = 不限量（拉全量）
+			}
+		}
+		items, hasMore := s.tasks.ListLite(limit)
 		_ = writeJSON(w, map[string]any{
-			"items":            s.tasks.List(),
+			"items":            items,
+			"has_more":         hasMore,
 			"allow_creators":   s.tasks.AllowCreators(),
 			"mutex_task_field": s.tasks.MutexTaskField(),
 			"mutex_list":       s.tasks.MutexList(),

@@ -1,10 +1,14 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/tasks.js 后台任务页
- * 数据源 GET /admin/tasks（任务中心：运行中 + 保留期内终态，终态仅留最近 100 条流水）。
- * 展示：任务列表（ID/标题/来源/状态/进度/结果/创建时间/结束时间与耗时/操作）+
+ * 数据源 GET /admin/tasks（任务中心：运行中 + 保留期内终态，终态仅留最近 500 条流水）。
+ * 展示：任务列表（标题/来源/状态/进度/结果/创建时间/结束时间与耗时/操作；ID 不列表展示，
+ *       行点击详情内可见）+
  *       并发管控卡（内存态配置原样透出）：来源白名单 / 互斥键字段 / 互斥公共集 / 指定互斥集。
- * 交互：来源筛选下拉（选项即白名单）；运行中任务可取消（确认弹窗 → 统一取消端点）；
- *       存在运行中任务时每 2 秒静默轮询，全部终态后自动停止（不无限刷）。
+ * 交互：来源/状态筛选下拉（本地过滤，选项即白名单/固定枚举）；轮询/加载走服务端轻量分页——
+ *       默认只拉最近 20 条终态（+全部运行中），「显示更早记录」才拉全量（终态保留 500 条）；
+ *       运行中任务可取消
+ *       （确认弹窗 → 统一取消端点）；存在运行中任务时每 2 秒静默轮询，全部终态后自动
+ *       停止（不无限刷）。
  * UX 红线：load 透传 refreshPage 的 opts（含 silent）；非引导态加载失败弹统一 error toast。
  * 挂载到全局命名空间 window.Rock.views.tasks。
  * ========================================================================== */
@@ -27,6 +31,9 @@
   let mutexList = [];
   let mutexMap = {};
   let filterCreator = '';
+  let filterStatus = '';
+  let showAll = false; // 默认只拉最近 TASK_PAGE_SIZE 条终态，点「显示更早记录」才拉全量
+  let hasMore = false; // 服务端提示终态数超出当前 limit（还有更早记录）
   let loaded = false;
   let loading = false;
   let errText = '';
@@ -73,33 +80,56 @@
       '</div>';
   }
 
-  function filterHTML() {
-    const opts = [['', '全部来源']].concat(allowCreators.map(function (c) { return [c, c]; }));
-    const sel = opts.map(function (o) {
-      return '<option value="' + esc(o[0]) + '"' + (o[0] === filterCreator ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
-    }).join('');
-    return '<label class="form-hint">来源筛选 <select id="tasks-creator-filter" class="select select-sm" style="margin-left:4px">' + sel + '</select></label>';
+  // 默认展示条数：与服务端 tasksDefaultLimit 对齐——轮询只拉最近 20 条终态（+全部运行中），
+  // 高频轮询不搬 500 条死数据；「显示更早记录」才拉全量。
+  const TASK_PAGE_SIZE = 20;
+
+  // 状态筛选枚举（与 Status tag 同一套取值）。
+  const STATUS_OPTIONS = [
+    ['', '全部状态'],
+    ['running', '运行中'],
+    ['done', '已完成'],
+    ['failed', '失败'],
+    ['cancelled', '已取消'],
+  ];
+
+  function filtersHTML() {
+    function opts(list, cur) {
+      return list.map(function (o) {
+        return '<option value="' + esc(o[0]) + '"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+      }).join('');
+    }
+    return '<span class="form-hint">来源筛选 <select id="tasks-creator-filter" class="select select-sm" style="margin-left:4px">' +
+      opts([['', '全部来源']].concat(allowCreators.map(function (c) { return [c, c]; })), filterCreator) +
+      '</select></span>' +
+      '<span class="form-hint" style="margin-left:12px">状态筛选 <select id="tasks-status-filter" class="select select-sm" style="margin-left:4px">' +
+      opts(STATUS_OPTIONS, filterStatus) + '</select></span>';
   }
 
   function tableHTML() {
-    const shown = filterCreator ? rows.filter(function (t) { return t.created_by === filterCreator; }) : rows;
+    const shown = rows.filter(function (t) {
+      if (filterCreator && t.created_by !== filterCreator) return false;
+      if (filterStatus && t.status !== filterStatus) return false;
+      return true;
+    });
     if (!shown.length) {
-      return '<div class="card">' + Rock.comp.empty.emptyCard({ text: filterCreator ? '该来源暂无任务记录' : '暂无任务记录（提交数据迁移/GeoIP 同步/SQL 后台执行后此处可见）' }) + '</div>';
+      return '<div class="card">' + Rock.comp.empty.emptyCard({ text: (filterCreator || filterStatus) ? '当前筛选条件下暂无任务记录' : '暂无任务记录（提交数据迁移/GeoIP 同步/SQL 后台执行后此处可见）' }) + '</div>';
     }
-    const head = '<tr><th>ID</th><th>标题</th><th>来源</th><th>状态</th><th>进度</th><th>结果 / 耗时</th><th>创建时间</th><th>结束时间</th><th>操作</th></tr>';
-    const body = shown.map(function (t) {
+    const visible = shown; // 条数已由服务端 limit 控制（默认 20 条终态），前端不再二次截断
+    const head = '<tr><th>标题</th><th>来源</th><th>状态</th><th>进度</th><th>结果 / 耗时</th><th>创建时间</th><th>结束时间</th><th>操作</th></tr>';
+    const body = visible.map(function (t) {
       const prog = t.progress && t.progress.text
         ? esc(t.progress.text) + (t.progress.detail ? ' <span class="tag tag-blue">明细</span>' : '')
         : '<span class="form-hint">—</span>';
-      const result = t.result
-        ? '<div style="max-width:320px;white-space:normal">' + (t.status === 'failed' ? '<span class="form-hint">' : '') + esc(t.result) + (t.status === 'failed' ? '</span>' : '') + '</div>'
+      // 结果列只承载增量信息：failed 显示错误详情；done/cancelled 的模板文案与状态列重复，只留耗时
+      const result = t.status === 'failed' && t.result
+        ? '<div style="max-width:320px;white-space:normal"><span class="form-hint">' + esc(t.result) + '</span></div>'
         : '';
       const cost = fmtTaskCost(t);
       const op = t.status === 'running'
         ? '<button class="btn btn-sm btn-danger" data-act="tasks-cancel" data-id="' + esc(t.id) + '">取消</button>'
         : '';
       return '<tr data-act="tasks-detail" data-id="' + esc(t.id) + '" style="cursor:pointer" title="点击查看任务详情（含进度明细）">' +
-        '<td><code>' + esc(t.id) + '</code></td>' +
         '<td>' + esc(t.title || '—') + '</td>' +
         '<td><span class="tag">' + esc(t.created_by || '—') + '</span></td>' +
         '<td>' + statusTag(t.status) + '</td>' +
@@ -110,7 +140,13 @@
         '<td>' + op + '</td>' +
         '</tr>';
     }).join('');
-    return '<div class="card"><div class="table-wrap"><table class="table">' + head + body + '</table></div></div>';
+    let table = '<div class="card"><div class="table-wrap"><table class="table">' + head + body + '</table></div></div>';
+    if (hasMore && !showAll) {
+      table += '<div style="text-align:center;margin-top:8px">' +
+        '<span class="form-hint">已显示最近 ' + shown.filter(function (t) { return t.status !== 'running'; }).length + ' 条终态记录，</span>' +
+        '<button class="btn btn-sm" data-act="tasks-show-earlier">显示更早记录</button></div>';
+    }
+    return table;
   }
 
   function render() {
@@ -124,21 +160,27 @@
       body = '<div class="empty" style="padding:16px">加载中…</div>';
     } else {
       body = mutexCardHTML() + '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-        '<b>任务记录</b>' + filterHTML() + '</div>' + tableHTML() + '</div>';
+        '<b>任务记录</b>' + filtersHTML() + '</div>' + tableHTML() + '</div>';
     }
     host.innerHTML = '<div class="page-head"><h2>后台任务</h2></div>' +
       '<div class="alert alert-info"><b>口径说明：</b>长任务（数据迁移、GeoIP 数据同步、表结构对齐、SQL 后台执行等）' +
       '统一在此观测：提交即返回任务 ID 并后台执行（默认无超时，跑多久由数据量决定），取消经人工触发在批次边界收工。' +
-      '终态记录仅保留最近 100 条（更早的不可再查，服务重启即清空）。</div>' + body;
+      '终态记录仅保留最近 500 条（更早的不可再查，服务重启即清空；列表默认展示最近 20 条，可展开查看全部）。</div>' + body;
     bindFilter();
   }
 
-  // 来源筛选：change 委托（重渲染后重挂）。
+  // 来源/状态筛选：change 委托（重渲染后重挂）；筛选变化时收起展开态，从最近一段重新看。
   function bindFilter() {
     const sel = $('#tasks-creator-filter');
-    if (!sel) return;
-    sel.addEventListener('change', function () {
+    if (sel) sel.addEventListener('change', function () {
       filterCreator = sel.value;
+      showAll = false;
+      render();
+    });
+    const st = $('#tasks-status-filter');
+    if (st) st.addEventListener('change', function () {
+      filterStatus = st.value;
+      showAll = false;
       render();
     });
   }
@@ -160,8 +202,11 @@
     loading = true;
     if (!loaded) render(); // 首次进入先渲染骨架
     try {
-      const res = await api.get('/admin/tasks');
+      // 服务端轻量分页：默认只拉最近 20 条终态（running 始终全带）；展开时 limit=0 拉全量
+      const url = showAll ? '/admin/tasks?limit=0' : '/admin/tasks?limit=' + TASK_PAGE_SIZE;
+      const res = await api.get(url);
       rows = (res && Array.isArray(res.items)) ? res.items : [];
+      hasMore = !!(res && res.has_more);
       allowCreators = (res && Array.isArray(res.allow_creators)) ? res.allow_creators : [];
       mutexTaskField = (res && res.mutex_task_field) || '';
       mutexList = (res && Array.isArray(res.mutex_list)) ? res.mutex_list : [];
@@ -200,10 +245,15 @@
   }
 
   // 行详情弹窗：任务元数据 + 进度明细（Detail 为业务自填结构，等宽 JSON 呈现并支持一键复制）。
-  function showDetail(el) {
+  // 列表接口对终态任务剥除了进度明细（轮询瘦身），故点击行时经单查取完整快照；单查失败回退列表快照。
+  async function showDetail(el) {
     const id = el.getAttribute('data-id');
-    const t = rows.find(function (x) { return x.id === id; });
+    let t = rows.find(function (x) { return x.id === id; });
     if (!t) { toast('任务记录不存在（可能已被终态限量淘汰），请刷新列表', 'warning'); return; }
+    try {
+      const full = await api.get('/admin/tasks/' + encodeURIComponent(id));
+      if (full && full.id) t = full;
+    } catch (e) { /* 单查失败（如刚被淘汰）：回退列表快照展示 */ }
     const fields = [
       { key: 'id', label: '任务 ID', render: r => '<span class="mono">' + esc(r.id) + '</span>' },
       { key: 'title', label: '标题' },
@@ -237,6 +287,7 @@
     render: render,
     actions: {
       'tasks-reload': function () { load({ force: true }); },
+      'tasks-show-earlier': function () { showAll = true; load(); },
       'tasks-cancel': function (el) { cancelTask(el); },
       'tasks-detail': function (el) { showDetail(el); },
     },

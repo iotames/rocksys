@@ -50,8 +50,13 @@ func (s Status) Terminal() bool {
 	return s == StatusDone || s == StatusFailed || s == StatusCancelled
 }
 
-// TaskKeepLimit 终态任务最大保留条数（只留最近流水，常量不开放配置）。
-const TaskKeepLimit = 100
+// TaskKeepLimit 终态任务最大保留条数（只留最近流水，常量不开放配置；500 条仅元数据快照，
+// 内存可忽略——按定时 GeoIP 同步每小时 1 条计约可回溯 3 周）。
+const TaskKeepLimit = 500
+
+// resultMaxRunes Result 存入上限（rune 数，防业务侧拼接的超长错误信息撑爆内存与列表响应体；
+// 超限截断并附提示，完整信息应由业务自身日志留痕）。
+const resultMaxRunes = 2000
 
 // Progress 进度快照：业务每次传入不可变新快照，中心原子指针存取；
 // 禁止中心与业务共享可变结构——「原子读」以整体快照替换达成。
@@ -303,7 +308,7 @@ func (c *Center) run(e *entry, ctx context.Context, runFn RunFn) {
 	e.cancel = nil // 终态后取消函数作废（Cancel 对终态返回终态不报错）
 	e.Status = resolveFinalStatus(e, runErr)
 	if runErr != nil {
-		e.Result = runErr.Error()
+		e.Result = truncateResult(runErr.Error())
 	} else if e.Status == StatusCancelled {
 		e.Result = "任务已取消"
 	} else {
@@ -365,19 +370,45 @@ func (c *Center) Get(id string) (Task, bool) {
 	return e.snapshot(), true
 }
 
-// List 全部任务快照（running + 保留期内终态），按创建时间倒序（新在前）。
+// List 全部任务快照（running + 保留期内终态，终态含完整进度明细），按创建时间倒序（新在前）。
 func (c *Center) List() []Task {
+	tasks, _ := c.list(true, 0)
+	return tasks
+}
+
+// ListLite 轻量列表（供列表端点高频轮询）：running 携带完整进度（页面恢复需要 detail）
+// 且不受 limit 限制、始终全带；终态仅保留 progress.text、剥除 detail（终态明细是不变死数据，
+// 需要时经 Get 单查），limit>0 时终态只取最近 limit 条。返回值 hasMore = 终态数超过 limit
+// 被截断（供前端提示还有更早记录）。排序与 List 一致（新在前）。
+func (c *Center) ListLite(limit int) (tasks []Task, hasMore bool) {
+	return c.list(false, limit)
+}
+
+// list 任务快照列表：full 选择终态是否携带进度明细；limit 仅对轻量模式的终态生效。
+func (c *Center) list(full bool, limit int) ([]Task, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]Task, 0, len(c.terminal)+len(c.running))
+	out := make([]Task, 0, len(c.running))
 	for _, e := range c.running {
 		out = append(out, e.snapshot())
 	}
+	terminal := make([]Task, 0, len(c.terminal))
 	for _, e := range c.terminal {
-		out = append(out, e.snapshot())
+		if full {
+			terminal = append(terminal, e.snapshot())
+		} else {
+			terminal = append(terminal, e.snapshotLite())
+		}
 	}
+	sort.Slice(terminal, func(i, j int) bool { return terminal[i].CreatedAt.After(terminal[j].CreatedAt) })
+	hasMore := false
+	if !full && limit > 0 && len(terminal) > limit {
+		terminal = terminal[:limit]
+		hasMore = true
+	}
+	out = append(out, terminal...)
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	return out
+	return out, hasMore
 }
 
 // findByID 在 running 与终态记录中查找（调用方须持锁）。
@@ -416,6 +447,25 @@ func (e *entry) snapshot() Task {
 		t.Progress = &cp
 	}
 	return t
+}
+
+// snapshotLite 轻量快照：剥除进度明细仅留摘要文本（终态任务的 detail 是不变死数据，
+// 列表场景无需重复下发；调用方须持锁）。
+func (e *entry) snapshotLite() Task {
+	t := e.snapshot()
+	if t.Progress != nil {
+		t.Progress = &Progress{Text: t.Progress.Text}
+	}
+	return t
+}
+
+// truncateResult 超长错误信息按 rune 截断并附提示（防单条 Result 无界膨胀）。
+func truncateResult(s string) string {
+	runes := []rune(s)
+	if len(runes) <= resultMaxRunes {
+		return s
+	}
+	return string(runes[:resultMaxRunes]) + "…（错误信息超长已截断，完整信息见业务日志）"
 }
 
 // splitLines 按行拆分文本（取非空行）。
