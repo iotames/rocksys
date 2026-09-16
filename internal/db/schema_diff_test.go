@@ -157,7 +157,7 @@ func TestDiffNormalization(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
-// TestGenerateSQL 自动项生成：A 建表原文 / B ADD COLUMN / D 仅缺失索引的单条语句；仅提示项不生成。
+// TestGenerateSQL 自动项生成：A 建表原文 / B ADD COLUMN / D 仅缺失索引的单条语句；sqlite 目标 E 级不生成。
 func TestGenerateSQL(t *testing.T) {
 	src, err := EmbeddedSQLSource("sqlite")
 	if err != nil {
@@ -168,9 +168,9 @@ func TestGenerateSQL(t *testing.T) {
 		{Level: "A", Auto: true, Table: "t", Object: "t", Note: "缺表：可用生成的建表脚本原文创建"},
 		{Level: "B", Auto: true, Table: "t", Object: "warn_times", Expected: "INTEGER NOT NULL DEFAULT 0", Note: "缺普通列：可自动 ADD COLUMN"},
 		{Level: "D", Auto: true, Table: "t", Object: "idx_t_block_type", Note: "缺索引：可自动创建"},
-		{Level: "E", Auto: false, Table: "t", Object: "hit_count", Note: "类型不一致：仅提示"},
+		{Level: "E", Auto: false, Table: "t", Object: "hit_count", Note: "类型不一致：sqlite 目标保持人工"},
 	}
-	sqlText, err := GenerateSQL(items, specs, src)
+	sqlText, err := GenerateSQL(items, specs, src, "sqlite")
 	if err != nil {
 		t.Fatalf("GenerateSQL: %v", err)
 	}
@@ -197,6 +197,15 @@ func TestGenerateSQL(t *testing.T) {
 	// 生成文本可被拆句器逐条拆分（执行器依赖）
 	if n := len(SplitStatements(sqlText)); n < 3 {
 		t.Errorf("生成 SQL 应可拆出 ≥3 条语句（建表+索引+ALTER），got %d", n)
+	}
+	// sqlite 目标的 E 级（即便 Auto=true 的防御分支）也不生成改列语句
+	items = append(items, DiffItem{Level: "E", Auto: true, Table: "t", Object: "hit_count", Note: "防御分支"})
+	sqlText, err = GenerateSQL(items, specs, src, "sqlite")
+	if err != nil {
+		t.Fatalf("GenerateSQL(sqlite): %v", err)
+	}
+	if strings.Contains(sqlText, "MODIFY COLUMN") || strings.Contains(sqlText, "ALTER COLUMN") {
+		t.Errorf("sqlite 目标不得生成改列语句, got: %s", sqlText)
 	}
 }
 
@@ -360,5 +369,53 @@ func TestCatalogSQLite(t *testing.T) {
 	}
 	if len(missing) != 0 {
 		t.Errorf("不存在表应返回空结果集，got %+v", missing)
+	}
+}
+
+// TestGenerateSQLLevelE E 级自动生成：mysql MODIFY 整列重述 / pg 三子句对齐。
+func TestGenerateSQLLevelE(t *testing.T) {
+	specs := []TableSpec{{Table: "t", CreateScript: "ip_blacklist_create_table.sql"}}
+
+	// mysql：期望脚本原文经 MODIFY 整列重述（含类型/非空/默认值/注释）
+	mysqlSrc, err := EmbeddedSQLSource("mysql")
+	if err != nil {
+		t.Fatalf("EmbeddedSQLSource(mysql): %v", err)
+	}
+	items := []DiffItem{{Level: "E", Auto: true, Table: "t", Object: "hit_count",
+		Expected: "INT NOT NULL DEFAULT 0", Actual: "bigint", Note: "已回填 Auto"}}
+	sqlText, err := GenerateSQL(items, specs, mysqlSrc, "mysql")
+	if err != nil {
+		t.Fatalf("GenerateSQL(mysql): %v", err)
+	}
+	if !strings.Contains(sqlText, "ALTER TABLE t MODIFY COLUMN hit_count") ||
+		!strings.Contains(sqlText, "INT NOT NULL DEFAULT 0") {
+		t.Errorf("mysql E 级应生成 MODIFY 整列重述，got:\n%s", sqlText)
+	}
+
+	// postgres：TYPE + SET/DROP NOT NULL + SET/DROP DEFAULT 三子句
+	pgSrc, err := EmbeddedSQLSource("postgres")
+	if err != nil {
+		t.Fatalf("EmbeddedSQLSource(pg): %v", err)
+	}
+	items = []DiffItem{{Level: "E", Auto: true, Table: "t", Object: "hit_count",
+		Expected: "INTEGER NOT NULL DEFAULT 0", Actual: "text", Note: "已回填 Auto"}}
+	sqlText, err = GenerateSQL(items, specs, pgSrc, "postgres")
+	if err != nil {
+		t.Fatalf("GenerateSQL(pg): %v", err)
+	}
+	for _, want := range []string{
+		"ALTER TABLE t ALTER COLUMN hit_count TYPE INT",
+		"ALTER COLUMN hit_count SET NOT NULL",
+		"ALTER COLUMN hit_count SET DEFAULT 0",
+	} {
+		if !strings.Contains(sqlText, want) {
+			t.Errorf("pg E 级应含 %q，got:\n%s", want, sqlText)
+		}
+	}
+
+	// E 级对象在脚本中不存在 → 明确报错（防静默漏生成）
+	items = []DiffItem{{Level: "E", Auto: true, Table: "t", Object: "no_such_col"}}
+	if _, err := GenerateSQL(items, specs, mysqlSrc, "mysql"); err == nil {
+		t.Error("E 级列不存在应报错")
 	}
 }

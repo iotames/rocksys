@@ -67,7 +67,7 @@ func runSchemaSyncTest(t *testing.T, driver, dsn string) {
 	if len(auto) < 5 { // 5 个缺列 + 1 段索引（2 索引项）
 		t.Fatalf("旧版表应产出 ≥5 个自动差异项，got %d: %+v", len(auto), items)
 	}
-	sqlText, err := db.GenerateSQL(items, specs, d)
+	sqlText, err := db.GenerateSQL(items, specs, d, d.Driver())
 	if err != nil {
 		t.Fatalf("GenerateSQL: %v", err)
 	}

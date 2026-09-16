@@ -7,7 +7,7 @@ package db
 //	B 缺普通列        → 自动（ALTER TABLE ADD COLUMN，取脚本列定义原文 Raw，方言天然正确）
 //	C 缺 PK/UNIQUE/自增列 → 需人工（SQLite 不支持 ADD 相关约束，跨方言不可靠，不生成）
 //	D 缺索引          → 自动（建索引脚本原文，幂等 IF NOT EXISTS）
-//	E 类型/非空/默认值不一致 → 仅提示（SQLite 改列需重建表，跨方言不可靠，不生成）
+//	E 类型/非空/默认值不一致 → 自动（mysql/pg 生成 ALTER 对齐；SQLite 不支持改列 → 保持人工）
 //	F 库中多余列/表   → 仅提示（不生成 DROP，可能含数据或为历史遗留）
 
 import (
@@ -147,7 +147,7 @@ func DiffTable(in DiffInput) []DiffItem {
 			(!e.IsAutoInc && diffDefaults(e.Default, a.Default)) {
 			items = append(items, DiffItem{Level: "E", Auto: false, Table: in.Table, Object: e.Name,
 				Expected: colSummary(e), Actual: colSummaryActual(a),
-				Note: "类型/非空/默认值不一致：仅提示不生成（SQLite 改列需重建表、跨方言不可靠），请人工评估"})
+				Note: "类型/非空/默认值不一致：Auto 由目标方言在 DiffSchema 侧回填（SQLite 不支持改列保持人工）"})
 		}
 	}
 	// F：库中多余列（不生成 DROP）
@@ -262,6 +262,17 @@ func DiffSchema(ctx context.Context, d *DB, specs []TableSpec) ([]DiffItem, erro
 			Table: spec.Table, ExpectedDDL: ddl, ExpectedIndex: idx,
 			ActualCols: cols, ActualIndexes: indexes,
 		})...)
+	}
+	// E 级 Auto 回填：mysql/pg 支持改列，E 级按自动项生成 ALTER（生成仅是预览，执行仍有人工
+	// 确认关口）；SQLite 不支持 MODIFY/改列类型，重建表属破坏性人工操作，保持 Auto=false。
+	switch d.Driver() {
+	case "mysql", "postgres":
+		for i := range items {
+			if items[i].Level == "E" {
+				items[i].Auto = true
+				items[i].Note = "类型/非空/默认值不一致：已生成 ALTER 对齐语句（改列可能重写表数据，执行前建议备份）"
+			}
+		}
 	}
 	// F 级：库中存在但未注册的多余表
 	tables, err := d.CatalogTables(ctx)
@@ -378,7 +389,10 @@ func joinStatements(txt string) string {
 // A = 建表脚本原文（{table} 已替换）；B = ALTER TABLE ADD COLUMN <Raw>；
 // D = 仅缺失索引的单条 CREATE INDEX（整份脚本重放会在已有索引处报 Duplicate key，
 // 配合执行器「遇错即停」会导致剩余索引永远补不齐，故必须逐索引生成）。
-func GenerateSQL(items []DiffItem, specs []TableSpec, source SQLSource) (string, error) {
+// GenerateSQL 差异 → 可执行 SQL 文本（仅 Auto 项；非自动项跳过，由差异表建议人工处理）。
+// driver 为目标方言（target.Driver()）：E 级 ALTER 语句方言相关（mysql MODIFY / pg ALTER COLUMN），
+// sqlite 不支持改列（E 项在 DiffSchema 侧已回填 Auto=false，防御性再跳过一次）。
+func GenerateSQL(items []DiffItem, specs []TableSpec, source SQLSource, driver string) (string, error) {
 	specByTable := map[string]TableSpec{}
 	for _, s := range specs {
 		specByTable[s.Table] = s
@@ -428,12 +442,66 @@ func GenerateSQL(items []DiffItem, specs []TableSpec, source SQLSource) (string,
 				return "", fmt.Errorf("db: 索引脚本中未找到索引 %s 的建索引语句，请人工检查脚本", it.Object)
 			}
 			stmt = s
+		case "E":
+			// E 级按期望列定义生成方言 ALTER（差异生成只是预览，执行仍经人工确认）。
+			// 需要结构化列定义（类型/非空/默认值），从同方言建表脚本按列名重查。
+			col, err := expectedColumn(source, spec, it.Object)
+			if err != nil {
+				return "", fmt.Errorf("db: 表 %s 差异列 %s 解析期望定义失败: %w", it.Table, it.Object, err)
+			}
+			switch driver {
+			case "mysql":
+				// Raw 为脚本列定义原文（类型/NOT NULL/DEFAULT/COMMENT 齐全），MODIFY 需整列重述
+				stmt = fmt.Sprintf("ALTER TABLE %s MODIFY COLUMN %s;", it.Table, col.Raw)
+			case "postgres":
+				stmt = fmt.Sprintf("ALTER TABLE %s %s;", it.Table, pgAlterColumnClauses(it.Table, col))
+			default:
+				// SQLite 不支持改列（含目标=sqlite 的防御分支）：不生成，保持人工
+				continue
+			}
 		default:
 			return "", fmt.Errorf("db: 差异级别 %s 不支持自动生成 SQL", it.Level)
 		}
 		fmt.Fprintf(&b, "-- %s · %s\n%s\n\n", it.Table, it.Note, stmt)
 	}
 	return b.String(), nil
+}
+
+// expectedColumn 从同方言建表脚本解析出指定列的期望定义（E 级 ALTER 生成用）。
+func expectedColumn(source SQLSource, spec TableSpec, column string) (ColumnDef, error) {
+	ddl, err := source.SQL(spec.CreateScript)
+	if err != nil {
+		return ColumnDef{}, fmt.Errorf("读取建表脚本 %s 失败: %w", spec.CreateScript, err)
+	}
+	ddl = strings.ReplaceAll(ddl, "{table}", spec.Table)
+	cols, err := ParseCreateTable(ddl)
+	if err != nil {
+		return ColumnDef{}, fmt.Errorf("解析建表脚本失败: %w", err)
+	}
+	for _, c := range cols {
+		if strings.EqualFold(c.Name, column) {
+			return c, nil
+		}
+	}
+	return ColumnDef{}, fmt.Errorf("脚本中不存在列 %s", column)
+}
+
+// pgAlterColumnClauses 拼 PG 改列子句：类型 / 非空 / 默认值一次性对齐到期望
+// （对已满足的子句，PG 语义为幂等重放：同类型 TYPE 重写、重复 SET NOT NULL 均合法）。
+func pgAlterColumnClauses(table string, c ColumnDef) string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("ALTER COLUMN %s TYPE %s", c.Name, c.Type))
+	if c.NotNull {
+		parts = append(parts, fmt.Sprintf("ALTER COLUMN %s SET NOT NULL", c.Name))
+	} else {
+		parts = append(parts, fmt.Sprintf("ALTER COLUMN %s DROP NOT NULL", c.Name))
+	}
+	if c.Default != nil {
+		parts = append(parts, fmt.Sprintf("ALTER COLUMN %s SET DEFAULT %s", c.Name, *c.Default))
+	} else {
+		parts = append(parts, fmt.Sprintf("ALTER COLUMN %s DROP DEFAULT", c.Name))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // indexStatementMap 把建索引脚本按语句拆开，归一为「索引名 → 单条带分号语句」映射

@@ -95,7 +95,7 @@
     B: { label: '缺普通列', tag: '<span class="tag tag-green">自动</span>' },
     C: { label: '缺 PK/UNIQUE/自增列', tag: '<span class="tag tag-orange">需人工</span>' },
     D: { label: '缺索引', tag: '<span class="tag tag-green">自动</span>' },
-    E: { label: '结构不一致', tag: '<span class="tag tag-gray">仅提示</span>' },
+    E: { label: '结构不一致', tag: '<span class="tag tag-orange">需人工</span>' },
     F: { label: '多余对象', tag: '<span class="tag tag-gray">仅提示</span>' },
   };
 
@@ -306,7 +306,7 @@
         (state.executing ? '执行中…' : '执行SQL') + '</button>' +
         '</span></div>' +
         codeEditor.html(EDITOR_ID, { lang: 'sql', height: '320px', value: state.sql }) +
-        '<div class="form-hint" style="margin-top:8px">已按自动差异（缺表 / 缺列 / 缺索引）预填生成 SQL，可自由编辑（如只保留部分语句、手工补写救急语句）；非自动差异（PK/UNIQUE/自增列、类型不一致、多余对象）不自动生成，请参考差异表建议人工处理。</div>' +
+        '<div class="form-hint" style="margin-top:8px">已按自动差异（缺表 / 缺列 / 缺索引 / E 级类型·非空·默认值不一致[mysql/pg 目标]）预填生成 SQL，可自由编辑（如只保留部分语句、手工补写救急语句）；非自动差异（PK/UNIQUE/自增列、SQLite 目标改列、多余对象）不自动生成，请参考差异表建议人工处理。E 级改列可能重写表数据，执行前建议备份。</div>' +
         '</div>';
     } else if (state.loaded) {
       html += '<div class="card">' + Rock.comp.empty.message({ text: '表结构一致，未发现差异' }) + '</div>';

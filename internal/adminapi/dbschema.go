@@ -59,7 +59,7 @@ func (s *AdminServer) handleDBSchema(w http.ResponseWriter, r *http.Request) {
 	}
 	sqlText := ""
 	if len(items) > 0 {
-		if sqlText, err = db.GenerateSQL(items, s.tableSpecs, s.dataDB); err != nil {
+		if sqlText, err = db.GenerateSQL(items, s.tableSpecs, s.dataDB, s.dataDB.Driver()); err != nil {
 			http.Error(w, "生成同步 SQL 失败："+err.Error(), http.StatusInternalServerError)
 			return
 		}

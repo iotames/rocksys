@@ -102,7 +102,7 @@ func runAcceptanceFreshDB(t *testing.T, driver, dsn string) {
 	if aCount != len(specs) {
 		t.Fatalf("全新库应产出 %d 个 A 级缺表项，got %d: %+v", len(specs), aCount, items)
 	}
-	sqlText, err := db.GenerateSQL(items, specs, d)
+	sqlText, err := db.GenerateSQL(items, specs, d, d.Driver())
 	if err != nil {
 		t.Fatalf("GenerateSQL: %v", err)
 	}
@@ -181,7 +181,7 @@ func runAcceptanceSingleIndex(t *testing.T, driver, dsn string) {
 	if len(dItems) != 1 || dItems[0].Object != dropIdx {
 		t.Fatalf("应恰好产出 1 个 D 级项（%s），got: %+v", dropIdx, dItems)
 	}
-	sqlText, err := db.GenerateSQL(items, specs, d)
+	sqlText, err := db.GenerateSQL(items, specs, d, d.Driver())
 	if err != nil {
 		t.Fatalf("GenerateSQL: %v", err)
 	}

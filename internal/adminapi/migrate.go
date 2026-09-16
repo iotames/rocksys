@@ -81,7 +81,7 @@ func (s *AdminServer) handleMigrateSchema(w http.ResponseWriter, r *http.Request
 	}
 	sqlText := ""
 	if len(items) > 0 {
-		if sqlText, err = db.GenerateSQL(items, s.tableSpecs, target); err != nil {
+		if sqlText, err = db.GenerateSQL(items, s.tableSpecs, target, target.Driver()); err != nil {
 			http.Error(w, "生成对齐 SQL 失败："+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -130,7 +130,7 @@ func (s *AdminServer) handleMigrateSchemaApply(w http.ResponseWriter, r *http.Re
 		_ = writeJSON(w, map[string]any{"ok": true, "noop": true, "message": "目标库结构与期望一致，无需对齐"}, http.StatusOK)
 		return
 	}
-	sqlText, err := db.GenerateSQL(items, s.tableSpecs, target)
+	sqlText, err := db.GenerateSQL(items, s.tableSpecs, target, target.Driver())
 	_ = target.Close()
 	if err != nil {
 		http.Error(w, "生成对齐 SQL 失败："+err.Error(), http.StatusInternalServerError)
