@@ -33,6 +33,8 @@ func runBanFlowTest(t *testing.T, driver, dsn, suffix string) {
 	store := NewIPListStore(d.EasyDB(), d, true)
 	tbl := store.Table() + suffix
 	store.table = tbl
+	// 建表前先清残留（理由同 ip_list_store_pg_integration_test.go：强杀后 t.Cleanup 不执行）
+	_, _ = d.EasyDB().Exec("DROP TABLE IF EXISTS " + tbl)
 	t.Cleanup(func() { _, _ = d.EasyDB().Exec("DROP TABLE IF EXISTS " + tbl) })
 	if err := store.EnsureTable(); err != nil {
 		t.Fatalf("EnsureTable err: %v", err)
@@ -95,23 +97,28 @@ func runBanFlowTest(t *testing.T, driver, dsn, suffix string) {
 		t.Fatalf("永久条目恢复后应仍永久且 warn_times=6: %+v", e)
 	}
 
-	// ⑤ 小黑屋：限时未删未过期条目才在押
+	// ⑤ 小黑屋：权威语义 = 未软删且未过期（永久封禁视为不过期、在押殿后）——
+	// 与 sqlite 单测 TestIPListBanJail（want 3/3）及三方言 query_jail 脚本一致。
 	exp1 := now.Add(2 * time.Hour)
 	if _, err := store.BanInsert("10.9.0.2", "jail-a", BlockCrawlerUA, &exp1, now); err != nil {
 		t.Fatalf("BanInsert(10.9.0.2): %v", err)
 	}
-	if _, err := store.BanInsert("10.9.0.3", "jail-perm", BlockCrawlerUA, nil, now); err != nil { // 永久不在押
+	if _, err := store.BanInsert("10.9.0.3", "jail-perm", BlockCrawlerUA, nil, now); err != nil {
 		t.Fatalf("BanInsert(10.9.0.3): %v", err)
 	}
 	rows, total, err := store.Jail(now, 20)
 	if err != nil {
 		t.Fatalf("Jail: %v", err)
 	}
-	if total != 1 || len(rows) != 1 {
-		t.Fatalf("小黑屋应只含 1 条限时在押（永久与已恢复满 5 的 10.9.0.1 排除），got total=%d rows=%d", total, len(rows))
+	if total != 3 || len(rows) != 3 {
+		t.Fatalf("小黑屋应 3 条（限时在押 + 10.9.0.1 转永久 + 永久殿后），got total=%d rows=%d", total, len(rows))
 	}
 	if rows[0]["ip"] != "10.9.0.2" {
-		t.Fatalf("在押条目应为 10.9.0.2，got %v", rows[0]["ip"])
+		t.Fatalf("限时在押（临近解封）应排最前，got %v", rows[0]["ip"])
+	}
+	permSet := map[string]bool{rows[1]["ip"].(string): true, rows[2]["ip"].(string): true}
+	if !permSet["10.9.0.1"] || !permSet["10.9.0.3"] {
+		t.Fatalf("殿后两位应为两条永久（10.9.0.1/10.9.0.3，次序不分先后），got %v %v", rows[1]["ip"], rows[2]["ip"])
 	}
 	if _, ok := rows[0]["warn_times"]; !ok {
 		t.Errorf("小黑屋行应含 warn_times 列: %v", rows[0])

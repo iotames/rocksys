@@ -6,10 +6,12 @@
 //
 // 性能与超时（沿用已验证的增量骨架）：
 //   - 发现阶段不走 DISTINCT 全表扫描（百万行表实测分钟级，必超时），改为按 id 主键游标**分块增量
-//     扫描**——每块 geoSyncScanChunk 行、单趟最多 geoSyncScanCap 行；块内对 geoip_list 做 IN 点查
-//     内存求差（批量小查，禁无界 DISTINCT）；游标记录在进程内（表 → 已扫描到的最大 id），
-//     游标**只在回写全部完成后才推进**：本趟被时间预算/错误中断时保持原值，下趟重扫同一区间
-//     （已入表 IP 被求差过滤，重扫代价可忽略），避免「已发现未回写」的行被游标跳过。
+//     扫描**——每块 geoSyncScanChunk 行、单趟最多 GEOIP_SYNC_IPS_PER_RUN 个缺失 IP /
+//     GEOIP_SYNC_SCAN_CAP 行（可配置，0=不限，默认 50000/1000000）；块内对 geoip_list 做 IN
+//     点查内存求差（批量小查，禁无界 DISTINCT）；游标记录在进程内（表 → 已扫描到的最大 id）。
+//   - **流式回写**：每扫一块即对该块缺失 IP 解析并立即 upsert（发现与回写同块完成，内存恒定，
+//     不再整趟攒批）；块写完即推进游标——不存在「已发现未回写」被跳过；中断时保持原游标，
+//     下趟重扫同一区间（已入表 IP 被求差过滤，重扫代价可忽略）。
 //   - 回写侧逐 IP upsert（geoip_list_upsert.sql：冲突更新 geo 列与 updated_at，created_at 保持
 //     首次入库值）：幂等可重入，反复执行直至扫完即全量构建。
 //   - ★无时间预算（设计约定）：任务中心承载的默认无超时（后台化的意义就是摆脱请求超时），
@@ -21,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,14 +55,42 @@ type geoSyncReport struct {
 }
 
 // 同步节奏参数（批次化：单趟有界、可断点续扫，超时/失败已完成部分依然生效）。
+// 单趟两上限已配置化（GEOIP_SYNC_IPS_PER_RUN / GEOIP_SYNC_SCAN_CAP，0=不限，运行中改值
+// 下一趟生效）：默认约为旧硬编码（5000/200000）的 10 倍——存量回填趟数缩一个量级，趟长
+// 仍有界（SQLite 写锁窗口可控）；增量稳态下每趟新 IP 远够不着配额，行为不变。
 var (
-	geoipSyncTables = []string{db.TableAccessLog, db.TableShieldEvent}
-	geoSyncBatchIPs = 5000 // 单趟处理的缺失 IP 上限：防超大表首趟过久；未完可再次执行续扫
+	geoipSyncTables  = []string{db.TableAccessLog, db.TableShieldEvent}
+	geoSyncIPsPerRun = 50000 // 单趟处理的缺失 IP 上限（配置项 GEOIP_SYNC_IPS_PER_RUN；0=不限）
 
-	geoSyncProbeChunk = 500    // 求差点查每批携带的 IP 数（geoip_list IN 点查，主键命中毫秒级）
-	geoSyncScanChunk  = 10000  // 发现阶段每块扫描的日志行数（走 id 主键范围扫，单块毫秒级）
-	geoSyncScanCap    = 200000 // 单趟发现阶段扫描行数上限：即使缺失行极稀疏也保证单趟耗时可控
+	geoSyncProbeChunk  = 500     // 求差点查每批携带的 IP 数（geoip_list IN 点查，主键命中毫秒级）
+	geoSyncScanChunk   = 10000   // 发现阶段每块扫描的日志行数（走 id 主键范围扫，单块毫秒级）
+	geoSyncScanCapRows = 1000000 // 单趟发现阶段扫描行数上限（配置项 GEOIP_SYNC_SCAN_CAP；0=不限）
 )
+
+// 单趟配额的回落默认值（与 main 装配期 Register 的默认值一致；负数等非法配置回落到此）。
+const (
+	geoSyncIPsPerRunDefault   = 50000
+	geoSyncScanCapRowsDefault = 1000000
+)
+
+// geoSyncQuotaLimits 单趟两上限的生效值（每趟开始时读取，运行中改值下一趟生效）：
+// 0=不限（math.MaxInt 兜底，一趟扫到表尾为止）；负数回落默认。
+func geoSyncQuotaLimits() (ipLimit, scanLimit int) {
+	return normalizeGeoSyncQuota(geoSyncIPsPerRun, geoSyncIPsPerRunDefault),
+		normalizeGeoSyncQuota(geoSyncScanCapRows, geoSyncScanCapRowsDefault)
+}
+
+// normalizeGeoSyncQuota 配额归一：0=不限；负数回落默认；合法值原样保留。
+func normalizeGeoSyncQuota(v, def int) int {
+	switch {
+	case v == 0:
+		return math.MaxInt
+	case v < 0:
+		return def
+	default:
+		return v
+	}
+}
 
 // 回写运行态：id 游标（断点续扫，进程内记录即可）与进行中互斥锁（防并发双趟重复扫描写库）。
 var (
@@ -116,39 +147,47 @@ func geoSyncNextCursor(prevCursor, maxID int64, exhausted, interrupted bool) (in
 	return maxID, false
 }
 
-// geoSyncExistingIPs 查询 ipList 中已入 geoip_list 的 IP 集合（分批 IN 点查，禁无界 DISTINCT）。
+// geoSyncPlaceholder 按方言生成第 i 个查询参数占位符：postgres 为 $1/$2…，mysql/sqlite 为 ?。
+// 不用 easydb.GetPlaceholder：其实现 fmt.Sprintf("?", n) 对 ? 方言会产出
+// "?%!(EXTRA int=n)" 垃圾尾巴（实测踩坑）。
+func geoSyncPlaceholder(driver string, i int) string {
+	if driver == "postgres" {
+		return fmt.Sprintf("$%d", i+1)
+	}
+	return "?"
+}
+
+// geoSyncExistingIPs 查询 ipList 中已入 geoip_list 的 IP 集合（一次 IN 点查，禁无界 DISTINCT）。
+// 占位符按方言生成——裸 ? 直查 sql.DB 在 Postgres 上报 pq 语法错误（实测踩坑）。
 func geoSyncExistingIPs(ctx context.Context, d *db.DB, ips []string) (map[string]bool, error) {
-	sqlDB := d.EasyDB().GetSqlDB()
 	exist := make(map[string]bool, len(ips))
-	for start := 0; start < len(ips); start += geoSyncProbeChunk {
-		end := min(start+geoSyncProbeChunk, len(ips))
-		args := make([]any, 0, end-start)
-		marks := make([]string, 0, end-start)
-		for _, ip := range ips[start:end] {
-			args = append(args, ip)
-			marks = append(marks, "?")
+	if len(ips) == 0 {
+		return exist, nil
+	}
+	marks := make([]string, 0, len(ips))
+	args := make([]any, 0, len(ips))
+	for i, ip := range ips {
+		marks = append(marks, geoSyncPlaceholder(d.Driver(), i))
+		args = append(args, ip)
+	}
+	q := "SELECT ip FROM " + db.TableGeoipList + " WHERE ip IN (" + strings.Join(marks, ",") + ")"
+	rows, err := d.EasyDB().GetSqlDB().QueryContext(ctx, q, args...)
+	if err != nil {
+		if ctx.Err() != nil {
+			return exist, ctx.Err()
 		}
-		q := "SELECT ip FROM " + db.TableGeoipList + " WHERE ip IN (" + strings.Join(marks, ",") + ")"
-		rows, err := sqlDB.QueryContext(ctx, q, args...)
-		if err != nil {
-			if ctx.Err() != nil {
-				return exist, ctx.Err()
-			}
-			return exist, fmt.Errorf("geoip: 查询已入表 IP 失败: %w", err)
+		return exist, fmt.Errorf("geoip: 查询已入表 IP 失败: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return exist, fmt.Errorf("geoip: 扫描已入表 IP 失败: %w", err)
 		}
-		for rows.Next() {
-			var ip string
-			if err := rows.Scan(&ip); err != nil {
-				rows.Close()
-				return exist, fmt.Errorf("geoip: 扫描已入表 IP 失败: %w", err)
-			}
-			exist[ip] = true
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return exist, fmt.Errorf("geoip: 遍历已入表 IP 失败: %w", err)
-		}
-		rows.Close()
+		exist[ip] = true
+	}
+	if err := rows.Err(); err != nil {
+		return exist, fmt.Errorf("geoip: 遍历已入表 IP 失败: %w", err)
 	}
 	return exist, nil
 }
@@ -186,20 +225,20 @@ func geoSyncUpsert(ctx context.Context, d *db.DB, vals []geoVal) (int64, error) 
 }
 
 // geoSyncTable 对单表执行一轮同步：id 游标分块增量发现「client_ip 未入 geoip_list」的 IP
-// （单趟上限 geoSyncBatchIPs 个 IP / geoSyncScanCap 行）→ 解析 → upsert geoip_list。
+// （单趟上限 geoSyncIPsPerRun 个 IP / geoSyncScanCapRows 行，0=不限），**流式处理**——
+// 每扫一块即对该块缺失 IP 解析并立即回写（内存恒定：不再整趟攒批，进度与落库实时可见）。
 // ctx 在块/批边界检查：调用方取消即收工，并在报告中标记 Interrupted；
 // setProgress 在每块边界回传进度（后台任务页实时可见）。
 func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup, setProgress func(string)) (geoSyncReport, error) {
 	rep := geoSyncReport{Table: table, IPSample: []string{}}
 	sqlDB := d.EasyDB().GetSqlDB()
+	ipLimit, scanLimit := geoSyncQuotaLimits()
 	prevCursor := geoSyncCursorLoad(table)
 	cursor := prevCursor
-	var uniq []string
-	inUniq := map[string]bool{}
-	var maxID int64
+	var committedID int64 // 最后一个已完整回写块的最大 id（回写成功才推进，游标安全的推进候选）
 	exhausted := false
 	interrupted := false
-	for len(uniq) < geoSyncBatchIPs && rep.Scanned < geoSyncScanCap && !exhausted {
+	for rep.IPs < ipLimit && rep.Scanned < scanLimit && !exhausted {
 		if ctx.Err() != nil {
 			rep.Interrupted = true
 			interrupted = true
@@ -218,7 +257,9 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup, se
 			return rep, fmt.Errorf("geoip: 扫描 %s 缺失 IP 失败: %w", table, err)
 		}
 		var chunk []string
+		seen := map[string]bool{} // 块内去重（跨块重复由 geoip_list 求差天然过滤：前块已入库）
 		n := 0
+		var maxID int64
 		for rows.Next() {
 			var id int64
 			var ip string
@@ -230,8 +271,8 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup, se
 			if id > maxID {
 				maxID = id
 			}
-			if !inUniq[ip] {
-				inUniq[ip] = true
+			if !seen[ip] {
+				seen[ip] = true
 				chunk = append(chunk, ip)
 			}
 		}
@@ -250,10 +291,6 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup, se
 			break
 		}
 		rep.Scanned += n
-		cursor = maxID
-		if setProgress != nil {
-			setProgress(fmt.Sprintf("%s：已扫描 %d 行，发现 %d 个待同步 IP", table, rep.Scanned, len(uniq)))
-		}
 		// 块内求差：过滤已入 geoip_list 的 IP（IN 点查），剩余即本块缺失 IP。
 		exist, err := geoSyncExistingIPs(ctx, d, chunk)
 		if err != nil {
@@ -264,42 +301,49 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup, se
 			}
 			return rep, err
 		}
+		// 流式回写：本块缺失 IP 立即解析 + upsert（解析不出任何 geo 的跳过并计数，
+		// 游标越过不再重试）。
+		var vals []geoVal
 		for _, ip := range chunk {
-			if !exist[ip] && len(uniq) < geoSyncBatchIPs {
-				uniq = append(uniq, ip)
+			if exist[ip] {
+				continue
+			}
+			rep.IPs++
+			gi := res.Lookup(ip)
+			v := geoVal{ip: ip, code: gi.Code, country: gi.Country, province: gi.Province, city: gi.City}
+			if v.emptyGeo() {
+				rep.Skipped++
+				if len(rep.IPSample) < 5 {
+					rep.IPSample = append(rep.IPSample, ip)
+				}
+				continue
+			}
+			vals = append(vals, v)
+		}
+		if len(vals) > 0 {
+			upserted, err := geoSyncUpsert(ctx, d, vals)
+			rep.RowsUpsert += upserted
+			if err != nil {
+				if ctx.Err() != nil { // 取消导致的失败同样按提前收工处理（此前批次已提交）
+					rep.Interrupted = true
+					interrupted = true
+					break
+				}
+				return rep, err
 			}
 		}
-	}
-	rep.IPs = len(uniq)
-
-	// 解析 + upsert：解析不出任何 geo 的 IP 跳过并计数（游标越过不再重试）。
-	var vals []geoVal
-	for _, ip := range uniq {
-		gi := res.Lookup(ip)
-		v := geoVal{ip: ip, code: gi.Code, country: gi.Country, province: gi.Province, city: gi.City}
-		if v.emptyGeo() {
-			rep.Skipped++
-			if len(rep.IPSample) < 5 {
-				rep.IPSample = append(rep.IPSample, ip)
-			}
-			continue
-		}
-		vals = append(vals, v)
-	}
-	upserted, err := geoSyncUpsert(ctx, d, vals)
-	rep.RowsUpsert = upserted
-	if err != nil {
-		if ctx.Err() != nil { // 取消导致的失败同样按提前收工处理（此前批次已提交）
-			rep.Interrupted = true
-			interrupted = true
-		} else {
-			return rep, err
+		// 本块已完整回写：推进 committedID 与扫描游标（流式语义下发现与回写同块完成，
+		// committedID 之前不存在「已发现未回写」的行，前移安全）。
+		committedID = maxID
+		cursor = maxID
+		if setProgress != nil {
+			setProgress(fmt.Sprintf("%s：已扫描 %d 行，已写入 %d 个新 IP（跳过 %d 个无地理信息 IP）",
+				table, rep.Scanned, rep.RowsUpsert, rep.Skipped))
 		}
 	}
-	// 游标只在回写未被中断时推进：中断即保持原值，下趟从同一 id 区间重扫。
-	// 已入表 IP 会被求差阶段过滤，重扫代价可忽略；若提前推进，本趟「已发现但未回写」的
-	// 行会被永久跳过（要等游标绕回表尾才可能再被发现）。
-	next, done := geoSyncNextCursor(prevCursor, maxID, exhausted, interrupted)
+	// 游标推进：committedID 之前的块均已完整落库，可安全前移；中断仍保守保持原游标
+	// （中断块可能「部分回写」，虽 upsert 幂等重扫无害，沿用既有中断语义：下趟重扫同一区间）。
+	next, done := geoSyncNextCursor(prevCursor, committedID, exhausted, interrupted)
 	geoSyncCursorStore(table, next)
 	rep.Done = done
 	return rep, nil
@@ -398,16 +442,18 @@ func hasInterrupted(reps []geoSyncReport) bool {
 }
 
 // geoSyncReportText 报告转人读文案（日志/前端展示共用）。
+// 终态三分：被取消（提前收工）/ 全表扫完（无附言）/ 配额截断（设计内节奏，下轮自动续扫）——
+// 配额截断必须写明「自动续扫」，避免读作「没收完的失败」（旧文案「可再次执行继续」即有此误导）。
 func geoSyncReportText(reps []geoSyncReport) string {
 	var b strings.Builder
 	for _, r := range reps {
-		fmt.Fprintf(&b, "%s：新同步 %d 个 IP（扫描 %d 行，跳过 %d 个无地理信息 IP）",
+		fmt.Fprintf(&b, "%s：本趟写入 %d 个新 IP（扫描 %d 行，跳过 %d 个无地理信息 IP）",
 			r.Table, r.RowsUpsert, r.Scanned, r.Skipped)
 		switch {
 		case r.Interrupted:
-			b.WriteString("；本轮提前收工，已完成部分已写入，再次执行从断点继续")
+			b.WriteString("；本轮被取消提前收工，已完成部分已写入，再次执行从断点继续")
 		case !r.Done:
-			b.WriteString("；仍有未同步行未扫完，可再次执行继续")
+			b.WriteString("；本趟配额已用完，下轮同步自动从断点续扫（无需人工干预）")
 		}
 		b.WriteString("；")
 	}

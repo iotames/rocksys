@@ -88,7 +88,7 @@ func TestExecLogStoreMySQL(t *testing.T) {
 }
 
 func TestExecLogStorePG(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
+	dsn := pgTestDSN(t) // schema 级隔离：共享库/运行库既有审计行不污染全表计数断言
 	if dsn == "" {
 		t.Skip("PG_TEST_DSN 未设置，跳过 PostgreSQL 集成测试")
 	}

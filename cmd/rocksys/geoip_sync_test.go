@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -205,9 +206,9 @@ func TestGeoipSyncCursorResume(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		insAccess(t, d, now, fmt.Sprintf("8.8.8.%d", i))
 	}
-	oldIPs, oldChunk := geoSyncBatchIPs, geoSyncScanChunk
-	geoSyncBatchIPs, geoSyncScanChunk = 2, 1
-	defer func() { geoSyncBatchIPs, geoSyncScanChunk = oldIPs, oldChunk }()
+	oldIPs, oldChunk := geoSyncIPsPerRun, geoSyncScanChunk
+	geoSyncIPsPerRun, geoSyncScanChunk = 2, 1
+	defer func() { geoSyncIPsPerRun, geoSyncScanChunk = oldIPs, oldChunk }()
 
 	for pass := 1; pass <= 2; pass++ {
 		rep, err := geoSyncTable(context.Background(), d, "access_log", stubFlexResolver{}, nil)
@@ -363,5 +364,69 @@ func TestGeoSyncNextCursor(t *testing.T) {
 			t.Errorf("%s：cursor=%d done=%v，期望 cursor=%d done=%v",
 				c.name, gotCursor, gotDone, c.wantCursor, c.wantDone)
 		}
+	}
+}
+
+// TestNormalizeGeoSyncQuota 配额归一：0=不限；负数回落默认；合法值原样保留。
+func TestNormalizeGeoSyncQuota(t *testing.T) {
+	cases := []struct{ in, def, want int }{
+		{0, 50000, math.MaxInt}, // 0=不限
+		{-1, 50000, 50000},      // 负数回落默认
+		{1, 50000, 1},
+		{50000, 50000, 50000},
+	}
+	for _, c := range cases {
+		if got := normalizeGeoSyncQuota(c.in, c.def); got != c.want {
+			t.Errorf("normalizeQuota(%d, %d) = %d，期望 %d", c.in, c.def, got, c.want)
+		}
+	}
+}
+
+// TestGeoipSyncUnlimitedQuotaDrains 0=不限：一趟扫到表尾为止，Done=true 且游标归零
+// （流式逐块回写，最终全部入库）。
+func TestGeoipSyncUnlimitedQuotaDrains(t *testing.T) {
+	resetGeoSyncState()
+	d := openTestDB(t)
+	exec(t, d, mustDDL(t, d, "access_log_create_table.sql", "access_log"))
+	ensureGeoipList(t, d)
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for i := 1; i <= 3; i++ {
+		insAccess(t, d, now, fmt.Sprintf("8.8.8.%d", i))
+	}
+	oldIPs, oldScan, oldChunk := geoSyncIPsPerRun, geoSyncScanCapRows, geoSyncScanChunk
+	geoSyncIPsPerRun, geoSyncScanCapRows, geoSyncScanChunk = 0, 0, 1 // 双 0 = 全不限
+	defer func() { geoSyncIPsPerRun, geoSyncScanCapRows, geoSyncScanChunk = oldIPs, oldScan, oldChunk }()
+
+	rep, err := geoSyncTable(context.Background(), d, "access_log", stubFlexResolver{}, nil)
+	if err != nil {
+		t.Fatalf("不限配额趟 err: %v", err)
+	}
+	if !rep.Done || rep.RowsUpsert != 3 {
+		t.Errorf("不限配额应一趟扫完（Done=true, 3 行），报告 %+v", rep)
+	}
+	if got := geoSyncCursorLoad("access_log"); got != 0 {
+		t.Errorf("扫完游标应归零，实际 %d", got)
+	}
+	if got := geoRowCount(t, d, "country_code='US'"); got != 3 {
+		t.Errorf("应 3 个 IP 全入表，实际 %d", got)
+	}
+}
+
+// TestGeoSyncReportTextQuotaCopy 配额截断文案必须写明「自动续扫」，不得再出现
+// 「可再次执行继续」这类误导人工干预的旧表述（实测踩坑：用户误以为同步失败）。
+func TestGeoSyncReportTextQuotaCopy(t *testing.T) {
+	reps := []geoSyncReport{
+		{Table: "access_log", RowsUpsert: 5, Scanned: 10, Skipped: 0, Done: false},
+		{Table: "shield_event", RowsUpsert: 0, Scanned: 3, Skipped: 1, Done: true},
+	}
+	text := geoSyncReportText(reps)
+	if !strings.Contains(text, "下轮同步自动从断点续扫") {
+		t.Errorf("配额截断应写明自动续扫，实际：%s", text)
+	}
+	if strings.Contains(text, "可再次执行继续") || strings.Contains(text, "仍有未同步行") {
+		t.Errorf("不应残留误导性旧文案，实际：%s", text)
+	}
+	if strings.Contains(text, "本轮被取消") {
+		t.Errorf("未取消的趟不应带取消文案，实际：%s", text)
 	}
 }

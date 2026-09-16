@@ -7,8 +7,8 @@
  * 交互：来源/状态筛选下拉（本地过滤，选项即白名单/固定枚举）；轮询/加载走服务端轻量分页——
  *       默认只拉最近 20 条终态（+全部运行中），「显示更早记录」才拉全量（终态保留 500 条）；
  *       运行中任务可取消
- *       （确认弹窗 → 统一取消端点）；存在运行中任务时每 2 秒静默轮询，全部终态后自动
- *       停止（不无限刷）。
+ *       （确认弹窗 → 统一取消端点）；存在运行中任务时每 3 秒静默轮询，全部终态后自动
+ *       停止（不无限刷），离开页面时由路由清理钩子停表。
  * UX 红线：load 透传 refreshPage 的 opts（含 silent）；非引导态加载失败弹统一 error toast。
  * 挂载到全局命名空间 window.Rock.views.tasks。
  * ========================================================================== */
@@ -185,12 +185,20 @@
     });
   }
 
-  // 自动轮询：存在运行中任务时每 2 秒静默刷新，全部终态后停止（防无限刷）。
+  // 自动轮询：存在运行中任务时每 3 秒静默刷新，全部终态后停止（防无限刷）。
   function syncPollTimer() {
     const hasRunning = rows.some(function (t) { return t.status === 'running'; });
     if (hasRunning && !pollTimer) {
-      pollTimer = setInterval(function () { load({ silent: true }); }, 2000);
+      pollTimer = setInterval(function () { load({ silent: true }); }, 3000);
     } else if (!hasRunning && pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  // 离开页面清理：停掉残留的列表轮询定时器（经 main.js 路由切换钩子调用）
+  function leave() {
+    if (pollTimer) {
       clearInterval(pollTimer);
       pollTimer = null;
     }
@@ -285,6 +293,7 @@
   window.Rock.views.tasks = {
     load: load,
     render: render,
+    leave: leave,
     actions: {
       'tasks-reload': function () { load({ force: true }); },
       'tasks-show-earlier': function () { showAll = true; load(); },

@@ -60,7 +60,9 @@ REMOTE_DIR := projects/rocksys/bin
 #     make geoip GEOIP_PROXY=http://127.0.0.1:7897
 #   - 下载失败仅告警不阻断（geo 为可选增强，缺失时运行期自动降级「未知」）
 GEOIP_DIR ?= bin/geoip
-GEOIP_BASE_URL ?= https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07
+# BASE_URL 用 releases/latest/download（GitHub 官方永久重定向，恒指现存最新版）：
+# 上游为滚动仓库仅保留最近 2 个 release，钉死日期版本会被删（v0.6.0 即因此 404 打出无 mmdb 包）
+GEOIP_BASE_URL ?= https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download
 GEOIP_FILES := GeoLite2-City.mmdb GeoLite2-Country.mmdb
 GEOIP_PROXY ?=
 

@@ -304,7 +304,7 @@ func buildServer(args []string) (*Server, error) {
 		"数据库连接串（不同驱动取值不同；sqlite 默认已含 busy_timeout=5000 与 WAL，可显式覆盖）",
 		"  sqlite（默认）: rocksys.db 或 rocksys.db?_busy_timeout=5000&_journal_mode=WAL",
 		"  mysql:    user:pass@tcp(127.0.0.1:3306)/rocksys?charset=utf8mb4&parseTime=true",
-				"  postgres（两种写法等价，任选其一）:",
+		"  postgres（两种写法等价，任选其一）:",
 		"    URI 形式:  postgres://postgres:password@127.0.0.1:5432/rocksys?sslmode=disable",
 		"    键值形式:  host=127.0.0.1 port=5432 user=postgres password=yourpassword dbname=rocksys sslmode=disable",
 	); err != nil {
@@ -337,6 +337,23 @@ func buildServer(args []string) (*Server, error) {
 		"生效前置：GeoLite2 mmdb 已加载（未加载时定时器不启动，放置文件后须重启）；运行中修改下一轮生效",
 	); err != nil {
 		return nil, fmt.Errorf("register GEOIP_SYNC_INTERVAL: %w", err)
+	}
+
+	// ── GeoIP 同步单趟配额（趟长有界化：回填提速与锁窗口的折中，两上限先到为准）──
+	// 0=不限（一趟扫到表尾为止）；负数回落默认。增量稳态下每趟新 IP 远够不着配额，行为不变；
+	// 存量回填时默认约为旧行为 10 倍吞吐，极端情况可临时调 0 跑无限趟、或调小限流。
+	// 运行中改值下一趟生效（每趟开始时经 geoSyncQuotaLimits 重读）。
+	if err := cfgMgr.Register(&geoSyncIPsPerRun, "GEOIP_SYNC_IPS_PER_RUN", "50000",
+		"GeoIP 同步单趟处理的缺失 IP 上限（0=不限；负数回落默认 50000）",
+		"调大可减少存量回填趟数（下轮同步自动断点续扫）；增量稳态用不到配额，保持默认即可",
+	); err != nil {
+		return nil, fmt.Errorf("register GEOIP_SYNC_IPS_PER_RUN: %w", err)
+	}
+	if err := cfgMgr.Register(&geoSyncScanCapRows, "GEOIP_SYNC_SCAN_CAP", "1000000",
+		"GeoIP 同步单趟扫描日志行数上限（0=不限；负数回落默认 1000000）",
+		"即使缺失行极稀疏也保证单趟耗时可控；配额先到即收工，下趟断点续扫",
+	); err != nil {
+		return nil, fmt.Errorf("register GEOIP_SYNC_SCAN_CAP: %w", err)
 	}
 
 	// ── WAF 拦截监控统计 ───────────────────────────────────────────────

@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && unix
 
 // devdb_lock_integration_test.go：共享开发库跨包互斥锁（仅集成测试用）。
 // devdb 为共享真库，go test 多包并行时本包 TestPostgresAttackArchive 操作固定表名

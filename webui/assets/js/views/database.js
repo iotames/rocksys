@@ -89,6 +89,13 @@
   const findRunningTask = Rock.ui.findRunningTask;
   const fmtTaskCost = Rock.ui.fmtTaskCost;
 
+  // 迁移/GeoIP 两处任务槽位的轮询停止函数：页面恢复/重新提交会对同一任务再起轮询，
+  // 起新前先停旧，避免多次进入页面导致同一任务多条轮询叠加（请求倍增）。
+  let geoPollStop = null;
+  let migPollStop = null;
+  function stopGeoPoll() { if (geoPollStop) { geoPollStop(); geoPollStop = null; } }
+  function stopMigPoll() { if (migPollStop) { migPollStop(); migPollStop = null; } }
+
   // 差异分级展示配置：级别 → { label 差异类型, tag 分级标签（绿=自动/橙=需人工/灰=仅提示） }
   const LEVEL_META = {
     A: { label: '缺表', tag: '<span class="tag tag-green">自动</span>' },
@@ -183,17 +190,16 @@
     });
   };
 
-  // 数据表概览表（空间占用统计：表名/备注/条数/占用空间，含占比条）
+  // 数据表概览表（空间占用统计：表名/数据行/数据占用/索引占用/表备注，含占比条）
   const overviewTable = Rock.comp.dataTable.create({
     ns: 'db-overview',
     columns: [
       { key: 'name', label: '表名', cls: 'mono', render: r => '<span class="log-path" title="' + esc(r.name) + '">' + esc(truncate(r.name, 40)) + '</span>' },
-      { key: 'comment', label: '表备注', render: r => esc(r.comment || '—') },
-      { key: 'rows', label: '数据条数', cls: 'mono', render: r => esc(fmtIntNA(r.rows)) },
+      { key: 'rows', label: '数据行', cls: 'mono', render: r => esc(fmtIntNA(r.rows)) },
       // 占用空间拆两列：数据 / 索引（SQLite 表 B-tree 含溢出页；MySQL 聚簇索引与二级索引；PG 表堆与索引）。
       // 未计算的表在两列统一以「计算」按钮呈现（SQLite 逐表占用需遍历页树，约数秒~数十秒）。
       // 占比条各自同口径：数据列按「已统计数据合计」、索引列按「已统计索引合计」，两列不共用分母。
-      { key: 'data_bytes', label: '数据', render: r => {
+      { key: 'data_bytes', label: '数据占用', render: r => {
           if (!r.bytes_known) {
             // 计算是全局串行的（一次只允许一张表在算）：任何一行在算时其余行一并禁用，
             // 否则点击被静默忽略，用户以为页面卡死。
@@ -204,7 +210,8 @@
           }
           return sizeCellHTML(r.data_bytes, 'data_bytes', r, '数据');
         } },
-      { key: 'index_bytes', label: '索引', render: r => r.bytes_known ? sizeCellHTML(r.index_bytes, 'index_bytes', r, '索引') : '<span class="muted">—</span>' },
+      { key: 'index_bytes', label: '索引占用', render: r => r.bytes_known ? sizeCellHTML(r.index_bytes, 'index_bytes', r, '索引') : '<span class="muted">—</span>' },
+      { key: 'comment', label: '表备注', render: r => esc(r.comment || '—') },
     ],
     paging: { mode: 'client' },
     emptyText: '库内暂无业务表',
@@ -517,7 +524,8 @@
     try {
       const r = await api.post('/admin/db/geoip_sync')();
       state.geo.taskId = (r && r.task_id) || '';
-      pollTask(state.geo.taskId, {
+      stopGeoPoll();
+      geoPollStop = pollTask(state.geo.taskId, {
         onRunning: function () {},
         onDone: finishGeoSync,
         onFailed: finishGeoSync,
@@ -573,7 +581,8 @@
       m.running = true;
       m.taskId = t.id;
       applyMigrateProgress(t);
-      pollTask(t.id, {
+      stopMigPoll();
+      migPollStop = pollTask(t.id, {
         onRunning: applyMigrateProgress,
         onDone: function (task) { finishMigrate(task); },
         onFailed: function (task) { finishMigrate(task); },
@@ -584,7 +593,8 @@
       if (!t || state.geo.running) return;
       state.geo.running = true;
       state.geo.taskId = t.id;
-      pollTask(t.id, {
+      stopGeoPoll();
+      geoPollStop = pollTask(t.id, {
         onRunning: function () {},
         onDone: function (task) { finishGeoSync(task); },
         onFailed: function (task) { finishGeoSync(task); },
@@ -941,7 +951,8 @@
         source: m.source, target: m.target, tables: tables, batch: m.batch, mode: m.mode,
       }).then(function (r) {
         m.taskId = r.task_id;
-        pollTask(r.task_id, {
+        stopMigPoll();
+        migPollStop = pollTask(r.task_id, {
           onRunning: function (task) { applyMigrateProgress(task); render(); },
           onDone: finishMigrate,
           onFailed: finishMigrate,

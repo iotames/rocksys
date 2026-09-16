@@ -138,11 +138,14 @@
     return Promise.resolve(p.fetch(opts || {}));
   }
 
-  // 路由切换前的清理钩子：系统日志页离开时关闭 SSE 实时流，避免后台连接泄漏
+  // 路由切换前的清理钩子：系统日志页离开时关闭 SSE 实时流，后台任务页离开时停列表轮询定时器，避免后台连接/定时器泄漏
   let prevRoute = '';
   function renderPage(route) {
     if (prevRoute.base === 'syslogs' && route.base !== 'syslogs' && views.syslogs) {
       views.syslogs.leave();
+    }
+    if (prevRoute.base === 'tasks' && route.base !== 'tasks' && views.tasks) {
+      views.tasks.leave();
     }
     prevRoute = route;
     // 切换页面清空残留提示（常驻错误提示不跨页携带；刷新页面天然清空）

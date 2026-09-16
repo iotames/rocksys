@@ -41,6 +41,9 @@ func pgListStore(t *testing.T, d *db.DB, isBlack bool) *IPListStore {
 	store := NewIPListStore(d.EasyDB(), d, isBlack)
 	tbl := store.Table() + "_pgtest"
 	store.table = tbl // 同包测试：替换为隔离表名
+	// 建表前先清残留：上轮测试二进制被强杀时 t.Cleanup 未执行，遗留表会让本轮
+	// 计数/唯一约束断言误报（实测踩坑）。
+	_, _ = d.EasyDB().Exec("DROP TABLE IF EXISTS " + tbl)
 	t.Cleanup(func() { _, _ = d.EasyDB().Exec("DROP TABLE IF EXISTS " + tbl) })
 	if err := store.EnsureTable(); err != nil {
 		t.Fatalf("EnsureTable(%s) err: %v", tbl, err)

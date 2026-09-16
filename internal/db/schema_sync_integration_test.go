@@ -94,7 +94,7 @@ func runSchemaSyncTest(t *testing.T, driver, dsn string) {
 
 // TestSchemaSyncPostgres 真库端到端（PG_TEST_DSN 门控）。
 func TestSchemaSyncPostgres(t *testing.T) {
-	dsn := os.Getenv("PG_TEST_DSN")
+	dsn := pgTestDSN(t) // schema 级隔离：共享库混有其他项目表不误报（零差异断言按 current_schema 过滤）
 	if dsn == "" {
 		t.Skip("PG_TEST_DSN 未设置，跳过 PostgreSQL 集成测试")
 	}

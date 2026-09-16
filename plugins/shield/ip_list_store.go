@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/iotames/easydb"
+	"github.com/lib/pq"
 
 	"rocksys/internal/db"
 )
@@ -626,8 +627,15 @@ func utcOrNil(t *time.Time) any {
 	return t.UTC()
 }
 
-// isUniqueErr 判定唯一约束冲突（三方言错误文案差异）。
+// isUniqueErr 判定唯一约束冲突（三方言错误差异）。
+// PG 必须按 SQLSTATE 23505 判定：服务端错误文案随 locale 变化（zh_CN 实测返回
+// 「重复键违反唯一约束」，字符串匹配不中），SQLSTATE 才是稳定契约；字符串分支
+// 仅作 sqlite/mysql 及其他驱动的兜底。
 func isUniqueErr(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "23505"
+	}
 	msg := err.Error()
 	return strings.Contains(msg, "UNIQUE constraint failed") ||
 		strings.Contains(msg, "unique constraint") ||

@@ -484,8 +484,8 @@
     '<div class="form-hint">下一步：下载 GeoLite2 的 GeoLite2-City.mmdb / GeoLite2-Country.mmdb，' +
     '放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/，或工作目录、~/geoip 任一处），重启服务后生效。</div>' +
     '<div class="form-hint">下载直链（GitHub，P3TERX/GeoLite.mmdb）：<br>' +
-    '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-City.mmdb" target="_blank" rel="noopener">GeoLite2-City.mmdb</a><br>' +
-    '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-Country.mmdb" target="_blank" rel="noopener">GeoLite2-Country.mmdb</a></div></div>';
+    '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb" target="_blank" rel="noopener">GeoLite2-City.mmdb</a><br>' +
+    '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb" target="_blank" rel="noopener">GeoLite2-Country.mmdb</a></div></div>';
 
   function geoTogglesHTML() {
     const chip = (act, key, label, cur) =>

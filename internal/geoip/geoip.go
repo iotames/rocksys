@@ -61,7 +61,9 @@ type GeoInfo struct {
 }
 
 // empty 判断是否无有效地理信息。
-func (g GeoInfo) empty() bool { return g.Code == "" && g.Country == "" && g.Province == "" && g.City == "" }
+func (g GeoInfo) empty() bool {
+	return g.Code == "" && g.Country == "" && g.Province == "" && g.City == ""
+}
 
 // dbHandle 抽象单个 mmdb 库的查询能力，便于单测注入假 reader 覆盖分支，
 // 无需往仓库提交二进制 fixture（真实文件路径走环境变量门控的集成测试）。
@@ -198,9 +200,9 @@ func (l *lazyDB) load(r *Resolver, name string) *dbHandle {
 			log.Warn("geoip: 未找到数据库文件，地理信息将留空",
 				"file", name,
 				"search_dirs", r.searchDirs(),
-				"hint", "下载 GeoLite2 库放入上述任一目录后重启生效；直链参考（P3TERX/GeoLite.mmdb）：",
-				"dl_city", "https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-City.mmdb",
-				"dl_country", "https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.07/GeoLite2-Country.mmdb")
+				"hint", "下载 GeoLite2 库放入上述任一目录后重启生效；直链参考（P3TERX/GeoLite.mmdb，latest 恒指现存最新版）：",
+				"dl_city", "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb",
+				"dl_country", "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb")
 			return
 		}
 		h, err := r.factory(path)

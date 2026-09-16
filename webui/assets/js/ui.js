@@ -205,7 +205,7 @@
         } catch (e) {
           if (e && e.status === 404) return; // 记录被淘汰或服务重启：静默终止
         }
-        await new Promise(function (r) { setTimeout(r, 1000); });
+        await new Promise(function (r) { setTimeout(r, 2000); });
       }
     })();
     return function () { stopped = true; };

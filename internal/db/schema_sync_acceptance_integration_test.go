@@ -254,8 +254,8 @@ func runAcceptanceCatalog(t *testing.T, driver, dsn string) {
 }
 
 func TestSchemaSyncAcceptancePostgres(t *testing.T) {
-	lockSharedDevDB(t) // 每个 Test 只加锁一次（锁到 Test 结束释放，Test 内多次加锁会同进程自阻塞）
-	dsn := pgDSN()
+	lockSharedDevDB(t)  // 每个 Test 只加锁一次（锁到 Test 结束释放，Test 内多次加锁会同进程自阻塞）
+	dsn := pgTestDSN(t) // schema 级隔离，理由同 TestSchemaSyncPostgres
 	if dsn == "" {
 		t.Skip("PG_TEST_DSN 未设置，跳过")
 	}

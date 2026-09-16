@@ -115,11 +115,11 @@ func TestDsnDuplicateGuards(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("非法驱动应 400, got %d", w.Code)
 	}
-	// MySQL 密码裸 @ 预检：驱动注册校验在前（测试二进制无 mysql 驱动 → 400），
-	// 底座拦截语义直接对 easydb/dsn 断言。
+	// MySQL 密码裸 @ 预检：无论驱动是否已注册（-tags integration 的测试二进制会注册
+	// mysql 驱动）都必须被拒——未注册 400；已注册则走底座 @ 密码拦截 409。
 	w = doJSON(s, http.MethodPost, PathDsn, `{"name":"n4","driver":"mysql","dsn":"root:pa@ss@tcp(127.0.0.1:3306)/db"}`)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("MySQL 驱动未注册应 400, got %d %s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadRequest && w.Code != http.StatusConflict {
+		t.Fatalf("MySQL 密码裸 @ 应被拦截（400/409）, got %d %s", w.Code, w.Body.String())
 	}
 	if err := dsn.CheckMySQLDSNPassword("root:pa@ss@tcp(127.0.0.1:3306)/db"); err == nil {
 		t.Fatal("MySQL 密码裸 @ 应被 dsn 底座拦截")
