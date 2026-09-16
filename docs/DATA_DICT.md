@@ -72,7 +72,7 @@
 | `method` | 请求方法 | 请求方法 | `GET`、`POST` | TEXT / TEXT / VARCHAR(16) | `''` |
 | `path` | 请求路径 | URL 路径 | `/login` | TEXT / TEXT / VARCHAR(2048) | `''` |
 | `raw_url` | 原始 URL | 含查询串的原始 URL（攻击特征常在此） | `/login?id=1' OR '1'='1` | TEXT / TEXT / VARCHAR(2048) | `''` |
-| `user_agent` | 客户端标识 | 客户端 User-Agent（爬虫识别依据） | `Mozilla/5.0 (compatible; Googlebot/2.1)` | TEXT / TEXT / VARCHAR(512) | `''` |
+| `user_agent` | 客户端标识 | 客户端 User-Agent（爬虫识别依据） | `Mozilla/5.0 (compatible; Googlebot/2.1)` | TEXT / TEXT / VARCHAR(640) | `''` |
 | `host` | 请求主机 | 请求 Host | `127.0.0.1:8080` | TEXT / TEXT / VARCHAR(255) | `''` |
 | `status_code` | 拦截响应码 | 拦截响应码（403/413/429，见 §3.2） | `403` | INTEGER / INT / INT | `0` |
 | `rule_hit` | 命中规则 | 命中的规则/特征名（见 §3.3） | `sql_pattern` | TEXT / TEXT / VARCHAR(255) | `''` |
@@ -107,7 +107,7 @@
 | `egress_ms` | 出网耗时 | 出网耗时（ms）＝响应写回客户端完成−转发完成；含客户端网络传输时间，慢客户端会撑大该值；历史行为 `0` | `2`、`15` | INTEGER / BIGINT / BIGINT | `0` |
 | `req_bytes` | 请求字节 | 请求体字节数 | `512` | INTEGER / BIGINT / BIGINT | `0` |
 | `resp_bytes` | 响应字节 | 响应体字节数 | `2048` | INTEGER / BIGINT / BIGINT | `0` |
-| `user_agent` | 客户端标识 | 客户端 User-Agent（UV 口径=IP+UA） | `Mozilla/5.0 ...` | TEXT / TEXT / VARCHAR(512) | `''` |
+| `user_agent` | 客户端标识 | 客户端 User-Agent（UV 口径=IP+UA） | `Mozilla/5.0 ...` | TEXT / TEXT / VARCHAR(640) | `''` |
 | `extra` | 扩展字段 | 扩展字段（JSON，向前兼容） | `{}` | TEXT / TEXT / TEXT | `'{}'` |
 
 ### 2.3 admin_users — 管理接口超级管理员表（5 列）
@@ -357,7 +357,7 @@
 
 ## 5. 表结构同步（服务 → 数据库 · 表结构页）
 
-存量库的列级演进无需手工 ALTER：管理控制台「服务 → 数据库 → 表结构」页对期望与实际结构做比对，差异按 A-F 分级，自动项（缺表/缺普通列/缺索引）生成同步 SQL 经 danger 强确认后逐条执行（端点契约见 `docs/webui-api.md` §3.19；实现 `internal/db/schema_parse.go` / `schema_catalog.go` / `schema_diff.go` + `internal/adminapi/dbschema.go`）。
+存量库的列级演进无需手工 ALTER：管理控制台「服务 → 数据库 → 表结构」页对期望与实际结构做比对，差异按 A-F 分级，自动项（缺表/缺普通列/缺索引）生成同步 SQL 经 danger 强确认后逐条执行（端点契约见 `docs/api/database.md`；实现 `internal/db/schema_parse.go` / `schema_catalog.go` / `schema_diff.go` + `internal/adminapi/dbschema.go`）。
 
 - **期望结构权威来源 = 运行期 SQLSource**：即本文档所述 `sql/<dbtype>/` 建表/建索引脚本（外挂 `HOT_SCRIPTS_DIR/sql/` 优先、编译期内嵌兜底），与各挂件实际建表同源；外挂覆写过 sql/ 的部署，检查口径自动跟随，不使用编译期内嵌目录直读。
 - **实际结构 = 当前数据连接 catalog**：查询语句为 `sql/<dbtype>/schema_query_{columns,indexes,tables}.sql`（三方言各三份，`{table}` 占位符，支持外挂覆写，与其他 SQL 脚本同生命周期）。
