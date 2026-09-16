@@ -753,14 +753,22 @@
         selected: a.code, disabled: !state.data.dsn.items.length, width: 'md' }) +
       '<button class="btn btn-sm btn-primary" data-act="db-align-check"' + (!a.code || a.checking ? ' disabled' : '') + '>' +
       (a.checking ? '检查中…' : '检查差异') + '</button>' +
-      (a.checked ? '<button class="btn btn-sm btn-danger" data-act="db-align-apply"' + (a.applying ? ' disabled' : '') + '>' +
+      // 仅存在可自动执行的 DDL 时才亮「执行对齐」；纯人工差异（E/F/C 级）无 SQL 可执行
+      (a.checked && a.sql ? '<button class="btn btn-sm btn-danger" data-act="db-align-apply"' + (a.applying ? ' disabled' : '') + '>' +
         (a.applying ? '对齐中…' : '执行对齐') + '</button>' : '')
     );
     if (a.checked) {
-      body += !a.items.length
-        ? '<div class="alert alert-info">目标库结构与期望一致，无需对齐。</div>'
-        : '<div class="form-hint">发现 ' + a.items.length + ' 处差异，将对目标库逐条执行以下 DDL（遇错即停；不写本机审计表）：</div>' +
-          '<pre class="mono code-block">' + esc(a.sql) + '</pre>';
+      if (!a.items.length) {
+        body += '<div class="alert alert-info">目标库结构与期望一致，无需对齐。</div>';
+      } else {
+        const autoCnt = a.items.filter(function (i) { return i.auto; }).length;
+        body += '<div class="form-hint">发现 ' + a.items.length + ' 处差异（自动 ' + autoCnt + ' / 需人工 ' + (a.items.length - autoCnt) + '）：</div>' +
+          diffTable.html(a.items) +
+          (a.sql
+            ? '<div class="form-hint" style="margin-top:8px">将对目标库逐条执行以下自动项 DDL（遇错即停；不写本机审计表）：</div>' +
+              '<pre class="mono code-block">' + esc(a.sql) + '</pre>'
+            : '<div class="alert alert-warning" style="margin-top:8px">无可自动执行的 DDL：差异均为需人工处理项（类型/约束不一致、多余对象等，见上表建议），请人工评估处理后再复查。</div>');
+      }
     }
     return '<div class="card"><div class="card-title">表结构对齐' +
       '<span class="tag tag-blue">迁移前置</span></div>' +
@@ -779,8 +787,9 @@
       a.items = Array.isArray(r.items) ? r.items : [];
       a.sql = String(r.sql || '');
       a.checked = true;
-      toast(a.items.length ? '差异检查完成：发现 ' + a.items.length + ' 处差异，请确认 DDL 后执行对齐'
-        : '差异检查完成：目标库结构与期望一致，无需对齐', 'info');
+      toast(!a.items.length ? '差异检查完成：目标库结构与期望一致，无需对齐'
+        : (a.sql ? '差异检查完成：发现 ' + a.items.length + ' 处差异，请确认 DDL 后执行对齐'
+                 : '差异检查完成：发现 ' + a.items.length + ' 处差异，均为需人工处理项，请查看差异明细'), 'info');
     } catch (e) {
       toast('差异检查失败：' + e.message + '。请确认目标库连接正常后重试', 'error');
     }
@@ -790,7 +799,7 @@
 
   async function alignApply() {
     const a = state.data.align;
-    if (!a.checked || a.applying) return;
+    if (!a.checked || !a.sql || a.applying) return; // 纯人工差异无 SQL 可执行
     const ok = await confirmDialog({
       title: '执行表结构对齐',
       message: '将对目标库逐条执行 <b>' + a.items.length + '</b> 处差异对应的 DDL，遇错即停；前序已执行的语句不可回滚。确定继续吗？',
