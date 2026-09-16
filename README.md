@@ -26,7 +26,7 @@
 
 ## 管理控制台（WebUI）
 
-> 纯静态单页，随二进制分发，无需单独安装。产品设计见 `docs/webui.md`，对接契约见 `docs/webui-api.md`。
+> 纯静态单页，随二进制分发，无需单独安装。产品设计见 `docs/webui/`，对接契约见 `docs/api/`。
 
 ![概览](img1.png)
 ![WAF](img2.png)
@@ -152,8 +152,8 @@ curl "http://127.0.0.1:19527/admin/logs?from=2026-08-04&to=2026-08-04"
 | [docs/HTTP_DATAFLOW.md](docs/HTTP_DATAFLOW.md) | 开发者/终端用户 | 网络数据流转过程解析 |
 | [docs/COMPONENTS.md](docs/COMPONENTS.md) | 开发者 | 各组件/子组件作用与使用方法、配置项详解 |
 | [docs/DATA_DICT.md](docs/DATA_DICT.md) | 开发者 | 数据字典：业务表字段/枚举定义（数据层唯一权威视图） |
-| [docs/webui.md](docs/webui.md) | 产品 | 管理控制台产品设计（页面/交互/视觉规范） |
-| [docs/webui-api.md](docs/webui-api.md) | 前端 | 管理接口契约（WebUI 对接唯一权威，无需读源码） |
+| [docs/webui/](docs/webui/README.md) | 产品 | 管理控制台产品设计（页面/交互/视觉规范，按页面设计/交互规范拆分） |
+| [docs/api/](docs/api/README.md) | 前端 | 管理接口契约（WebUI 对接唯一权威，无需读源码，按端点域拆分） |
 | [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) | 开发者 | 目录结构、模块关系、热运维引擎 |
 
 ---

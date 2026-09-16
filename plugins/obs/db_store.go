@@ -139,7 +139,7 @@ func (s *DBStore) Write(batch []*AccessRecord) error {
 
 // statusBounds 将状态过滤合成闭区间 [lo, hi]（SQL 侧 status_code BETWEEN，可走状态索引）：
 // 不过滤 → 0..999999；status_group '2'-'5' → 200..299 等；仅异常 → lo 提到 400。
-// 契约仅支持 '2'-'5'（webui-api §3.20），其余取值（含 '1'/'9'/非法串）一律视为不过滤（全量区间）。
+// 契约仅支持 '2'-'5'（docs/api/obs.md §3.20），其余取值（含 '1'/'9'/非法串）一律视为不过滤（全量区间）。
 // 两者同时生效取交集（下界取更严者、上界保持分组界，可能为空集，与旧 AND 语义一致）。
 func statusBounds(q Query) (lo, hi int) {
 	lo, hi = 0, 999999

@@ -755,7 +755,7 @@ func writeListErr(w http.ResponseWriter, isBlack bool, op string, err error) {
 		http.Error(w, "IP 黑白名单未启用（DB 未配置）", http.StatusServiceUnavailable)
 	case errors.Is(err, ErrIPExists):
 		// 唯一约束覆盖软删/过期条目：记录在表里但不在生效快照中，用户会看到"不在黑名单却加不进去"，
-		// 文案必须点破原因并给出出路（恢复 / 改过期时间 / 删除后重录），见 docs/webui.md 提示文案原则。
+		// 文案必须点破原因并给出出路（恢复 / 改过期时间 / 删除后重录），见 docs/webui/pages.md §4.10 提示文案原则。
 		http.Error(w, "该 IP 已有黑名单记录，但当前未生效（记录可能已被删除或已过期）。请到「WAF安全防护 → IP 黑名单」列表中恢复该记录、修改过期时间，或删除后重新添加", http.StatusBadRequest)
 	case errors.Is(err, ErrInvalidIP):
 		http.Error(w, "ip 应为精确 IP 或 CIDR", http.StatusBadRequest)

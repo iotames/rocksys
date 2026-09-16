@@ -106,7 +106,7 @@ xxx/
   `/admin/tasks/{id}/cancel` 见 `internal/adminapi/tasks.go`；前端共用「提交→轮询→进度」交互见
   `webui/assets/js/views/database.js`。
 - 底座（反向代理转发引擎）**不直连业务数据库**（架构红线），本层仅服务可插拔组件（mq 等）。
-- **GeoIP 与流量统计链路**：`internal/geoip`（查找链 `GEOIP_MMDB_DIR` → 工作目录 → `~/geoip`，逐文件独立，惰性加载、缺失降级告警、重启生效）在 `cmd/rocksys/main.go` 构造后注入两处——geo 不再写时落列，由 `cmd/rocksys/geoip_sync.go` 增量构建 `geoip_list` 关联表（手动端点 + `GEOIP_SYNC_INTERVAL` 定时器收敛 `geoSyncAll` 单入口），读侧明细/聚合 JOIN + 未命中回退解析；`cmd/rocksys/schedule.go` 登记 `schedule_list` 定时任务只读清单（`GET /admin/schedule/list`）；读侧报表归 obs 插件：`plugins/obs/traffic.go`（`GET /admin/obs/traffic/summary|series|geo`，两表 SQL 聚合，`traffic_cache.go` singleflight+TTL 缓存）+ shield 读侧 `plugins/shield/admin.go`（`metrics?window=` / `total` / stats Top IP geo 逐行解析）。契约见 `docs/webui-api.md` §3.18/§3.20。
+- **GeoIP 与流量统计链路**：`internal/geoip`（查找链 `GEOIP_MMDB_DIR` → 工作目录 → `~/geoip`，逐文件独立，惰性加载、缺失降级告警、重启生效）在 `cmd/rocksys/main.go` 构造后注入两处——geo 不再写时落列，由 `cmd/rocksys/geoip_sync.go` 增量构建 `geoip_list` 关联表（手动端点 + `GEOIP_SYNC_INTERVAL` 定时器收敛 `geoSyncAll` 单入口），读侧明细/聚合 JOIN + 未命中回退解析；`cmd/rocksys/schedule.go` 登记 `schedule_list` 定时任务只读清单（`GET /admin/schedule/list`）；读侧报表归 obs 插件：`plugins/obs/traffic.go`（`GET /admin/obs/traffic/summary|series|geo`，两表 SQL 聚合，`traffic_cache.go` singleflight+TTL 缓存）+ shield 读侧 `plugins/shield/admin.go`（`metrics?window=` / `total` / stats Top IP geo 逐行解析）。契约见 `docs/api/shield.md` 与 `docs/api/obs.md`。
 
 ## 4. ★ 生产热运维引擎（hotswap）
 

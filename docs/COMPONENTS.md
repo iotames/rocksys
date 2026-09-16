@@ -126,7 +126,7 @@ SHIELD_RATE_LIMIT_RPS=100 \
 SHIELD_WAF_SQL_INJECTION=true SHIELD_WAF_XSS=true rocksys --upstream http://127.0.0.1:9000
 ```
 
-**拦截事件与 GeoIP / 实时窗口**：拦截事件落 `shield_event` 表（装配注入共享 `internal/geoip` 解析器，见 §2.7；geo 经 `geoip_list` 关联 + 未命中回退解析（GEOIP_LIST 方案）；Top IP 统计行为查询时逐行解析）。实时计数内存窗口固定 **1 小时 = 60×1 分钟桶**，`GET /admin/shield/metrics?window=1m|5m|15m|1h` 按所选窗口整桶聚合（缺省 1m）；`GET /admin/shield/total` 返回落库总数（查库口径，受保留期影响）。契约见 `docs/webui-api.md` §3.18。
+**拦截事件与 GeoIP / 实时窗口**：拦截事件落 `shield_event` 表（装配注入共享 `internal/geoip` 解析器，见 §2.7；geo 经 `geoip_list` 关联 + 未命中回退解析（GEOIP_LIST 方案）；Top IP 统计行为查询时逐行解析）。实时计数内存窗口固定 **1 小时 = 60×1 分钟桶**，`GET /admin/shield/metrics?window=1m|5m|15m|1h` 按所选窗口整桶聚合（缺省 1m）；`GET /admin/shield/total` 返回落库总数（查库口径，受保留期影响）。契约见 `docs/api/shield.md`。
 
 ### 3.2 dispatch — L2 路由分发（转发链中间件，Middle）
 
@@ -223,9 +223,9 @@ rockctl script rollback             # 回滚上一版本
 
 **异步落盘**：日志写入有界队列（4096 条，满则丢弃告警），后台 goroutine 批量写入当前后端；`Flush` 保证停机前全部落盘。
 
-**查询**：`GET /admin/metrics` 返回 QPS / P50 / P95 / P99 / 错误率；`GET /admin/logs` 按时间范围（精确到分）+ path 精确/模糊过滤返回 JSONL（详见 webui-api.md §3.11）；`GET /admin/logs/storage` 返回日志库占用（access_log 表 + 索引，WebUI 日志页顶部展示）。
+**查询**：`GET /admin/metrics` 返回 QPS / P50 / P95 / P99 / 错误率；`GET /admin/logs` 按时间范围（精确到分）+ path 精确/模糊过滤返回 JSONL（详见 docs/api/observability.md §3.11）；`GET /admin/logs/storage` 返回日志库占用（access_log 表 + 索引，WebUI 日志页顶部展示）。
 
-**流量统计报表**（读侧聚合端点，实现 `plugins/obs/traffic.go` + `traffic_cache.go`）：`GET /admin/obs/traffic/summary`（指标标量+率）、`GET /admin/obs/traffic/series`（访问/拦截时间桶趋势，hour/day 缺省自适应）、`GET /admin/obs/traffic/geo`（地区分布，source=access/blocked × level=country/province 双维切换，含 `geo_ready` 就绪信号）——数据为 `access_log` ∪ `shield_event` 两表 SQL 聚合（geo 经 `geoip_list` 关联聚合，GEOIP_LIST 方案；geo 同步成功自动清本缓存），服务端 singleflight+TTL 缓存（`OBS_TRAFFIC_CACHE_TTL`）；obs 未启用 503 引导降级、拦截事件记录关闭时拦截侧字段 null。指标闭合口径与响应契约见 `docs/webui-api.md` §3.20。
+**流量统计报表**（读侧聚合端点，实现 `plugins/obs/traffic.go` + `traffic_cache.go`）：`GET /admin/obs/traffic/summary`（指标标量+率）、`GET /admin/obs/traffic/series`（访问/拦截时间桶趋势，hour/day 缺省自适应）、`GET /admin/obs/traffic/geo`（地区分布，source=access/blocked × level=country/province 双维切换，含 `geo_ready` 就绪信号）——数据为 `access_log` ∪ `shield_event` 两表 SQL 聚合（geo 经 `geoip_list` 关联聚合，GEOIP_LIST 方案；geo 同步成功自动清本缓存），服务端 singleflight+TTL 缓存（`OBS_TRAFFIC_CACHE_TTL`）；obs 未启用 503 引导降级、拦截事件记录关闭时拦截侧字段 null。指标闭合口径与响应契约见 `docs/api/obs.md`。
 
 **GeoIP 关联表（GEOIP_LIST 方案）**：日志表只写 `client_ip` 事实，地理信息由 `geoip_list`（一 IP 一行）承载；同步器增量构建（扫两表 `client_ip` 求差 → 逐 IP `Lookup` → upsert），手动 `POST /admin/db/geoip_sync`、WebUI 概览「立即同步」与定时 `GEOIP_SYNC_INTERVAL`（int 分钟，0=关闭、最小 10、默认 60；mmdb 未加载不启动）收敛 `geoSyncAll` 唯一入口，结束回写 `schedule_list` 状态（success=完成或单趟到点收工 / cancelled=人工经任务取消端点终止 / failed=真错误；取值定义见 `docs/DATA_DICT.md` §3.5）。手动同步为**后台任务模式**：端点提交任务执行中心后立即返回任务 ID，进度与报告经 `GET /admin/tasks/{id}` 查询，摆脱 HTTP 15 秒超时压制（详见「服务 → 数据库 → 表数据」页签）。读侧明细 `LEFT JOIN geoip_list` 未命中回退实时解析；「市→省→国名→未知」兜底只在读侧显示。同步成功清 traffic 缓存；同步间隔内新 IP 在聚合视图暂缺（概览卡已注记）。名称解析取值优先 zh-CN、缺失回落 en；省份值以 mmdb 实际返回为准（多为短名）。已入表 IP 不随 mmdb 更换自动重解析，需要时删 `geoip_list` 全量重建。
 
