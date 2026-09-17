@@ -65,6 +65,7 @@
     ns: 'logs',
     columns: [
       { key: 'time', label: '时间', cls: 'mono', render: r => esc(fmtDateTime(r.time)) },
+      { key: 'client_ip', label: '来源 IP', cls: 'mono' },
       { key: 'method', label: '方法', render: r => '<span class="method method-' + esc((r.method || '').toLowerCase()) + '">' + esc(r.method) + '</span>' },
       { key: 'path', label: '路径', render: r => '<span class="log-path" title="' + esc(r.path) + '">' + esc(truncate(r.path, 60)) + '</span>' },
       { key: 'status_code', label: '状态', render: r => { const st = r.status_code; const cls = st >= 500 ? 'status-red' : (st >= 400 ? 'status-warn' : (st >= 300 ? 'status-info' : (st >= 200 ? 'status-ok' : ''))); return '<span class="status ' + cls + '">' + (st || '-') + '</span>'; } },
@@ -317,6 +318,7 @@
   let logsTableBound = false;
 
   // 按时间范围 + path + 状态分组/排序条件查询（条件已在筛选栏状态内，时间非法直接提示）
+  // filterBar.state() 已保证返回前从 DOM 同步（组件级契约），此处直接取值不会拿到旧条件
   async function query() {
     const q = queryBar.state();
     if (dateRange.from(q) > dateRange.to(q)) {

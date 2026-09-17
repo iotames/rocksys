@@ -12,6 +12,9 @@
  *         { type: 'text', key, placeholder?, width? }
  *         { type: 'check', key, label }
  * 实例接口：html() / bind(host) / collect() / state() / reset()。
+ * state() 返回前自动把 DOM 输入同步进内部状态（等价 collect()），视图任何时刻取值
+ * 都不会拿到与 DOM 脱节的旧值——整页重渲染（loadPage 末尾 render）也不会冲掉用户输入。
+ * 个性化尺寸：字段可带 width（如 '160px'）内联覆盖默认宽度（text/select/date/time 通用）。
  * 挂载到全局命名空间 window.Rock.comp.filterBar。
  * ========================================================================== */
 (function () {
@@ -43,20 +46,22 @@
     });
 
     // ── HTML ──────────────────────────────────────────────────────────
+    // width(f)：字段级内联宽度（个性化覆盖默认值，未传为空串）
+    function widthStyle(f) { return f && f.width ? ' style="width:' + esc(f.width) + '"' : ''; }
+
     function fieldHTML(f) {
       if (f.type === 'dateRange') {
         const v = function (k) { return esc(state[f.key + k] || ''); };
+        const w = f.width || '';
         return '<div class="tool-group"><span class="muted">开始</span>' +
-          '<input type="date" class="input input-sm" data-fb="' + f.key + 'fromDate" value="' + v('fromDate') + '">' +
-          '<input type="time" class="input input-sm" data-fb="' + f.key + 'fromTime" value="' + v('fromTime') + '">' +
-          '</div>' +
+          '<input type="date" class="input input-sm" data-fb="' + f.key + 'fromDate" value="' + v('fromDate') + '"' + widthStyle({ width: w }) + '>' +
+          '<input type="time" class="input input-sm" data-fb="' + f.key + 'fromTime" value="' + v('fromTime') + '"></div>' +
           '<div class="tool-group"><span class="muted">结束</span>' +
-          '<input type="date" class="input input-sm" data-fb="' + f.key + 'toDate" value="' + v('toDate') + '">' +
-          '<input type="time" class="input input-sm" data-fb="' + f.key + 'toTime" value="' + v('toTime') + '">' +
-          '</div>';
+          '<input type="date" class="input input-sm" data-fb="' + f.key + 'toDate" value="' + v('toDate') + '"' + widthStyle({ width: w }) + '>' +
+          '<input type="time" class="input input-sm" data-fb="' + f.key + 'toTime" value="' + v('toTime') + '"></div>';
       }
       if (f.type === 'select') {
-        return '<select class="select select-sm" data-fb="' + f.key + '">' +
+        return '<select class="select select-sm" data-fb="' + f.key + '"' + widthStyle(f) + '>' +
           Rock.comp.select.options(f.options, state[f.key]) + '</select>';
       }
       if (f.type === 'check') {
@@ -86,7 +91,12 @@
       return state;
     }
 
-    function stateObj() { return state; }
+    function stateObj() {
+      // 先从 DOM 同步再返回：视图整页重渲染/取参前不会拿到脱节旧值（组件级契约，
+      // 视图无须也禁止自行记忆"先 collect 再 state"）
+      collect();
+      return state;
+    }
 
     // 重置回字段默认值，同步 DOM，并触发查询
     function reset() {
