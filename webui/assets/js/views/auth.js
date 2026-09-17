@@ -16,7 +16,7 @@
 
   // 切换显示指定认证面板
   function showPanel(name) {
-    ['login', 'register', 'reset'].forEach(function (p) {
+    ['login', 'register', 'reset', 'degraded'].forEach(function (p) {
       const el = $('#auth-panel-' + p);
       if (el) el.classList.toggle('hidden', p !== name);
     });
@@ -38,13 +38,12 @@
   }
 
   // 进入控制台（隐藏认证视图）
+  // 数据加载经 Rock.main.bootConsole 门控触发：首启时统一拉取全局基础数据并渲染当前页，
+  // 保证登录前零业务请求（未登录/未初始化/数据层降级时不发任何 API）。
   function enterConsole() {
     $('#auth-view').classList.add('hidden');
     document.body.classList.remove('auth-mode');
-    // 顶栏管理地址由全局模块供数（解耦红线）：鉴权部署下启动时 /admin/config 必 401，
-    // 登录成功（已获得 token）后需补拉一次，否则重试窗口过后顶栏会一直显示「—」。
-    if (Rock.main && Rock.main.fetchBaseInfo) Rock.main.fetchBaseInfo();
-    Rock.main.renderPage(Rock.main.currentRoute());
+    if (Rock.main && Rock.main.bootConsole) Rock.main.bootConsole();
   }
 
   // 启动引导：检测认证状态，决定显示注册/重置/登录面板或直接进入控制台
@@ -63,6 +62,14 @@
       if (!s) { showAuth(); showPanel('login'); return; }
       // 回环免登录（127.0.0.1 且无静态 token）→ 直接进入控制台
       if (!s.auth_required) { enterConsole(); return; }
+      // 数据层降级（数据库不可用）→ 降级引导页，杜绝误导性注册面板（账号操作后端也已 503 拦截）
+      if (!s.has_user && s.store_ready === false) {
+        showAuth();
+        showPanel('degraded');
+        const reason = $('#auth-degraded-reason');
+        if (reason) reason.textContent = s.store_error || '数据库未配置或初始化失败';
+        return;
+      }
       // 全新系统 → 注册引导页
       if (!s.has_user) { showAuth(); showPanel('register'); return; }
       // 重置模式（运维已改 ADMIN_INITIALIZED=false）→ 重置页

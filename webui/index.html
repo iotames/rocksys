@@ -62,6 +62,21 @@
         <button class="btn btn-primary btn-block" id="auth-reg-btn">注册并进入</button>
       </div>
 
+      <!-- 数据层降级面板（数据库不可用，禁止注册引导） -->
+      <div class="auth-panel hidden" id="auth-panel-degraded">
+        <h2 class="auth-title">数据层不可用</h2>
+        <p class="auth-hint">无法连接业务数据库，账号注册/登录暂不可用（代理转发不受影响）。</p>
+        <div class="auth-error" id="auth-degraded-reason" style="display:block"></div>
+        <div class="form-row">
+          <p class="auth-hint" style="text-align:left">
+            排查步骤：<br>
+            1. 请检查数据库配置（注意密码与网络可达性）；<br>
+            2. 修正后重启服务；<br>
+            3. 启动日志出现「db: 数据访问层已就绪」后刷新本页即可注册/登录。
+          </p>
+        </div>
+      </div>
+
       <!-- 重置面板（忘记密码，运维已改 ADMIN_INITIALIZED=false） -->
       <div class="auth-panel hidden" id="auth-panel-reset">
         <h2 class="auth-title">重置管理员凭证</h2>

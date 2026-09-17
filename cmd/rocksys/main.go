@@ -310,7 +310,9 @@ func buildServer(args []string) (*Server, error) {
 	); err != nil {
 		return nil, fmt.Errorf("register DB_DSN: %w", err)
 	}
+	var dbOpenErr error
 	if d, err := db.Open(dbDriver, dbDSN, scriptHub); err != nil {
+		dbOpenErr = err
 		log.Warn("db: 数据访问层初始化失败（不阻断底座）", "driver", dbDriver, "err", err.Error())
 	} else {
 		dataDB = d
@@ -458,6 +460,10 @@ func buildServer(args []string) (*Server, error) {
 	// adminapi 创建时注册；只有注册过的来源可提交任务（防未注册调用方混入）。
 	// 名单经 GET /admin/tasks 透出，WebUI「后台任务」页以下拉框呈现。
 	adminSrv.TaskCenter().RegisterCreators("geoip_sync")
+	if dataDB == nil && dbOpenErr != nil {
+		// 数据层不可用原因透传管理接口：WebUI 登录页据此展示降级引导（而非误导性注册面板）。
+		adminSrv.SetStoreDegraded(fmt.Sprintf("数据库初始化失败（driver=%s）：%s", dbDriver, dbOpenErr.Error()))
+	}
 	if dataDB != nil {
 		adminSrv.SetSQLSource(dataDB) // 用户存储 SQL 脚本源（sql/<dbtype>/admin_users_*.sql）
 		// 表结构同步：表清单在装配处注册（表名在这里已知，无法从脚本文件名推断），

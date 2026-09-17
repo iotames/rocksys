@@ -132,7 +132,12 @@
   // 顶栏只保留全局常驻项（品牌/在线状态/管理地址/主题）；
   // 刷新与自动刷新是页面局部能力，由各页面自带的页内按钮承载，不在顶栏放全局刷新控件。
 
+  // 鉴权门控：认证视图放行（登录成功/注册成功/回环免登录）前，禁止一切业务请求。
+  // 页面加载器、meta/version/config/warnings 全部推迟到 bootConsole 首次执行。
+  let consoleBooted = false;
+
   function refreshPage(route, opts) {
+    if (!consoleBooted) return Promise.resolve(); // 登录前旁路触发（hashchange 等）不发请求
     const p = pageLoaders[route.base];
     if (!p) return Promise.resolve();
     return Promise.resolve(p.fetch(opts || {}));
@@ -141,6 +146,7 @@
   // 路由切换前的清理钩子：系统日志页离开时关闭 SSE 实时流，后台任务页离开时停列表轮询定时器，避免后台连接/定时器泄漏
   let prevRoute = '';
   function renderPage(route) {
+    if (!consoleBooted) return; // 鉴权门控：登录前仅渲染认证视图，不加载任何页面数据
     if (prevRoute.base === 'syslogs' && route.base !== 'syslogs' && views.syslogs) {
       views.syslogs.leave();
     }
@@ -186,19 +192,28 @@
   // 顶栏管理地址是否已取到：全局基础信息成功一次即可，避免启动重试与登录后补拉重复请求。
   let baseInfoLoaded = false;
 
-  // 顶栏管理地址：由全局模块自行获取（GET /admin/config 的 admin 字段），不依赖任何业务页面供数
-  // ——直接进入/刷新非概览页（如 #/database）时顶栏同样有值。服务未就绪时有限次重试，
-  // 成功后停止；页面视图不得代替全局模块承担该数据的获取（全局/局部解耦红线）。
-  //
-  // 鉴权部署下启动时该接口必然 401（仅 /admin/auth/* 免鉴权），故登录成功后由 auth.js 经
-  // Rock.main.fetchBaseInfo 再触发一次；否则登录耗时超过重试窗口时顶栏会一直空着。
-  function fetchGlobalBaseInfo(retry) {
-    if (baseInfoLoaded) return;
-    Rock.api.get('/admin/config').then(function (base) {
+  // GET /admin/config 单飞（single-flight）：并发调用共享同一 in-flight 请求，完成后清空
+  // （不缓存结果，避免概览页刷新拿到过期底座信息）。顶栏与概览页启动期并发时只发一次。
+  let baseInfoInflight = null;
+  function getBaseInfo() {
+    if (baseInfoInflight) return baseInfoInflight;
+    baseInfoInflight = Rock.api.get('/admin/config').then(function (base) {
       baseInfoLoaded = true;
       if (base && base.admin) Rock.ui.setAdminAddr(base.admin);
-    }).catch(function () {
-      if ((retry || 0) >= 10) return; // 约 50 秒内每 5 秒重试一次，仍失败则等登录后补拉/下次页面加载
+      return base;
+    }).finally(function () { baseInfoInflight = null; });
+    return baseInfoInflight;
+  }
+
+  // 顶栏管理地址：经 getBaseInfo 单飞获取（全局模块自取，与当前所在页面无关）——直接进入/
+  // 刷新非概览页（如 #/database）时顶栏同样有值。重试语义：仅网络错误/服务端异常时有限重试
+  //（约 50 秒内每 5 秒一次）；401（未登录，注定失败）立即放弃——登录成功后由 auth.js 经
+  // Rock.main.fetchBaseInfo 再触发一次，避免未登录期无意义轮询。
+  function fetchGlobalBaseInfo(retry) {
+    if (baseInfoLoaded) return;
+    getBaseInfo().catch(function (e) {
+      if (e && e.status === 401) return;
+      if ((retry || 0) >= 10) return;
       setTimeout(function () { fetchGlobalBaseInfo((retry || 0) + 1); }, 5000);
     });
   }
@@ -246,6 +261,7 @@
     });
   }
 
+  // 路由与交互事件绑定（纯绑定，无网络请求；首次数据加载在 bootConsole 鉴权放行后进行）
   function initRoute() {
     window.addEventListener('hashchange', function () {
       renderPage(currentRoute());
@@ -257,15 +273,29 @@
         if (grp) grp.classList.toggle('open');
       });
     });
-    // 首次渲染
+  }
+
+  // 控制台首启（鉴权放行后由 auth 视图 enterConsole 触发，仅一次）：
+  // 拉取全局基础数据（meta/version/config/warnings）并渲染当前页。
+  // 已启动过时仅重渲染当前页（登录后补进控制台等场景）。
+  function bootConsole() {
+    const first = !consoleBooted;
+    consoleBooted = true;
+    if (first) {
+      Rock.state.ensureMeta(); // 全局获取组件/服务元数据（无缓存机制，页面会话内持有）
+      fetchVersion();
+      fetchGlobalBaseInfo();   // 顶栏管理地址（全局模块自取，与当前所在页面无关）
+      loadPruneWarnings();
+    }
     renderPage(currentRoute());
   }
 
-  // 应用启动
+  // 应用启动：只做本地装配与认证引导，不发任何业务请求。
+  // 认证判定（auth/status）通过后由 auth 视图经 bootConsole() 放行控制台数据加载——
+  // 未登录/未初始化/数据层降级时只渲染认证视图，避免业务请求集体 401（防 toast 刷屏与无效轮询）。
   function boot() {
     assertDeps();            // 模块依赖完整性校验（缺失时明确报错）
     registerViewActions();   // 注册各视图/组件的 action 处理
-    Rock.state.ensureMeta(); // 全局获取组件/服务元数据（无缓存机制，页面会话内持有）
     // 桥接：API 客户端与 401 处理的反向依赖由入口统一注入，基础层保持纯净
     Rock.api.setUiBridge({
       markUnreachable: function (v) { Rock.ui.markUnreachable(v); },
@@ -278,12 +308,9 @@
     });
     bindSidebarToggle();
     initRoute();
-    fetchVersion();
-    fetchGlobalBaseInfo(); // 顶栏管理地址（全局模块自取，与当前所在页面无关）
-    loadPruneWarnings();
     // 主题切换：同步下拉框并绑定切换事件
     if (Rock.theme) Rock.theme.bind();
-    // 认证引导：检测管理接口状态，未登录/未初始化时显示认证视图
+    // 认证引导：检测管理接口状态，决定显示注册/降级/登录面板或进入控制台（bootConsole）
     if (Rock.auth) {
       Rock.auth.bind();
       Rock.auth.init();
@@ -388,11 +415,13 @@
 
   window.Rock.main = {
     boot,
+    bootConsole,
     navigate,
     currentRoute,
     parseHash,
     renderPage,
     refreshPage,
+    getBaseInfo,                       // GET /admin/config 单飞：顶栏与概览页共享
     fetchBaseInfo: fetchGlobalBaseInfo, // 顶栏管理地址：登录成功后由 auth 视图补拉（全局模块单一供数入口）
     loadPruneWarnings,
     renderPruneBanner,

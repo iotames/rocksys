@@ -92,6 +92,8 @@ func (s *AdminServer) handleAuthStatus(ctx httpsvr.Context) {
 		"has_user":      s.auth.hasUser(),
 		"username":      username,
 		"setup_mode":    s.auth.setupMode(),
+		"store_ready":   s.storeReady(),
+		"store_error":   s.storeErr,
 	}, http.StatusOK)
 }
 
@@ -99,6 +101,10 @@ func (s *AdminServer) handleAuthStatus(ctx httpsvr.Context) {
 func (s *AdminServer) handleRegister(ctx httpsvr.Context) {
 	if s.auth.hasUser() {
 		_ = ctx.Json(map[string]any{"ok": false, "error": "系统已初始化，禁止重复注册"}, http.StatusForbidden)
+		return
+	}
+	if !s.storeReady() {
+		_ = ctx.Json(map[string]any{"ok": false, "error": registerStoreUnavailableMsg(s.storeErr)}, http.StatusServiceUnavailable)
 		return
 	}
 	var body struct {
@@ -120,7 +126,7 @@ func (s *AdminServer) handleRegister(ctx httpsvr.Context) {
 		return
 	}
 	if err := s.users.save(username, hash); err != nil {
-		_ = ctx.Json(map[string]any{"ok": false, "error": "保存用户失败: " + err.Error()}, http.StatusInternalServerError)
+		_ = ctx.Json(map[string]any{"ok": false, "error": "保存用户失败：数据库写入异常（请检查数据库连接与配置，修复后重试）: " + err.Error()}, http.StatusInternalServerError)
 		return
 	}
 	s.markInitialized(true)
@@ -130,6 +136,10 @@ func (s *AdminServer) handleRegister(ctx httpsvr.Context) {
 // handleLogin 登录：校验用户名+密码，成功签发登录 JWT。
 func (s *AdminServer) handleLogin(ctx httpsvr.Context) {
 	if !s.auth.hasUser() {
+		if !s.storeReady() {
+			_ = ctx.Json(map[string]any{"ok": false, "error": registerStoreUnavailableMsg(s.storeErr)}, http.StatusServiceUnavailable)
+			return
+		}
 		_ = ctx.Json(map[string]any{"ok": false, "error": "系统尚未初始化，请先完成注册"}, http.StatusBadRequest)
 		return
 	}
@@ -224,7 +234,7 @@ func (s *AdminServer) handleReset(ctx httpsvr.Context) {
 		return
 	}
 	if err := s.users.save(username, hash); err != nil {
-		_ = ctx.Json(map[string]any{"ok": false, "error": "保存用户失败: " + err.Error()}, http.StatusInternalServerError)
+		_ = ctx.Json(map[string]any{"ok": false, "error": "保存用户失败：数据库写入异常（请检查数据库连接与配置，修复后重试）: " + err.Error()}, http.StatusInternalServerError)
 		return
 	}
 	s.markInitialized(true)
@@ -242,4 +252,14 @@ func (s *AdminServer) markInitialized(v bool) {
 		val = "true"
 	}
 	_ = s.confMgr.Set("ADMIN_INITIALIZED", val)
+}
+
+// registerStoreUnavailableMsg 用户存储不可用时的统一引导文案（三要素：发生了什么 +
+// 为什么 + 下一步）。reason 为装配层注入的降级原因（DB 连接失败/建表失败等）。
+func registerStoreUnavailableMsg(reason string) string {
+	if reason == "" {
+		reason = "用户存储未就绪（数据库未配置或初始化失败）"
+	}
+	return "数据层不可用，无法处理账号操作。原因：" + reason +
+		"。下一步：请检查数据库配置（注意密码与网络可达性），修正并重启服务，启动日志出现「db: 数据访问层已就绪」后即可注册/登录。"
 }

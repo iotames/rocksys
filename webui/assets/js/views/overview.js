@@ -76,7 +76,8 @@
     let baseOk = false;
     try {
       const [base, switches] = await Promise.all([
-        api.get('/admin/config'),
+        // 顶栏同源单飞：与 main.js fetchGlobalBaseInfo 并发时共享同一请求，启动期只发一次
+        Rock.main.getBaseInfo(),
         api.get('/admin/switch/list'),
       ]);
       store.base = base || store.base || {};

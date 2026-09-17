@@ -80,6 +80,7 @@ type AdminServer struct {
 	execLog      *execLogStore       // SQL 执行审计存储（可 nil = 审计不可用）
 	execMu       sync.Mutex          // /admin/db/exec 执行互斥：防并发 DDL 交叉执行产生不可预期状态
 	users        *userStore          // 超级管理员用户存储（edb 与 sqls 均就绪时可用）
+	storeErr     string              // 用户存储不可用原因（DB 打开失败/建表失败；为空 = 存储就绪）
 	auth         *adminAuth          // 管理接口鉴权器
 	loginLimiter *loginLimiter       // 登录失败限流器（按 IP）
 	autoMap      map[string]string   // 挂件自动开关映射：中间件名 → XXX_ENABLED 配置键（switch on/off 时持久化）
@@ -181,8 +182,21 @@ func (s *AdminServer) initUsers() {
 		} else {
 			// 建表/读脚本失败：认证降级为静态 token / 回环信任，但需留痕便于运维排查。
 			log.Warn("adminapi: 用户存储初始化失败，认证降级为静态 token / 回环信任", "err", err.Error())
+			s.storeErr = "用户存储初始化失败：" + err.Error()
 		}
 	}
+}
+
+// SetStoreDegraded 装配层注入用户存储降级原因（DB 打开失败时由 main.go 调用；
+// 须在 SetSQLSource 之后调用，晚到的初始化成功会覆盖为空）。为空表示存储就绪。
+func (s *AdminServer) SetStoreDegraded(reason string) {
+	s.storeErr = reason
+}
+
+// storeReady 返回用户存储是否就绪（就绪才可注册管理员）。
+// storeErr 仅作信息性展示：initUsers 成功后 users 非 nil 即视为就绪（迟到初始化自然覆盖降级标记）。
+func (s *AdminServer) storeReady() bool {
+	return s.users != nil
 }
 
 // ListenAndServe 启动监听（委托内部 *easyserver.Server）。
