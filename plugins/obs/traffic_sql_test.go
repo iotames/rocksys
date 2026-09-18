@@ -182,6 +182,73 @@ func trafficQuery(t *testing.T, d *db.DB, script string, args ...any) []map[stri
 	return rows
 }
 
+// TestTrafficRateDenominator 锁定错误率/拦截率分母口径（回归防护）：
+// 错误率分母必须是 req_ok（仅入网数据），拦截率分母必须是请求次数（req_ok+block_total）。
+// 历史缺陷：错误率分母曾误用请求次数，把拦截数算进分母而分子只数放行侧，
+// 导致拦截越多错误率越低的相反方向；block4xx_rate 又因分子分母同源（拦截码全是 4xx）恒为 1，
+// 被当成「拦截率」展示（当前系统显示 100% 即此）。
+func TestTrafficRateDenominator(t *testing.T) {
+	reqOK, blockTotal, err4xx, err5xx, block4xx := 1000.0, 30.0, 20.0, 2.0, 30.0
+	total := reqOK + blockTotal
+
+	// 错误率：分母仅入网侧 req_ok，不含拦截。
+	if got, want := safeRate(err4xx, reqOK), 0.02; got != want {
+		t.Errorf("err4xx_rate = %v, want %v（分母必须是 req_ok=%v，非请求次数 %v）", got, want, reqOK, total)
+	}
+	if got, want := safeRate(err5xx, reqOK), 0.002; got != want {
+		t.Errorf("err5xx_rate = %v, want %v", got, want)
+	}
+	// 拦截混入分母会稀释错误率（正是历史缺陷的表现），断言二者不相等以固化口径。
+	if safeRate(err4xx, reqOK) == safeRate(err4xx, total) {
+		t.Error("错误率分母疑似仍含拦截：req_ok 与请求次数两种分母结果相同，无法区分口径")
+	}
+
+	// 拦截率：分母为请求次数，取值应显著低于 1（拦截占比），不再恒为 100%。
+	got := safeRate(blockTotal, total)
+	if want := 30.0 / 1030.0; got != want {
+		t.Errorf("block_rate = %v, want %v", got, want)
+	}
+	if got >= 1 {
+		t.Errorf("block_rate = %v，拦截率不应恒为 100%%（那是 block4xx_rate 的分子分母同源缺陷）", got)
+	}
+
+	// 拦截内部构成率：分子分母同源故恒为 1，保留作趋势位但不得当作拦截率展示。
+	if got := safeRate(block4xx, blockTotal); got != 1 {
+		t.Errorf("block4xx_rate = %v, want 1（拦截码恒为 403/413/429）", got)
+	}
+
+	// 分母 0 防护。
+	if got := safeRate(5, 0); got != 0 {
+		t.Errorf("分母 0 应输出 0，实际 %v", got)
+	}
+}
+
+// TestTrafficBlockRateUnavailable 锁定拦截侧率的降级口径：SHIELD_EVENT_LOG_ENABLED=false 时
+// 拦截事件未落库，计数与率一律输出 null（前端显示「—」），不得输出 0——
+// 0 会把「无拦截数据」误报成「零拦截」，与 block_total 等计数字段的 null 口径相左。
+func TestTrafficBlockRateUnavailable(t *testing.T) {
+	defer SetBlockAvailable(true)
+
+	SetBlockAvailable(false)
+	if v := trafficBlockRate(30, 1030); v != nil {
+		t.Errorf("记录关闭时 block_rate 应为 null，实际 %v", v)
+	}
+	if v := trafficBlockRate(4, 4); v != nil {
+		t.Errorf("记录关闭时 block4xx_rate 应为 null，实际 %v", v)
+	}
+	if v := trafficBlockField(4); v != nil {
+		t.Errorf("记录关闭时 block4xx 应为 null，实际 %v", v)
+	}
+
+	SetBlockAvailable(true)
+	if v := trafficBlockRate(30, 1030); v != 30.0/1030.0 {
+		t.Errorf("记录开启时 block_rate = %v, want %v", v, 30.0/1030.0)
+	}
+	if v := trafficBlockRate(30, 0); v != 0.0 {
+		t.Errorf("记录开启但分母 0 时应输出 0，实际 %v", v)
+	}
+}
+
 // trafficAssert 跑 4 个脚本并做全部断言（UV、对账、geo）。from/to 取基准时刻两侧整点。
 func trafficAssert(t *testing.T, d *db.DB, accessTable, shieldTable string) {
 	t.Helper()

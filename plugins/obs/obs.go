@@ -57,7 +57,7 @@ type Snapshot struct {
 	P50       int64   // 耗时 P50（ms，合并水库样本近似精确）
 	P95       int64   // 耗时 P95（ms）
 	P99       int64   // 耗时 P99（ms）
-	ErrorRate float64 // 错误率（4xx/5xx 占比）
+	ErrorRate float64 // 错误率（4xx/5xx 占放行请求数之比，仅入网侧；拦截请求不计入分子分母）
 }
 
 // metricsBucket 单桶：覆盖 1 分钟时间段（slot = UnixMilli/60000）。
@@ -79,7 +79,8 @@ type Metrics struct {
 // NewMetrics 创建空指标窗口。
 func NewMetrics() *Metrics { return &Metrics{} }
 
-// Add 记录一次请求：按 now 定位桶，错误码（>=400）计入错误，延迟进水库样本。
+// Add 记录一次放行请求：按 now 定位桶，错误码（>=400）计入错误，延迟进水库样本。
+// 仅由 obs.OnDone 调用（拦截请求走不到该钩子），故分子分母同为入网侧、口径自洽。
 func (m *Metrics) Add(now time.Time, latencyMs int64, code int) {
 	slot := now.UnixMilli() / metricsBucketMs
 	m.mu.Lock()
@@ -109,6 +110,10 @@ func fastrandn(n int64) int64 {
 }
 
 // Snapshot 计算窗口内聚合值（window 须为分钟整数倍且 ≤ metricsWindow）。
+//
+// 错误率口径与流量统计卡对齐：分子分母都只取入网（放行）侧。Add 只被 obs 的 OnDone 调用，
+// 而被拦截请求在链上被短路、不产生 AccessRecord、不触发 OnDone——即样本天然只有放行请求，
+// total 已是放行总数，无需再扣减拦截数。
 func (m *Metrics) Snapshot(now time.Time, window time.Duration) Snapshot {
 	nowSlot := now.UnixMilli() / metricsBucketMs
 	winSlots := int64(window / time.Minute)

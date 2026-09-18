@@ -24,7 +24,7 @@
 **降级**：
 
 - obs 未注册 / `OBS_ENABLED=false` → `503` 文本引导态（前端按「功能未开启」页内引导卡渲染，豁免 toast 红线②）；
-- `SHIELD_EVENT_LOG_ENABLED=false` → 拦截侧字段（`block_total`/`attack_ips`/`block4xx`/`block4xx_rate`/`blocked_count`）输出 `null`（前端显示「—」）；
+- `SHIELD_EVENT_LOG_ENABLED=false` → 拦截侧字段（`block_total`/`attack_ips`/`block4xx`/`block_rate`/`block4xx_rate`/`blocked_count`）输出 `null`（前端显示「—」）。率字段输出 `null` 而非 `0`——拦截事件未记录时计数为 0 属数据缺失，输出 `0` 会把「无数据」误报成「零拦截」；`err4xx_rate`/`err5xx_rate` 仅取入网侧，不受此开关影响；
 - DB 数据访问层未就绪 → `503`（响应文本含「数据访问层」）：与上一条的降级语义不同，引导用户去开启观测是错误出路，前端须按**普通错误**弹 error toast + 行内说明（指出 `DB_DRIVER`/`DB_DSN` 未配置），不得渲染「功能未开启」引导卡；时间参数非法 / `from` 晚于 `to` → `400`。
 
 | 端点 | 说明 |
@@ -41,7 +41,7 @@
   "req_ok": 1000, "req_pv": 800, "uv": 120, "ip_all": 150,
   "block_total": 30, "attack_ips": 5,
   "err4xx": 20, "err5xx": 2, "block4xx": 30,
-  "err4xx_rate": 0.0195, "err5xx_rate": 0.002, "block4xx_rate": 1.0,
+  "err4xx_rate": 0.02, "err5xx_rate": 0.002, "block_rate": 0.0291, "block4xx_rate": 1.0,
   "computed_at": "2026-09-09T03:00:00Z", "from": "2026-09-08T00:00:00Z", "to": "2026-09-09T00:00:00Z",
   "cache_ttl_sec": 900, "cache_hit": false
 }
@@ -49,12 +49,13 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| req_ok / req_pv / uv / ip_all | int | 放行总数 / PV（去静态资源）/ UV（IP+UA 去重）/ 独立 IP 数 |
+| req_ok / req_pv / uv / ip_all | int | 放行总数 / PV(访问次数，去静态资源) / UV(独立访客，IP+UA 去重) / 独立 IP 数 |
 | block_total / attack_ips | int/null | 拦截总数 / 攻击 IP 数（拦截侧去重）；拦截事件记录关闭时 null |
 | err4xx / err5xx | int | 放行侧 4xx / 5xx 数（含静态资源口径内） |
 | block4xx | int/null | 拦截侧 4xx 数（当前恒等于 block_total，拦截码均为 4xx，字段预留） |
-| err4xx_rate / err5xx_rate | float | 率（分母 = 请求次数 req_ok+block_total，Go 侧计算，分母 0 输出 0，0~1） |
-| block4xx_rate | float/null | 4xx 拦截率（分母 = block_total） |
+| err4xx_rate / err5xx_rate | float | 错误率，**分母 = req_ok（仅入网数据，不含拦截）**，Go 侧计算，分母 0 输出 0，0~1 |
+| block_rate | float/null | 拦截率 = `block_total / 请求次数(req_ok+block_total)`，即拦截在网关出口请求中的占比；过高表示可能遭攻击或规则过严。拦截事件记录关闭时 null |
+| block4xx_rate | float/null | 4xx 拦截占拦截总数之比（分母 = block_total）。拦截码恒为 403/413/429 故恒为 1.0，保留作趋势观察位；记录关闭时 null |
 | computed_at | string | 首次计算时刻（UTC RFC3339，缓存命中时不变） |
 | from / to | string | 实际生效的统计范围（UTC RFC3339） |
 | cache_ttl_sec / cache_hit | int / bool | 当前缓存 TTL（0=禁用）/ 本次是否缓存命中 |

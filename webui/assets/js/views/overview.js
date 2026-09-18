@@ -457,14 +457,13 @@
     const reqTotal = (sm.req_ok != null && sm.block_total != null) ? sm.req_ok + sm.block_total : null;
     return '<div class="metric-grid">' +
       tile('请求次数', n(reqTotal), '放行 + 拦截') +
-      tile('PV', n(sm.req_pv), '去静态资源') +
-      tile('UV', n(sm.uv), 'IP + UA 口径') +
+      tile('PV(访问次数)', n(sm.req_pv), '去静态资源') +
+      tile('UV(独立访客)', n(sm.uv), 'IP + UA 口径') +
       tile('独立 IP', n(sm.ip_all), '') +
-      tile('拦截次数', n(sm.block_total), '') +
+      tile('拦截总数', n(sm.block_total), '拦截率 ' + fmtRate(sm.block_rate)) +
       tile('攻击 IP', n(sm.attack_ips), '') +
-      tile('4xx', n(sm.err4xx), '错误率 ' + fmtRate(sm.err4xx_rate)) +
-      tile('4xx 拦截', n(sm.block4xx), '拦截率 ' + fmtRate(sm.block4xx_rate)) +
-      tile('5xx', n(sm.err5xx), '错误率 ' + fmtRate(sm.err5xx_rate)) +
+      tile('4xx错误', n(sm.err4xx), '错误率 ' + fmtRate(sm.err4xx_rate)) +
+      tile('5xx错误', n(sm.err5xx), '错误率 ' + fmtRate(sm.err5xx_rate)) +
       tile('延迟 P50', n(sm.lat_p50), '毫秒 · 范围内精确统计') +
       tile('延迟 P95', n(sm.lat_p95), '毫秒') +
       tile('延迟 P99', n(sm.lat_p99), '毫秒') +

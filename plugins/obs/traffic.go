@@ -12,6 +12,13 @@
 //	req_ok=放行总数（含静态资源、含放行后 4xx/5xx）；请求次数=req_ok+block_total；
 //	req_pv=req_ok 去静态资源（后缀清单硬编码于 SQL）；uv=COUNT(DISTINCT client_ip,user_agent)。
 //
+// 错误率/拦截率口径（入网与拦截严格分离，分母不混入另一侧）：
+//
+//	err4xx_rate/err5xx_rate = access_log 侧 4xx/5xx ÷ req_ok（仅入网，不含拦截）；
+//	拦截率block_rate        = block_total ÷ 请求次数（拦截在网关出口中的占比，过高=遭攻击或规则过严）；
+//	block4xx_rate           = block4xx ÷ block_total（拦截内部构成，仅留作趋势观察）。
+//	拦截响应码恒为 403/413/429（见 shield/blockStatus），故 block4xx 恒等于 block_total。
+//
 // 时间口径：from/to 由前端换算为 UTC 传入，统一 time >= from AND time <= to（保证各桶之和=总数可对账）；
 // 桶标签以 UTC 返回、前端原样展示并标注 UTC。
 package obs
@@ -188,18 +195,21 @@ func (h *AdminHandler) TrafficSummary(w http.ResponseWriter, r *http.Request) {
 		reqOK, blockTotal := n("req_ok"), n("block_total")
 		total := reqOK + blockTotal
 		return map[string]any{
-			"req_ok":        int64(reqOK),
-			"req_pv":        int64(n("req_pv")),
-			"uv":            int64(n("uv")),
-			"ip_all":        int64(n("ip_all")),
-			"block_total":   trafficBlockField(int64(blockTotal)),
-			"attack_ips":    trafficBlockField(int64(n("attack_ips"))),
-			"err4xx":        int64(n("err4xx")),
-			"err5xx":        int64(n("err5xx")),
-			"block4xx":      trafficBlockField(int64(n("block4xx"))),
-			"err4xx_rate":   safeRate(n("err4xx"), total),
-			"err5xx_rate":   safeRate(n("err5xx"), total),
-			"block4xx_rate": safeRate(n("block4xx"), blockTotal),
+			"req_ok":      int64(reqOK),
+			"req_pv":      int64(n("req_pv")),
+			"uv":          int64(n("uv")),
+			"ip_all":      int64(n("ip_all")),
+			"block_total": trafficBlockField(int64(blockTotal)),
+			"attack_ips":  trafficBlockField(int64(n("attack_ips"))),
+			"err4xx":      int64(n("err4xx")),
+			"err5xx":      int64(n("err5xx")),
+			"block4xx":    trafficBlockField(int64(n("block4xx"))),
+			// 错误率分母只用 req_ok（仅入网数据）：拦截请求不经过 obs，混入分母会系统性稀释错误率
+			// （拦截越多错误率越低，方向相反）。
+			"err4xx_rate":   safeRate(n("err4xx"), reqOK),
+			"err5xx_rate":   safeRate(n("err5xx"), reqOK),
+			"block_rate":    trafficBlockRate(blockTotal, total),
+			"block4xx_rate": trafficBlockRate(n("block4xx"), blockTotal),
 			"lat_avg":       trafficNumField(row["lat_avg"]),
 			"lat_p50":       trafficNumField(row["lat_p50"]),
 			"lat_p95":       trafficNumField(row["lat_p95"]),
@@ -425,6 +435,15 @@ func trafficBlockField(v int64) any {
 		return nil
 	}
 	return v
+}
+
+// trafficBlockRate 拦截侧率（分子分母同属拦截侧）：SHIELD_EVENT_LOG_ENABLED=false 时拦截至此无数据，
+// 输出 null（前端显示「—」）而非 0——0 会把「数据缺失」误报成「零拦截」，与 block_total 等计数字段口径相左。
+func trafficBlockRate(num, den float64) any {
+	if !trafficBlockAvailable {
+		return nil
+	}
+	return safeRate(num, den)
 }
 
 // safeRate 率计算，分母 0 防护输出 0。
