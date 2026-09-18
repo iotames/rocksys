@@ -83,8 +83,8 @@
         { key: 'time', label: '时间', render: r => esc(fmtDateTime(r.time)) },
         { key: 'trace_id', label: '链路 ID' },
         { key: 'client_ip', label: '来源 IP' },
-        { key: 'country_name', label: '来源国家', render: r => esc(r.country_name || r.country_code || r.country || '未知') },
-        { key: 'geo', label: '来源省/市', render: r => { const parts = [String(r.province || '').trim(), String(r.city || '').trim()].filter(Boolean); return esc(parts.join('/') || '未知'); } },
+        { key: 'country_name', label: '来源国家', render: r => esc(Rock.util.geoText(r, { fields: ['country_name'] })) },
+        { key: 'geo', label: '来源省/市', render: r => esc(Rock.util.geoText(r, { fields: ['province', 'city'], fallbacks: [] })) },
         { key: 'method', label: '方法' },
         { key: 'path', label: '路径', pre: true, copy: true },
         { key: 'status_code', label: '状态码' },
@@ -171,7 +171,7 @@
     params.set('offset', String(st.offset));
     try {
       const r = await api.textMeta('/admin/shield/events?' + params.toString());
-      store.wafEvents = parseNdjson(r.text);
+      store.wafEvents = Rock.util.parseNdjson(r.text);
       store.wafEventsTotal = r.total;
       store.wafEventsError = null;
       noteUpdated();
@@ -192,18 +192,6 @@
     await Promise.all([loadMetrics(opts), loadStats(opts), loadEvents(opts), loadTotal(opts)]);
     store.wafLoaded = true;
     render();
-  }
-
-  // NDJSON 按行解析（坏行容错跳过，与 logs 页同思路）
-  function parseNdjson(txt) {
-    const out = [];
-    const lines = String(txt || '').split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const t = lines[i].trim();
-      if (!t) continue;
-      try { out.push(JSON.parse(t)); } catch (e) { /* 跳过坏行 */ }
-    }
-    return out;
   }
 
   // ── 渲染 ────────────────────────────────────────────────────────────
@@ -358,11 +346,10 @@
       '<span class="v mono">' + esc(ip) + '</span>' +
       '<span class="form-hint" id="waf-ban-status" style="margin-left:10px">状态查询中…</span></div>' +
       '<div class="form-row"><label class="form-label">封禁理由</label>' +
-      '<input class="input" id="waf-ban-title" style="width:100%" maxlength="200" value="人工封禁：' + esc(btName) + '拦截"></div>' +
+      Rock.comp.form.input({ id: 'waf-ban-title', width: 'full', value: '人工封禁：' + btName + '拦截', attrs: { maxlength: 200 } }) + '</div>' +
       '<div class="form-row"><label class="form-label">拉黑原因类别</label>' +
-      '<select class="select" id="waf-ban-bt" style="width:220px">' +
-      Rock.comp.select.options(BLOCK_TYPES.filter(t => t[0] > 0).map(t => [String(t[0]), t[0] + ' ' + t[1]]), '11') +
-      '</select><div class="form-hint" style="margin-top:4px">缺省人工收录，可改选具体拦截类别</div></div>' +
+      Rock.comp.form.select({ id: 'waf-ban-bt', width: 'md', options: BLOCK_TYPES.filter(t => t[0] > 0).map(t => [String(t[0]), t[0] + ' ' + t[1]]), selected: '11' }) +
+      '<div class="form-hint" style="margin-top:4px">缺省人工收录，可改选具体拦截类别</div></div>' +
       '<div class="form-row"><label class="form-label">封禁时长</label>' +
       '<label style="margin-right:20px;cursor:pointer"><input type="radio" name="waf-ban-duration" value="24h" checked> 封禁 24 小时</label>' +
       '<label style="cursor:pointer"><input type="radio" name="waf-ban-duration" value="permanent"> 永久封禁</label></div>' +
@@ -477,9 +464,8 @@
       metricTilesHTML() + '</div>' +
       '<div class="card"><div class="card-title">按日趋势' +
       '<span class="card-sub">查询时聚合（近 ' + statsDays + ' 天）</span>' +
-      '<select class="select select-sm" id="waf-days" style="margin-left:8px">' +
-      Rock.comp.select.options([['7', '近 7 天'], ['14', '近 14 天'], ['30', '近 30 天'], ['90', '近 90 天']], String(statsDays)) +
-      '</select></div>' +
+      Rock.comp.form.select({ id: 'waf-days', sm: true, attrs: { style: 'margin-left:8px' }, options: [['7', '近 7 天'], ['14', '近 14 天'], ['30', '近 30 天'], ['90', '近 90 天']], selected: String(statsDays) }) +
+      '</div>' +
       statsHTML() + '</div>' +
       Rock.views.topIPs.html() +
       '<div class="card"><div class="card-title">攻击拦截明细 <span class="card-sub">拦截事件逐条追溯，行内可封禁</span></div>' +

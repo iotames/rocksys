@@ -3,6 +3,8 @@
  * 请求量环比 / QPS 格式化 / 指标卡渲染（纯计算与渲染，不持有全局状态）。
  * 数据由调用方（overview 视图）传入：metrics 为最新指标，history 为采样数组。
  * 依赖 Rock.util.fmtInt / Rock.state.fmtRate / Rock.util.esc。
+ * 归类：领域辅助组件（白名单制）——允许依赖 Rock.state 领域辅助函数，
+ * 禁止调 API、禁止读写业务 store（区别于零依赖的基础组件，见 docs/webui/README.md）。
  * 挂载到全局命名空间 window.Rock.comp.metrics。
  * ========================================================================== */
 (function () {

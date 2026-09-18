@@ -35,6 +35,7 @@
   {
     "key": "SHIELD_RATE_LIMIT_RPS",
     "title": "限流速率（每秒请求数）",
+    "type": "int",
     "defval": "0",
     "current": "100",
     "example": "100"
@@ -42,10 +43,14 @@
 ]
 ```
 
+`type` 为注册时的真实类型（`bool` / `int` / `string`，即 `Register` 支持的三类，由后端从注册值指针推导），
+前端据此选择编辑控件（如 `bool` → 开关），不靠键名猜测——避免新增非 `_ENABLED` 结尾的布尔项被误渲染为文本框。
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | key | string | 配置项注册名（即环境变量名，热改 `PUT /admin/config` 时用此名） |
 | title | string | 中文说明 |
+| type | string | 注册类型（`bool` / `int` / `string`），前端据真实类型选编辑控件（如 `bool` → 开关），不靠键名猜测 |
 | defval | string | 默认值（字符串形态） |
 | current | string | 当前值（字符串形态） |
 | example | string | 示例（可能为空） |

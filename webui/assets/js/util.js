@@ -85,6 +85,23 @@
   }
 
   // 防抖
+  // 地区文案统一实现（跨页领域规则单一出处）：按 fields（默认 国名/省/市）以 '/' 拼接；
+  // 全空时依次回落 fallbacks（如 ISO 码字段），仍空计「未知」。
+  // 兼容两种拼法：默认「国/省/市」，传 fields:['country_name','city'] 得「国/市」。
+  function geoText(row, opts) {
+    row = row || {};
+    opts = opts || {};
+    const fields = opts.fields || ['country_name', 'province', 'city'];
+    const parts = fields.map(function (f) { return String(row[f] || '').trim(); }).filter(Boolean);
+    if (parts.length) return parts.join('/');
+    const fallbacks = opts.fallbacks || ['country_code', 'country'];
+    for (let i = 0; i < fallbacks.length; i++) {
+      const v = String(row[fallbacks[i]] || '').trim();
+      if (v) return v;
+    }
+    return '未知';
+  }
+
   function debounce(fn, wait) {
     let t = null;
     return function () {
@@ -139,6 +156,7 @@
     fmtBytes,
     truncate,
     parseNdjson,
+    geoText,
     debounce,
     insertAtCursor,
     validIPOrCIDR,

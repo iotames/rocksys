@@ -197,6 +197,28 @@ RockSys 控制台
 
 ---
 
-## 10. 一句话总结
+## 10. 组件分层与参数化规范
+
+前端 JS（`webui/assets/js/`）按依赖方向严格分三层，上层可依赖下层、下层禁止反向依赖：
+
+```
+util / theme / ui / api / state     ← 基础层（esc、toast、openModal、api 客户端、全局状态）
+        ↓
+components/                         ← 基础积木：业务无关，零 API、零业务 store；样式经参数覆盖默认值
+        ↓
+views/                              ← 页面/业务模块：拼装组件、接线 data-act、持有 API 请求与业务数据
+```
+
+| 约束 | 内容 |
+|------|------|
+| 基础组件红线 | `components/` 内禁止调用 `Rock.api`、禁止读写业务 `store`、禁止出现业务枚举/业务 key；允许依赖同层其它基础组件（如 form → select）；需要业务语义时由调用方以参数注入（如 cfgSearch 的 `decorate` 回调） |
+| 领域辅助组件白名单制 | 少数组件允许依赖 `Rock.state` 领域辅助函数（现仅 `componentState`、`metrics`，头注释均须声明归类）；白名单外不得新增，新需求优先下沉为 util 纯函数或拆入 views |
+| 业务模块归位 | 持有 API 请求/业务数据的模块一律放 `views/`（如 `views/configEditor.js`），不因"长得像控件"放 components |
+| 视图禁止手写裸控件 | 页面输入控件统一经 `Rock.comp.form`（input/select/textarea/switch/checkbox/search），宽度用 `form-w-xs/sm/md/lg/full` 语义类，禁内联 width；form.js 缺能力时先扩组件再使用 |
+| 样式个性化 | 统一走「组件参数 / 内联样式覆盖默认值」，禁止另造主题/皮肤机制 |
+| 数据驱动内联豁免 | 进度条/图形类按数据计算的宽度（如耗时分段条、柱状占比）不受禁内联约束 |
+| 组件挂载与校验 | 模块加载顺序见 `index.html`；`main.js assertDeps` 启动时校验全部 components 与 views 模块，新增模块必须登记 |
+
+## 11. 一句话总结
 
 **这是一个看得见的"总控开关面板"**：网关状态、HTTP 数据流常驻首页，组件与服务卡片开关直接启停，配置各归其位，脚本一眼可回滚，指标趋势、安全防护、入网数据与系统日志随手可查——所有操作都在传达同一句话：**关闭只是降级，转发永不中断。**

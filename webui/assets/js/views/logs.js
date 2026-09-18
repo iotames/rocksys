@@ -70,7 +70,7 @@
       { key: 'path', label: '路径', render: r => '<span class="log-path" title="' + esc(r.path) + '">' + esc(truncate(r.path, 60)) + '</span>' },
       { key: 'status_code', label: '状态', render: r => { const st = r.status_code; const cls = st >= 500 ? 'status-red' : (st >= 400 ? 'status-warn' : (st >= 300 ? 'status-info' : (st >= 200 ? 'status-ok' : ''))); return '<span class="status ' + cls + '">' + (st || '-') + '</span>'; } },
       { key: 'total_ms', label: '耗时', cls: 'mono', render: r => esc(r.total_ms) + 'ms' },
-      { key: 'geo', label: '地区', render: r => esc(geoText(r)) },
+      { key: 'geo', label: '地区', render: r => esc(Rock.util.geoText(r)) },
     ],
     rowClass: r => (Number(r.status_code) >= 400 ? 'is-error' : ''),
     rowKey: r => (r.time || '') + '|' + (r.trace_id || ''),
@@ -187,14 +187,6 @@
 
   // 详情字段：核心字段 + 扩展维度（extra 平铺字段，非核心字段自动列出）
   const KNOWN = new Set(['time', 'trace_id', 'tenant_id', 'path', 'method', 'client_ip', 'status_code', 'upstream', 'shield_ms', 'biz_ms', 'total_ms', 'egress_ms', 'req_bytes', 'resp_bytes', 'user_agent', 'country_code', 'country_name', 'province', 'city']);
-
-  // 地区展示：国名/省/市 拼接（geoip_list 关联列；未同步 IP 无国名时回落 ISO 码）；
-  // 均空时占位「未知」（读侧兜底链末端，与 WAF 页约定一致）
-  function geoText(r) {
-    const parts = [String(r.country_name || '').trim(), String(r.province || '').trim(), String(r.city || '').trim()].filter(Boolean);
-    if (parts.length) return parts.join('/');
-    return String(r.country_code || '').trim() || '未知';
-  }
 
   // 耗时分段条：入网（蓝）→ 转发（业务）（绿）→ 出网（橙），段宽 = 段耗时/总耗时；
   // 0ms 段不渲染，非零但不足 1px 的段由 CSS min-width:1px 保底；总耗时为 0 时整条置灰。

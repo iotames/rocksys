@@ -6,6 +6,7 @@ import "context"
 type ConfigItem struct {
 	Key     string `json:"key"`     // 注册名（即环境变量名，热改时用此名）
 	Title   string `json:"title"`   // 中文说明
+	Type    string `json:"type"`    // 注册类型（bool/int/string）：前端据真实类型选控件，不靠键名猜测
 	Defval  string `json:"defval"`  // 默认值（字符串形态）
 	Current string `json:"current"` // 当前值（字符串形态）
 	Example string `json:"example"` // 使用说明/示例（可能为空）

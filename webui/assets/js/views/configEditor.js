@@ -1,15 +1,16 @@
 /* ==========================================================================
- * RockSys 管理控制台 - components/configEditor.js 配置项渲染/编辑组件
+ * RockSys 管理控制台 - views/configEditor.js 全局配置项渲染/编辑（业务视图模块）
  * 渲染配置行（掩码 / 枚举 / 需重启 / 编辑态），行内编辑保存 / 恢复默认 /
  * 掩码切换，并注册容器供全局刷新（配置页 + 组件页展开配置区共用同一状态）。
- * 依赖 Rock.api / Rock.ui.toast / Rock.ui.confirmDialog / Rock.state /
- * Rock.comp.select / Rock.util.esc。挂载到全局命名空间 window.Rock.comp.configEditor。
+ * 业务模块定性（持有 API 请求与业务 store），非基础组件：依赖 Rock.api /
+ * Rock.ui.toast / Rock.ui.confirmDialog / Rock.state /
+ * Rock.comp.select / Rock.util.esc。挂载到全局命名空间 window.Rock.views.configEditor。
  * ========================================================================== */
 (function () {
   'use strict';
 
   window.Rock = window.Rock || {};
-  window.Rock.comp = window.Rock.comp || {};
+  window.Rock.views = window.Rock.views || {};
 
   const esc = Rock.util.esc;
   const store = Rock.state.store;
@@ -76,33 +77,38 @@
   }
 
   // 编辑控件 HTML（按配置类型选择：布尔=开关 / 枚举=下拉 / 长文本=textarea / 整数=number / 其余=文本）
+  // 统一经 Rock.comp.form 构造（不手拼裸控件）：控件形态表达"值的类型"，disabled 表达"可编辑性"，
+  // 两者正交——如需只读项，传 { disabled: true } 即可，无需另换控件形态。
+  // 各控件的 .cfg-edit-input（取值/聚焦锚点）等页内钩子经 cls 保留。
   function editInputHTML(item, value) {
     const key = item.key;
-    const attrs = 'class="cfg-edit-input" data-k="' + esc(key) + '"';
+    const base = { id: null, cls: 'cfg-edit-input', attrs: { 'data-k': key } };
     if (Rock.state.isBoolKey(key)) {
       const on = String(value).trim() === 'true';
       return '<span class="cfg-switch-row">' +
-        '<label class="el-switch" title="开 = true / 关 = false">' +
-        '<input type="checkbox" ' + attrs + (on ? ' checked' : '') + '>' +
-        '<span class="el-switch-core"></span></label>' +
+        Rock.comp.form.switch(Object.assign({}, base, { title: '开 = true / 关 = false', checked: on })) +
         '<span class="cfg-switch-state">' + (on ? 'true（开）' : 'false（关）') + '</span>' +
         '</span>';
     }
     const enums = Rock.state.ENUM_KEYS[key];
     if (enums && enums.length) {
       // 枚举值：下拉选择，不允许手填
-      return '<select ' + attrs.replace('class="', 'class="select select-sm ') + '>' +
-        Rock.comp.select.options(enums.map(o => [o, o]), String(value)) + '</select>';
+      return Rock.comp.form.select(Object.assign({}, base, {
+        sm: true, options: enums.map(o => [o, o]), selected: String(value),
+      }));
     }
     if (Rock.state.isIntKey(key)) {
-      return '<input type="number" min="0" step="1" ' + attrs.replace('class="', 'class="input input-sm ') +
-        ' value="' + esc(value) + '">';
+      return Rock.comp.form.input(Object.assign({}, base, {
+        type: 'number', sm: true, value: value, attrs: { 'data-k': key, min: '0', step: '1' },
+      }));
     }
     if (Rock.state.isTextareaKey(key)) {
-      return '<textarea rows="3" placeholder="' + esc(item.example || '') + '" ' +
-        attrs.replace('class="', 'class="input input-sm cfg-edit-textarea ') + '>' + esc(value) + '</textarea>';
+      return Rock.comp.form.textarea(Object.assign({}, base, {
+        cls: 'cfg-edit-input cfg-edit-textarea', rows: 3,
+        placeholder: item.example || '', value: value,
+      }));
     }
-    return '<input ' + attrs.replace('class="', 'class="input input-sm ') + ' value="' + esc(value) + '">';
+    return Rock.comp.form.input(Object.assign({}, base, { sm: true, value: value }));
   }
 
   // 共享配置行 HTML（配置页 + 组件展开配置区共用）
@@ -299,7 +305,8 @@
     }
   }
 
-  window.Rock.comp.configEditor = {
+  window.Rock.views = window.Rock.views || {};
+  window.Rock.views.configEditor = {
     render,
     validateValue,
     startEdit,

@@ -263,7 +263,7 @@
       width: 400,
       body:
         '<div class="form-row"><label class="form-label">脚本名称（小写字母 / 数字 / 下划线）</label>' +
-        '<input class="input" id="new-script-name" placeholder="如 rule1" autocomplete="off"></div>',
+        Rock.comp.form.input({ id: 'new-script-name', placeholder: '如 rule1' }) + '</div>',
       footer: '<button class="btn" data-modal-act="cancel">取消</button><button class="btn btn-primary" id="new-script-ok">创建</button>',
     });
     const input = $('#new-script-name');

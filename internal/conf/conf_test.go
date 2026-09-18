@@ -557,3 +557,70 @@ func TestRegisterBoolHighPriorityOverridesInvalid(t *testing.T) {
 		t.Errorf("env 覆盖后应按 true 处理，得到 %v", b)
 	}
 }
+
+// TestConfigItemType 配置项元数据须携带注册时的真实类型：前端据此选编辑控件
+// （bool → 开关），不靠键名猜测——否则新增非 _ENABLED 结尾的布尔项会被误渲染为文本框。
+func TestConfigItemType(t *testing.T) {
+	cleanup(t)
+	mgr, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load err: %v", err)
+	}
+	var (
+		b bool
+		i int
+		s string
+	)
+	regs := []struct {
+		pval   any
+		name   string
+		defval string
+		want   string
+	}{
+		{&b, "TEST_T_BOOL", "false", "bool"},
+		{&i, "TEST_T_INT", "0", "int"},
+		{&s, "TEST_T_STRING", "", "string"},
+	}
+	for _, r := range regs {
+		if err := mgr.Register(r.pval, r.name, r.defval, "测试类型项"); err != nil {
+			t.Fatalf("Register %s err: %v", r.name, err)
+		}
+	}
+	// 非 _ENABLED 结尾的布尔项：命名约定识别不到，只能靠真实类型（本次修复的核心场景）
+	var wafOn bool
+	if err := mgr.Register(&wafOn, "TEST_WAF_XSS", "false", "XSS 检测"); err != nil {
+		t.Fatalf("Register err: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, it := range mgr.List() {
+		got[it.Key] = it.Type
+	}
+	for _, r := range regs {
+		if got[r.name] != r.want {
+			t.Errorf("%s 类型 = %q，want %q", r.name, got[r.name], r.want)
+		}
+	}
+	if got["TEST_WAF_XSS"] != "bool" {
+		t.Errorf("TEST_WAF_XSS 类型 = %q，want bool（非 _ENABLED 结尾的布尔项须靠真实类型识别）", got["TEST_WAF_XSS"])
+	}
+}
+
+// TestTypeNameOfUnknown 未识别类型返回空串，前端按文本控件兜底。
+func TestTypeNameOfUnknown(t *testing.T) {
+	cases := []struct {
+		in   any
+		want string
+	}{
+		{(*bool)(nil), "bool"},
+		{(*int)(nil), "int"},
+		{(*string)(nil), "string"},
+		{nil, ""},
+		{map[string]string{}, ""},
+	}
+	for _, c := range cases {
+		if got := typeNameOf(c.in); got != c.want {
+			t.Errorf("typeNameOf(%T) = %q，want %q", c.in, got, c.want)
+		}
+	}
+}

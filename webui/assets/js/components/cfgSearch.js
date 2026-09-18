@@ -3,7 +3,7 @@
  * 与全局配置页搜索同一风格（输入 + 下拉结果 + 回车/点击定位并编辑），
  * 但作用域限定在调用方给定的配置项列表（组件/服务详情页「配置」页签顶部，
  * 供 shield 等数十项配置的组件局部检索）。纯前端过滤，无新接口。
- * 依赖 Rock.util.esc / Rock.state。挂载到全局命名空间 window.Rock.comp.cfgSearch。
+ * 依赖 Rock.util.esc。挂载到全局命名空间 window.Rock.comp.cfgSearch。
  * ========================================================================== */
 (function () {
   'use strict';
@@ -45,12 +45,17 @@
 
   /**
    * 在 host 容器顶部挂载搜索栏，并返回承载配置行的子容器（调用方将
-   * Rock.comp.configEditor.render 渲染到该子容器，刷新时搜索栏不被重建）。
+   * Rock.views.configEditor.render 渲染到该子容器，刷新时搜索栏不被重建）。
    * @param {HTMLElement} host 配置页签面板容器
    * @param {Array} items 本作用域配置项列表（store.configList 过滤后的子集）
    * @param {Function} onLocate 定位回调（key）→ 命中后滚动高亮/进入行内编辑
+   * @param {Object} [opts] 可选项
+   * @param {Function} [opts.decorate] 条目标记回调（item）→ { sensitive?, restart? }：
+   *   敏感/需重启属业务语义，由调用方注入，组件不感知业务枚举
    */
-  function mount(host, items, onLocate) {
+  function mount(host, items, onLocate, opts) {
+    opts = opts || {};
+    const decorate = opts.decorate || function () { return {}; };
     const st = { q: '', sel: 0, results: [], timer: null };
     const bar = document.createElement('div');
     bar.className = 'card cfg-searchbar';
@@ -69,8 +74,9 @@
       if (!st.results.length) return '<div class="cfg-search-empty">无匹配配置项（支持 KEY 与标题，KEY 优先）</div>';
       const total = items.filter(it => searchScore(it, st.q) >= 0).length;
       const rowsHTML = st.results.map(function (it, i) {
-        const sensitive = Rock.state.isSensitiveKey(it.key);
-        const restart = Rock.state.RESTART_KEYS.indexOf(it.key) >= 0;
+        const flags = decorate(it) || {};
+        const sensitive = !!flags.sensitive;
+        const restart = !!flags.restart;
         const display = sensitive ? maskOf(it.current) : (it.current === '' ? '（空）' : it.current);
         return '<div class="cfg-search-item' + (i === st.sel ? ' is-sel' : '') + '" data-key="' + esc(it.key) + '">' +
           '<div class="cfg-search-main">' +

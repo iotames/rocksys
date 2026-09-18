@@ -250,12 +250,12 @@
       '<div class="card-title">运行控制</div>' +
       '<div class="form-row">' +
       '<label class="form-label">日志级别</label>' +
-      '<select class="select" id="syslog-level">' + Rock.comp.select.options(LEVEL_OPTIONS, null) + '</select>' +
+      Rock.comp.form.select({ id: 'syslog-level', options: LEVEL_OPTIONS }) +
       '</div>' +
       '<div class="form-hint">热切后立即生效并写回配置（重启保留）</div>' +
       '<div class="form-row">' +
       '<label class="form-label">文件存档</label>' +
-      '<input type="checkbox" id="syslog-file" class="switch">' +
+      Rock.comp.form.switch({ id: 'syslog-file' }) +
       '</div>' +
       '<div class="form-hint">异步落盘，故障不影响实时监控；路径见状态卡</div>' +
       '</div>' +

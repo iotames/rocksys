@@ -110,13 +110,20 @@
     SHIELD_RATE_LIMIT_BY: ['ip'], // 当前仅支持 ip
   };
 
-  // 布尔配置项（编辑态渲染 switch 开关）：*_ENABLED 挂载开关按命名约定识别，
-  // 其余显式列于 BOOL_KEY_EXTRA（与后端 Register 的 bool 默认值一一对应）
+  // 布尔配置项（编辑态渲染 switch 开关）：以接口下发的真实注册类型为准
+  // （/admin/config/list 的 type=bool，由后端从 *bool 指针推导），不靠键名猜测。
+  // BOOL_KEY_EXTRA 仅在接口未下发 type 时兜底（旧后端/字段缺失），保持向后兼容。
+  // ★ 本函数只回答"值是不是 bool"，不掺入"该不该让用户改"的业务判断
+  //   （那是写入权限问题，须由服务端拦截，换控件挡不住 curl/DevTools）。
   const BOOL_KEY_EXTRA = [
     'RESULT_WRAP', 'ROCKSYS_LOG_TO_FILE', 'DB_ENABLE', 'OBS_LOG_PRUNE_ENABLED',
     'SHIELD_EVENT_LOG_ENABLED', 'SHIELD_EVENT_PRUNE_ENABLED',
   ];
-  function isBoolKey(k) { return /_ENABLED$/.test(k) || BOOL_KEY_EXTRA.indexOf(k) >= 0; }
+  const boolKeys = new Set();   // 由 normalizeConfigList 按接口 type 填充
+  function isBoolKey(k) {
+    if (boolKeys.has(k)) return true;
+    return /_ENABLED$/.test(k) || BOOL_KEY_EXTRA.indexOf(k) >= 0;
+  }
 
   // 整数配置项（编辑态渲染 number 输入 + 非负整数前端校验）
   const INT_KEYS = [
@@ -172,13 +179,18 @@
 
   function normalizeConfigList(arr) {
     if (!Array.isArray(arr)) return [];
-    return arr.map(c => ({
+    const out = arr.map(c => ({
       key: String(c.key || ''),
       title: String(c.title || ''),
+      type: String(c.type || ''),
       defval: c.defval == null ? '' : String(c.defval),
       current: c.current == null ? '' : String(c.current),
       example: c.example == null ? '' : String(c.example),
     })).filter(c => c.key);
+    // 用接口下发的真实类型刷新布尔键集合（组件页配置区单独拉取列表后同样生效）
+    boolKeys.clear();
+    out.forEach(c => { if (c.type === 'bool') boolKeys.add(c.key); });
+    return out;
   }
 
   function normalizeMetrics(m) {

@@ -169,9 +169,6 @@
   function render(host) {
     host = host || $('#page-waf');
     if (!host) return;
-    const btOptions = BLOCK_TYPES.map(function (t) {
-      return '<option value="' + t[0] + '"' + (String(t[0]) === ipListState.blockType ? ' selected' : '') + '>' + esc(t[1]) + '</option>';
-    }).join('');
     host.innerHTML =
       Rock.comp.head.headHTML({
         title: 'WAF 防护',
@@ -202,22 +199,22 @@
       '</div>' +
       '<div class="card"><div class="card-title">新增' + (isBlack() ? '黑名单' : '白名单') + '条目</div>' +
       '<div class="log-toolbar">' +
-      '<input class="input input-sm" id="iplist-add-ip" placeholder="精确 IP 或 CIDR（必填）" style="width:180px">' +
-      '<input class="input input-sm" id="iplist-add-title" placeholder="标题（可选）" style="width:160px">' +
+      Rock.comp.form.input({ id: 'iplist-add-ip', sm: true, width: 'sm', placeholder: '精确 IP 或 CIDR（必填）' }) +
+      Rock.comp.form.input({ id: 'iplist-add-title', sm: true, width: 'sm', placeholder: '标题（可选）' }) +
       (isBlack()
         ? '<span class="muted" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏">拉黑原因类别</span>' +
-          '<select class="select select-sm" id="iplist-add-bt" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏">' + btOptions + '</select>' +
+          Rock.comp.form.select({ id: 'iplist-add-bt', sm: true, options: BLOCK_TYPES, attrs: { 'data-tip': '入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏' } }) +
           '<span class="tool-group"><span class="muted">过期时间</span>' +
-          '<input class="input input-sm" type="datetime-local" id="iplist-add-expires" title="留空 = 永久有效"></span>'
+          Rock.comp.form.input({ id: 'iplist-add-expires', sm: true, type: 'datetime-local', attrs: { title: '留空 = 永久有效' } }) + '</span>'
         : '') +
       '<button class="btn btn-sm btn-primary" data-act="waf-iplist-add">新增</button>' +
       '</div></div>' +
       '<div class="card"><div class="card-title">批量导入 <span class="card-sub">每行一个 IP/CIDR，重复自动跳过</span></div>' +
-      '<textarea class="input" id="iplist-import-text" rows="10" placeholder="每行一个：精确 IP 或 CIDR（兼容外挂文件格式）&#10;示例：192.168.1.100、2001:db8::1、10.0.0.0/8、2001:db8::/32&#10;# 开头为注释、空行忽略"></textarea>' +
+      Rock.comp.form.textarea({ id: 'iplist-import-text', rows: 10, placeholder: '每行一个：精确 IP 或 CIDR（兼容外挂文件格式）\n示例：192.168.1.100、2001:db8::1、10.0.0.0/8、2001:db8::/32\n# 开头为注释、空行忽略' }) +
       '<div class="log-toolbar">' +
       (isBlack()
         ? '<span class="muted" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏">拉黑原因类别</span>' +
-          '<select class="select select-sm" id="iplist-import-bt" data-tip="入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏">' + btOptions + '</select>'
+          Rock.comp.form.select({ id: 'iplist-import-bt', sm: true, options: BLOCK_TYPES, attrs: { 'data-tip': '入库记录的拉黑原因归类（block_type 枚举），用于黑名单列表过滤与拦截统计；自由文字请填标题栏' } })
         : '') +
       '<button class="btn btn-sm" data-act="waf-iplist-import">批量导入</button>' +
       '</div></div>';
@@ -372,9 +369,6 @@
     const row = ipListState.rows.find(r => String(r.id) === String(id));
     if (!row) return;
     const black = isBlack();
-    const btOptions = BLOCK_TYPES.map(function (t) {
-      return '<option value="' + t[0] + '"' + (Number(row.block_type) === t[0] ? ' selected' : '') + '>' + esc(t[0] + ' ' + t[1]) + '</option>';
-    }).join('');
     // 只读区：对照 DATA_DICT ip_blacklist 字段尽量齐全（id/ip/类别/计数/各时间戳）；
     // 编辑区：标题/类别/过期时间（title 以编辑框承载，默认值为当前标题）
     const body =
@@ -394,13 +388,12 @@
       '<div class="form-row"><label class="form-label">最后更新</label>' +
       '<span class="v">' + esc(fmtDT(row.updated_at) || '—') + '</span></div>' +
       '<div class="form-row"><label class="form-label">标题</label>' +
-      '<input class="input" id="iplist-edit-title" style="width:100%" maxlength="200" value="' + esc(row.title || '') + '" placeholder="拉黑原因标题（可空）"></div>' +
+      Rock.comp.form.input({ id: 'iplist-edit-title', width: 'full', value: row.title || '', placeholder: '拉黑原因标题（可空）', attrs: { maxlength: 200 } }) + '</div>' +
       (black
         ? '<div class="form-row"><label class="form-label">拉黑原因类别（可改）</label>' +
-          '<select class="select" id="iplist-edit-bt" style="width:260px">' + btOptions + '</select></div>' +
+          Rock.comp.form.select({ id: 'iplist-edit-bt', width: 'md', options: BLOCK_TYPES.map(t => [String(t[0]), t[0] + ' ' + t[1]]), selected: String(row.block_type) }) + '</div>' +
           '<div class="form-row"><label class="form-label">过期时间（可改）</label>' +
-          '<input class="input" type="datetime-local" id="iplist-edit-expires" style="width:230px" value="' +
-          esc(rfc3339ToLocalInput(row.expires_at)) + '">' +
+          Rock.comp.form.input({ id: 'iplist-edit-expires', type: 'datetime-local', width: 'md', value: rfc3339ToLocalInput(row.expires_at) }) +
           '<div class="form-hint" style="margin-top:4px">留空 = 永久有效（保存即按此生效，永久条目留空即可）</div></div>'
         : '') +
       '<div class="form-hint" style="margin-top:8px">更新立即重建拦截快照并生效；命中数/封禁次数为系统累计，不支持手工修改。</div>';

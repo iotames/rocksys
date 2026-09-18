@@ -7,9 +7,16 @@
  * 宽度用 .form-w-sm/md/lg 语义类，不写内联 width。
  *
  * 接口（全部返回 HTML 字符串，由调用方拼进视图）：
- *   Rock.comp.form.input({ id?, scope?, field?, type?, placeholder?, value?, cls?, mono?, attrs? })
+ *   四个输入控件（input/select/textarea/switch/checkbox）统一支持 disabled?（置灰不可编辑）；
+ *   cls? 均为追加类名钩子。控件形态只表达"值的类型"，可编辑性一律用 disabled 表达，两者正交。
+ *   Rock.comp.form.input({ id?, scope?, field?, type?, placeholder?, value?, cls?, mono?, disabled?, attrs? })
+ *     —— type 可传 date/time/datetime-local 等，供日期时间控件复用（与 filterBar 同款式样）
  *   Rock.comp.form.select({ id?, scope?, field?, options, selected?, disabled?, sm?, attrs? })
- *   Rock.comp.form.checkbox({ id?, scope?, field?, label, checked?, attrs? })
+ *   Rock.comp.form.textarea({ id?, scope?, field?, placeholder?, value?, rows?, mono?, cls?, disabled?, attrs? })
+ *   Rock.comp.form.switch({ id?, scope?, field?, title?, checked?, disabled?, cls?, attrs? })
+ *     —— 统一开关（.el-switch 滑块结构），替代各页手写裸 checkbox 开关
+ *   Rock.comp.form.checkbox({ id?, scope?, field?, label?, checked?, disabled?, cls?, attrs? })
+ *     —— 传 label 为带文字勾选（label.form-check 包裹）；不传 label 为裸勾选框（可配 cls）
  *   Rock.comp.form.search({ id?, placeholder, scope?, field?, value? })   —— 搜索框（🔍 前缀 + 统一占位样式）
  *   Rock.comp.form.inline(controlsHTML)                                  —— 行内控件组容器（自动换行、统一间距）
  *   Rock.comp.form.checkList(itemsHTML)                                  —— 复选清单容器（表多选等）
@@ -49,7 +56,7 @@
     return s;
   }
 
-  // input 文本/数值输入。
+  // input 文本/数值输入。disabled 与 select/textarea/switch 一致，可传顶层选项或 attrs。
   function input(o) {
     o = o || {};
     const cls = ['input'];
@@ -59,6 +66,7 @@
     if (o.cls) cls.push(o.cls);
     return '<input type="' + esc(o.type || 'text') + '" class="' + cls.join(' ') + '"' +
       commonAttrs(o) +
+      (o.disabled ? ' disabled' : '') +
       (o.placeholder ? ' placeholder="' + esc(o.placeholder) + '"' : '') +
       ' value="' + esc(o.value === undefined || o.value === null ? '' : String(o.value)) + '"' +
       ' autocomplete="off" spellcheck="false">';
@@ -76,11 +84,39 @@
       Rock.comp.select.options(o.options || [], o.selected) + '</select>';
   }
 
-  // checkbox 带文字标签（标签紧贴控件，点击文字可切换）。
+  // checkbox 带文字标签（标签紧贴控件，点击文字可切换）；不传 label 时输出裸勾选框
+  //（表格行多选等密集场景，可配 cls 挂页内样式钩子）。
   function checkbox(o) {
     o = o || {};
-    return '<label class="form-check"><input type="checkbox"' + commonAttrs(o) +
-      (o.checked ? ' checked' : '') + '> ' + esc(o.label || '') + '</label>';
+    const cls = o.cls ? ' class="' + esc(o.cls) + '"' : '';
+    const box = '<input type="checkbox"' + cls + commonAttrs(o) + (o.checked ? ' checked' : '') +
+      (o.disabled ? ' disabled' : '') + '>';
+    if (!o.label) return box;
+    return '<label class="form-check">' + box + ' ' + esc(o.label) + '</label>';
+  }
+
+  // textarea 多行文本（复用 .input 款式；mono 等宽字体，rows 默认 4）。
+  function textarea(o) {
+    o = o || {};
+    const cls = ['input'];
+    if (o.mono) cls.push('mono');
+    if (o.cls) cls.push(o.cls);
+    return '<textarea class="' + cls.join(' ') + '"' + commonAttrs(o) +
+      ' rows="' + (o.rows === undefined || o.rows === null ? 4 : o.rows) + '"' +
+      (o.placeholder ? ' placeholder="' + esc(o.placeholder) + '"' : '') +
+      (o.disabled ? ' disabled' : '') + '>' +
+      esc(o.value === undefined || o.value === null ? '' : String(o.value)) + '</textarea>';
+  }
+
+  // switch 开关：统一 .el-switch 滑块结构（label 包裹 + core 滑块），title 作悬浮说明。
+  // cls 挂到内部 checkbox 上（与 input/select/textarea 一致），便于调用方加取值/锚点钩子。
+  function switch_(o) {
+    o = o || {};
+    const cls = o.cls ? ' class="' + esc(o.cls) + '"' : '';
+    return '<label class="el-switch"' + (o.title ? ' title="' + esc(o.title) + '"' : '') + '>' +
+      '<input type="checkbox"' + cls + commonAttrs(o) + (o.checked ? ' checked' : '') +
+      (o.disabled ? ' disabled' : '') + '>' +
+      '<span class="el-switch-core"></span></label>';
   }
 
   // search 统一搜索框：放大镜前缀由 CSS 类提供（各页只需给占位文案），
@@ -115,5 +151,5 @@
     return '<div class="form-hint">' + esc(text) + '</div>';
   }
 
-  window.Rock.comp.form = { input, select, checkbox, search, inline, checkList, label, hint };
+  window.Rock.comp.form = { input, select, checkbox, textarea, switch: switch_, search, inline, checkList, label, hint };
 })();

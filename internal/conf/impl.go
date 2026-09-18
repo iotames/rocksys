@@ -450,6 +450,7 @@ func (m *confManager) List() []ConfigItem {
 		item := ConfigItem{
 			Key:     it.Name,
 			Title:   it.Title,
+			Type:    typeNameOf(it.Value),
 			Defval:  it.GetDefaultValue(),
 			Current: it.GetValue(),
 			Example: strings.Join(it.Usage, " "),
@@ -457,6 +458,23 @@ func (m *confManager) List() []ConfigItem {
 		out = append(out, item)
 	}
 	return out
+}
+
+// typeNameOf 由注册值指针推导配置项类型名（easyconf 的 Value 恒为指针）。
+// 供前端按真实类型选控件（如 bool → switch），避免靠键名猜测导致漏判。
+// 仅覆盖 Register 实际支持的类型（*string/*int/*bool，见 Register 的 default 分支）；
+// 未知类型返回空串，前端按文本处理。
+func typeNameOf(v any) string {
+	switch v.(type) {
+	case *bool:
+		return "bool"
+	case *int:
+		return "int"
+	case *string:
+		return "string"
+	default:
+		return ""
+	}
 }
 
 // currentValue 读当前注册值。ok=false 表示未注册。

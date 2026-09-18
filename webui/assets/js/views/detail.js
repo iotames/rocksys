@@ -3,7 +3,7 @@
  * 一个组件/服务一个页面，统一「状态 / 配置」双页签：
  *   - 状态页签（默认）：大卡片 = 左上 switch 直接启停 + 中文名/英文名 + 环节标签
  *     + 状态 + 描述 + 运行信息 + 数据流位置示意
- *   - 配置页签：该组件/服务独有配置项（复用 Rock.comp.configEditor），
+ *   - 配置页签：该组件/服务独有配置项（复用 Rock.views.configEditor），
  *     顶部局部搜索（Rock.comp.cfgSearch，风格同全局配置页，仅搜本组件配置项，
  *     定位后滚动高亮并自动进入行内编辑）；无配置项显示空态引导；
  *     script 组件附"去脚本页发布策略"链接
@@ -42,7 +42,7 @@
         noteUpdated();
       }
       if (!store.configListLoaded && !store.configUnavailable) {
-        await Rock.comp.configEditor.loadList();
+        await Rock.views.configEditor.loadList();
       }
     } catch (e) {
       store.componentsFailed = !store.switchesLoaded;
@@ -116,14 +116,22 @@
     }
     // 顶部局部搜索（风格同全局配置页，作用域仅本组件配置项）+ 配置行子容器
     const rows = Rock.comp.cfgSearch.mount(container, items, function (key) {
-      Rock.comp.configEditor.locateAndEdit(key);
+      Rock.views.configEditor.locateAndEdit(key);
+    }, {
+      // 敏感/需重启属业务语义（枚举判定由视图层注入，组件保持业务无关）
+      decorate: function (it) {
+        return {
+          sensitive: Rock.state.isSensitiveKey(it.key),
+          restart: Rock.state.RESTART_KEYS.indexOf(it.key) >= 0,
+        };
+      },
     });
-    Rock.comp.configEditor.render(rows, items, {});
+    Rock.views.configEditor.render(rows, items, {});
     // 全局配置页搜索跳转而来：定位并进入编辑（一次性消费，未命中静默忽略）
     if (store.pendingCfgLocate) {
       const k = store.pendingCfgLocate;
       delete store.pendingCfgLocate;
-      Rock.comp.configEditor.locateAndEdit(k);
+      Rock.views.configEditor.locateAndEdit(k);
     }
   }
 
@@ -170,11 +178,7 @@
     const slotLabel = isService ? '独立服务' : (meta.slotLabel || '链中间件');
     const barHTML =
       '<span class="page-title-bar">' +
-      '<label class="el-switch" title="' + esc(st.text) + '">' +
-      '<input type="checkbox" data-act="detail-toggle" data-name="' + esc(opts.name) + '" data-type="' + (isService ? 'service' : 'component') + '"' +
-      (s.state === 'enabled' ? ' checked' : '') +
-      (s.state === 'draining' ? ' disabled' : '') + '>' +
-      '<span class="el-switch-core"></span></label>' +
+      Rock.comp.form.switch({ title: st.text, attrs: { 'data-act': 'detail-toggle', 'data-name': opts.name, 'data-type': (isService ? 'service' : 'component') }, checked: s.state === 'enabled', disabled: s.state === 'draining' }) +
       '<span class="detail-name">' +
       '<span class="detail-cn">' + esc(meta.title) + '</span>' +
       '<span class="comp-key">' + esc(opts.name) + '</span>' +

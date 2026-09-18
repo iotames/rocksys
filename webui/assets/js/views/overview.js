@@ -148,11 +148,7 @@
     const slot = s.kind === 'component' ? '独立服务' : (meta.slotLabel || '链中间件');
     return '<div class="ov-card' + (s.state === 'draining' ? ' is-draining' : '') + '">' +
       '<div class="ov-head">' +
-      '<label class="el-switch" title="' + esc(st.text) + '">' +
-      '<input type="checkbox" data-act="detail-toggle" data-name="' + esc(s.name) + '" data-type="' + (routeBase === 'services' ? 'service' : 'component') + '"' +
-      (s.state === 'enabled' ? ' checked' : '') +
-      (s.state === 'draining' ? ' disabled' : '') + '>' +
-      '<span class="el-switch-core"></span></label>' +
+      Rock.comp.form.switch({ title: st.text, attrs: { 'data-act': 'detail-toggle', 'data-name': s.name, 'data-type': (routeBase === 'services' ? 'service' : 'component') }, checked: s.state === 'enabled', disabled: s.state === 'draining' }) +
       '<div class="ov-name" data-act="nav-detail" data-route="' + routeBase + '/' + esc(s.name) + '"' +
       ' title="点击进入 ' + esc(meta.title) + ' ' + esc(s.name) + ' 页">' +
       '<b>' + esc(meta.title) + '</b><i>' + esc(s.name) + '</i></div>' +
@@ -621,10 +617,10 @@
       '<button class="btn btn-sm' + (trafficPreset === p[0] ? ' btn-primary' : '') + '" data-act="traffic-range" data-preset="' + p[0] + '">' + p[1] + '</button>'
     ).join('');
     const custom =
-      '<input type="date" id="traffic-from-date" value="' + esc(trafficQuery.fromDate) + '"> ' +
-      '<input type="time" id="traffic-from-time" value="' + esc(trafficQuery.fromTime) + '"> ~ ' +
-      '<input type="date" id="traffic-to-date" value="' + esc(trafficQuery.toDate) + '"> ' +
-      '<input type="time" id="traffic-to-time" value="' + esc(trafficQuery.toTime) + '"> ' +
+      Rock.comp.form.input({ id: 'traffic-from-date', type: 'date', sm: true, value: trafficQuery.fromDate }) + ' ' +
+      Rock.comp.form.input({ id: 'traffic-from-time', type: 'time', sm: true, value: trafficQuery.fromTime }) + ' ~ ' +
+      Rock.comp.form.input({ id: 'traffic-to-date', type: 'date', sm: true, value: trafficQuery.toDate }) + ' ' +
+      Rock.comp.form.input({ id: 'traffic-to-time', type: 'time', sm: true, value: trafficQuery.toTime }) + ' ' +
       '<button class="btn btn-sm" data-act="traffic-apply">应用</button>';
     let body;
     if (trafficOff) {

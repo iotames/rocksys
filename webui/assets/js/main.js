@@ -49,8 +49,8 @@
     };
     ['util', 'theme', 'ui', 'api', 'state', 'auth'].forEach(function (k) { has([k]); });
     ['head', 'empty', 'select', 'tabs', 'dataTable', 'detailModal', 'filterBar', 'dateRange', 'logStream', 'luaEditor',
-      'componentState', 'dataflow', 'metrics', 'chart', 'configEditor'].forEach(function (k) { has(['comp', k]); });
-    ['overview', 'detail', 'config', 'scripts', 'waf', 'blacklist', 'ualist', 'topIPs', 'logs', 'syslogs', 'fileEditor', 'ruleFiles', 'database', 'schedule', 'tasks'].forEach(function (k) { has(['views', k]); });
+      'componentState', 'dataflow', 'metrics', 'chart', 'cfgSearch', 'form'].forEach(function (k) { has(['comp', k]); });
+    ['overview', 'detail', 'config', 'configEditor', 'scripts', 'waf', 'blacklist', 'ualist', 'topIPs', 'logs', 'syslogs', 'fileEditor', 'ruleFiles', 'database', 'schedule', 'tasks'].forEach(function (k) { has(['views', k]); });
     if (missing.length) {
       console.error('[RockSys] 前端模块缺失（script 加载顺序或遗漏）：', missing.join(', '));
       const b = $('#prune-banner');

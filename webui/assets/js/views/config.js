@@ -3,7 +3,7 @@
  * 仅保留全局基础设施配置（网关 / 数据访问 / 其他）；
  * 组件与服务的独有配置项已迁至各自页面（配置页签），此处以链接卡片引导跳转。
  * 分组标签页 + 行内编辑保存 / 恢复默认 / 掩码切换 / 需重启置灰，
- * 配置项渲染下沉到 Rock.comp.configEditor。
+ * 配置项渲染下沉到 Rock.views.configEditor。
  * 挂载到全局命名空间 window.Rock.views.config。
  * ========================================================================== */
 (function () {
@@ -25,7 +25,7 @@
   const toast = Rock.ui.toast;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
-  const ce = Rock.comp.configEditor;
+  const ce = Rock.views.configEditor;
 
   let configActiveGroup = null;
 

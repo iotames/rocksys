@@ -3,6 +3,8 @@
  * 组件状态（enabled/draining/disabled）的文案与色点/标签映射，
  * 以及组件展示元数据（title/desc/slotLabel）的取用（来源 /admin/meta，经 Rock.state.componentMeta）。
  * 依赖 Rock.state。挂载到全局命名空间 window.Rock.comp.componentState。
+ * 归类：领域辅助组件（白名单制）——允许依赖 Rock.state 领域辅助函数，
+ * 禁止调 API、禁止读写业务 store（区别于零依赖的基础组件，见 docs/webui/README.md）。
  * ========================================================================== */
 (function () {
   'use strict';

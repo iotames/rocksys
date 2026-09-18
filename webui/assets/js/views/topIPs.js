@@ -79,20 +79,12 @@
     // mmdb 未加载时字段缺失/空串 → 占位「未知」并在卡片头部给引导（见 html() 内 geoHint）
     {
       label: '地区',
-      render: r => '<td>' + esc(geoText(r)) + '</td>',
+      render: r => '<td>' + esc(Rock.util.geoText(r, { fields: ['country_name', 'city'] })) + '</td>',
     },
   ];
 
   // ── 渲染 ────────────────────────────────────────────────────────────
 
-  // 地区文案（METRICS_WINDOW 增量：后端 geo 查询时解析下发 country_name 本地化国名）：
-  // 优先 "国名/省市" 全本地化（如 中国/广东省/深圳市）；仅 ISO 码时显示码；全空计「未知」。
-  function geoText(r) {
-    const parts = [String(r.country_name || '').trim(), String(r.city || '').trim()].filter(Boolean);
-    if (parts.length) return parts.join('/');
-    if (r.country) return String(r.country);
-    return '未知';
-  }
   // geo 是否未就绪：有行但全部行没有 country 字段（后端 Resolver 未加载时不下发）
   function geoMissing(rows) {
     return rows.length > 0 && rows.every(r => r.country === undefined);
@@ -105,11 +97,11 @@
     maybeGeoToast(rows);
     const cols = COLUMNS.filter(c => !c.when || c.when());
     const head = addable
-      ? '<th style="width:36px"><input type="checkbox" id="waf-topip-all" title="全选（已在黑名单的行不可选）"></th>'
+      ? '<th style="width:36px">' + Rock.comp.form.checkbox({ id: 'waf-topip-all', attrs: { title: '全选（已在黑名单的行不可选）' } }) + '</th>'
       : '';
     const body = rows.map(r => {
       const cb = addable && !r.in_blacklist
-        ? '<input type="checkbox" class="waf-topip-check" data-ip="' + esc(r.client_ip || '') + '">'
+        ? Rock.comp.form.checkbox({ cls: 'waf-topip-check', attrs: { 'data-ip': r.client_ip || '' } })
         : (addable ? '<input type="checkbox" disabled>' : '');
       return '<tr><td>' + cb + '</td>' + cols.map(c => c.render(r)).join('') + '</tr>';
     }).join('');
