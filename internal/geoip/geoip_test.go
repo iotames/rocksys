@@ -11,7 +11,7 @@ import (
 
 // fakeDB 假 reader：按库名返回固定结果，用于覆盖分支而不依赖二进制 fixture。
 type fakeDB struct {
-	province string
+	province            string
 	code, country, city string
 }
 
@@ -192,5 +192,74 @@ func TestFirstSubdivision(t *testing.T) {
 		if got := firstSubdivision(c.subs); got != c.want {
 			t.Fatalf("用例 %d：期望 %q，实际 %q", i, c.want, got)
 		}
+	}
+}
+
+// TestEnabledSwitch 功能开关语义（GEOIP_ENABLED 内聚裁决点，GEOIP_SWITCH D1/D2）：
+//   - 默认开启；禁用后 Enabled/Ready 为 false、Lookup 恒零值，且不再触发库加载（扫盘短路）；
+//   - 重新开启后恢复：once 已缓存的库直接可用，无需重新打开。
+func TestEnabledSwitch(t *testing.T) {
+	dir := writeEmpty(t)
+	path := filepath.Join(dir, CityFile)
+	if err := os.WriteFile(path, []byte("mmdb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, calls := newTestResolver(dir, dir, map[string]dbHandle{
+		path: &fakeDB{code: "CN", province: "广东省", city: "深圳市"},
+	})
+	if !r.Enabled() {
+		t.Fatal("默认应开启")
+	}
+	if !r.Ready() {
+		t.Fatal("开启且库就绪时 Ready 应为 true")
+	}
+	loaded := *calls // 首次 Ready 已触发一次惰性加载
+	r.SetEnabled(false)
+	if r.Enabled() || r.Ready() {
+		t.Fatal("禁用后 Enabled/Ready 应为 false")
+	}
+	if gi := r.Lookup("8.8.8.8"); !gi.empty() {
+		t.Fatalf("禁用后 Lookup 应返回零值，实际 %+v", gi)
+	}
+	_ = r.Ready() // 禁用期间的就绪判定应短路，不得再触发库加载
+	if *calls != loaded {
+		t.Fatalf("禁用期间 Ready 不应触发库加载，期望 %d 次调用，实际 %d", loaded, *calls)
+	}
+	r.SetEnabled(true)
+	if !r.Ready() {
+		t.Fatal("重新开启后 Ready 应恢复 true（once 缓存命中）")
+	}
+	if gi := r.Lookup("8.8.8.8"); gi.Code != "CN" || gi.City != "深圳市" {
+		t.Fatalf("重新开启后 Lookup 应恢复，实际 %+v", gi)
+	}
+	if *calls != loaded {
+		t.Fatalf("重新开启后不应重复打开库（once 缓存），期望 %d 次调用，实际 %d", loaded, *calls)
+	}
+}
+
+// TestSyncPathBypassesSwitch 手动同步路径（SyncReady/LookupSync）不受开关限制：
+// GEOIP_ENABLED=false 时 SyncReady 仍为 true、LookupSync 照常解析——手动同步是
+// 特殊场景的异步 DB 维护任务，允许在功能关闭时单独操作补齐 geoip_list 关联表。
+func TestSyncPathBypassesSwitch(t *testing.T) {
+	dir := writeEmpty(t)
+	path := filepath.Join(dir, CityFile)
+	if err := os.WriteFile(path, []byte("mmdb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := newTestResolver(dir, dir, map[string]dbHandle{
+		path: &fakeDB{code: "CN", province: "广东省", city: "深圳市"},
+	})
+	r.SetEnabled(false)
+	if !r.SyncReady() {
+		t.Fatal("开关关闭但 mmdb 已加载时 SyncReady 应为 true")
+	}
+	if r.Ready() {
+		t.Fatal("开关关闭时 Ready 应为 false")
+	}
+	if gi := r.LookupSync("8.8.8.8"); gi.Code != "CN" || gi.City != "深圳市" {
+		t.Fatalf("开关关闭时 LookupSync 应照常解析，实际 %+v", gi)
+	}
+	if gi := r.Lookup("8.8.8.8"); !gi.empty() {
+		t.Fatalf("开关关闭时 Lookup 仍应返回零值（读侧降级），实际 %+v", gi)
 	}
 }

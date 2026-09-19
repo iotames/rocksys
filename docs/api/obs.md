@@ -31,7 +31,7 @@
 |------|------|
 | `GET /admin/obs/traffic/summary` | query `from`/`to`（`YYYY-MM-DD` 或 `YYYY-MM-DDTHH:MM`，必传）；响应见下 |
 | `GET /admin/obs/traffic/series` | query `from`/`to` + `bucket=hour\|day`（缺省自适应：跨度 ≤48h 用 hour，否则 day；非法值 400）；响应 `{bucket,series:[{bucket,ok_count,blocked_count}],cache_hit,cache_ttl_sec}`，`series[].bucket` 为 UTC 时间标签 |
-| `GET /admin/obs/traffic/geo` | query `from`/`to` + `source=access\|blocked`（缺省 access）+ `level=country\|province`（缺省 country；非法值 400）；country 级按国家计数倒序取 Top 10；province 级经 `geoip_list` 关联只统计 `country_code='CN'` 按 `province` 聚合（中国地图专用，去 city 前缀字符串切分）；country 级输出行附 `country_name`（中文国名随聚合带回）；响应 `{source,level,geo:[{country,country_name,cnt}\|{region,cnt}],cache_hit,geo_ready}`；`geo_ready`=GeoIP 是否就绪（未装配 mmdb 或加载失败为 false，前端据此显示常驻警告引导卡） |
+| `GET /admin/obs/traffic/geo` | query `from`/`to` + `source=access\|blocked`（缺省 access）+ `level=country\|province`（缺省 country；非法值 400）；country 级按国家计数倒序取 Top 10；province 级经 `geoip_list` 关联只统计 `country_code='CN'` 按 `province` 聚合（中国地图专用，去 city 前缀字符串切分）；country 级输出行附 `country_name`（中文国名随聚合带回）；响应 `{source,level,geo:[{country,country_name,cnt}\|{region,cnt}],cache_hit,geo_enabled,geo_ready}`；`geo_enabled`=GeoIP 功能是否开启（`GEOIP_ENABLED`）——false 时本端点**不执行聚合查询**、返回空 `geo` 列表，前端据此渲染「功能未开启」引导（区别于缺 mmdb 引导）；`geo_ready`=GeoIP 是否就绪（功能开启且 mmdb 已加载；未装配 mmdb 或加载失败为 false，前端据此显示常驻警告引导卡） |
 | `POST /admin/obs/traffic/cache_clear` | 无参数；清空流量统计结果缓存（只清缓存不改数据），响应 `{ok:true,text}`；WebUI 流量统计卡「清空缓存」按钮用，成功后前端强制重聚当前时间范围 |
 
 **`GET /admin/obs/traffic/summary` 响应 200**：

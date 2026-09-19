@@ -8,7 +8,7 @@ WebUI「服务 → 数据库 → 表结构」页数据源。期望结构 = 运�
 |------|------|
 | `GET /admin/db/schema` | 逐表比对期望与实际结构，返回差异项与自动项生成 SQL；无差异时 `items:[]`、`sql:""` |
 | `POST /admin/db/exec` | body `{sql}`；拆句（分号切分，感知字符串字面量与注释内分号）逐条执行、**遇错即停**（DDL 无跨方言统一事务语义），返回已执行到的位置；进程内互斥（已有执行在途回 409） |
-| `POST /admin/db/geoip_sync` | 无 body；**后台任务模式**——提交即返回 `{ok,task_id}`，同步进度/报告文本经 `GET /admin/tasks/{id}` 的 `progress.text` 与 `progress.detail` 取回；geo 未就绪（mmdb 缺失/未加载）回 503，响应文本为引导文案；已有任务在跑回 409 |
+| `POST /admin/db/geoip_sync` | 无 body；**后台任务模式**——提交即返回 `{ok,task_id}`，同步进度/报告文本经 `GET /admin/tasks/{id}` 的 `progress.text` 与 `progress.detail` 取回；**手动同步不受 `GEOIP_ENABLED` 限制**（特殊场景的异步 DB 维护任务，功能关闭时允许单独操作补齐 `geoip_list`），仅 mmdb 缺失/未加载回 503（响应文本给出路）；已有任务在跑回 409 |
 
 **`GET /admin/db/schema` 响应 200**：
 

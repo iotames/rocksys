@@ -96,11 +96,12 @@
     return '未知';
   }
 
-  // 配置分组映射（key 前缀 → 分组）：全局配置页仅保留基础设施分组（网关 / 数据访问），
+  // 配置分组映射（key 前缀 → 分组）：全局配置页仅保留基础设施分组（网关 / 数据访问 / GeoIP），
   // 组件与服务的独有配置项已迁至各自页面（配置页签），经 COMPONENT_PREFIX 过滤取用
   const PREFIX_GROUPS = [
     { prefix: 'ROCKSYS_', name: 'gateway', label: '网关' },
     { prefix: 'DB_',      name: 'db',      label: '数据访问' },
+    { prefix: 'GEOIP_',   name: 'geoip',   label: 'GeoIP' },
   ];
 
   // 枚举值配置项（编辑态渲染下拉而非手填）：key → 可选值数组（首个为默认/推荐）

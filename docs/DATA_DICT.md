@@ -238,7 +238,9 @@
 **说明**：只做登记 + 状态汇总，**不驱动任何任务**。装配期按 `name` upsert 登记（系统级 `kind=system`
 行整行只读，被改则重启重置）；运行状态本期仅 `geoip_sync` 行回写（任务结束单条原子 UPDATE），
 其余行 `last_run_at` 空表示「未登记」（不代表从未执行）。无 `enabled` 列——启用状态由
-`GET /admin/schedule/list` 行内附带（服务端读 `config_key` 对应配置现值，配置中心唯一真源）。
+`GET /admin/schedule/list` 行内附带（服务端读 `config_key` 对应配置现值，配置中心唯一真源）；
+`geoip_sync` 行额外附带 `geoip_enabled`（功能开关现值）与 `geoip_sync_ready`（手动同步就绪 =
+mmdb 已加载，不受开关限制），均每请求现算。
 
 | 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
 |---|---|---|---|---|---|

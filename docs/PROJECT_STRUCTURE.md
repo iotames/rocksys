@@ -17,7 +17,7 @@ rocksys/
 │   ├── hotswap/                  # ★ 生产热运维引擎：配置热更/组件热切/脚本热载
 │   ├── adminapi/                 # Admin API handler（回环地址，不对外网；含数据库端点组 dbschema/dsn/migrate/tasks）
 │   ├── taskcenter/               # 长任务执行中心（迁移/结构对齐/GeoIP 同步/SQL 后台执行统一注册与观测；纯内存）
-│   ├── geoip/                    # GeoIP 解析器（GeoLite2 mmdb，省/市/国名四字段，obs/shield 共享；geoip_list 关联表数据源）
+│   ├── geoip/                    # GeoIP 解析器（GeoLite2 mmdb，省/市/国名四字段，obs/shield 共享；GEOIP_ENABLED 功能开关内聚裁决；geoip_list 关联表数据源）
 │   └── conf/                     # 底座配置封装（基于 easyconf）
 ├── plugins/                      # ★ 可选挂件（默认全关，可热插拔，可独立演进）
 │   ├── shield/                   # L1 防护（转发链中间件）

@@ -37,9 +37,12 @@ import (
 )
 
 // geoLookup GeoIP 解析最小接口（*geoip.Resolver 天然满足；测试可注入桩）。
+// Ready（自动定时门控，受开关限制）与 SyncReady/LookupSync（手动同步专用，不受开关
+// 限制——手动同步是特殊场景的异步 DB 维护任务，GEOIP_ENABLED=false 时仍允许单独执行）。
 type geoLookup interface {
-	Lookup(ip string) geoip.GeoInfo
+	LookupSync(ip string) geoip.GeoInfo
 	Ready() bool
+	SyncReady() bool
 }
 
 // geoSyncReport 单表同步报告。
@@ -309,7 +312,7 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup, se
 				continue
 			}
 			rep.IPs++
-			gi := res.Lookup(ip)
+			gi := res.LookupSync(ip)
 			v := geoVal{ip: ip, code: gi.Code, country: gi.Country, province: gi.Province, city: gi.City}
 			if v.emptyGeo() {
 				rep.Skipped++
@@ -350,15 +353,17 @@ func geoSyncTable(ctx context.Context, d *db.DB, table string, res geoLookup, se
 }
 
 // geoSyncAll 对全部参与表执行增量同步（geoip_list 构建/刷新唯一入口）：
-// 手动端点与定时触发皆经任务中心提交后调它（同互斥组天然串行）。geo 未就绪直接报错
-// （无 mmdb 时同步无从谈起）；上一趟仍在进行时拒绝并发（不排队，防御性兜底——正常路径
+// 手动端点与定时触发皆经任务中心提交后调它（同互斥组天然串行）。门控只要求 mmdb
+// 已加载（SyncReady，不受 GEOIP_ENABLED 限制——手动同步是特殊场景的异步 DB 维护
+// 任务，功能关闭时也允许单独操作）；自动定时路径的开关遵守由 startGeoSyncTimer
+// 的 Ready() 复查承担。上一趟仍在进行时拒绝并发（不排队，防御性兜底——正常路径
 // 互斥由任务中心分组承担）。ctx 为调用方上下文（人工取消即本趟收工；无时间预算——
 // 后台任务默认无超时，跑多久由数据量决定）：取消在块/批边界生效，已完成部分保留。
 // 结束后经 geoSyncOnDone 回写 schedule_list 状态（注入方决定落点；nil 不回写）；
 // setProgress 在每块边界回传进度（后台任务页实时可见，可 nil）。
 func geoSyncAll(ctx context.Context, d *db.DB, res geoLookup, setProgress func(text string)) ([]geoSyncReport, error) {
-	if !res.Ready() {
-		return nil, fmt.Errorf("geoip: mmdb 未加载，无法同步；请先放置 GeoLite2 mmdb 并重启服务")
+	if !res.SyncReady() {
+		return nil, fmt.Errorf("geoip: mmdb 未加载，无法同步；请放置 GeoLite2 mmdb（见概览页引导卡）并重启服务后重试")
 	}
 	if !geoSyncRunning.CompareAndSwap(false, true) {
 		return nil, fmt.Errorf("geoip: 上一轮同步仍在进行中，请稍候再触发（已完成部分不受影响）")
@@ -501,7 +506,9 @@ func normalizeGeoSyncInterval(v int) int {
 // startGeoSyncTimer 启动自动同步定时器（装配层调用）：
 // 分钟粒度 tick，每轮触发时重读间隔当前值（运行中改值下一轮生效，含 0=关闭的动态判定）；
 // 首轮在启动约 1 分钟后执行（存量库冷启动多轮逐步追平）。返回停止通道，进程停机时关闭。
-// mmdb 未就绪时返回 nil（不启动定时器——同步无从谈起，配置任意值均不生效）。
+// 服务未就绪时返回 nil（不启动定时器——同步无从谈起，配置任意值均不生效）。
+// 每轮触发时先做就绪复查：运行期热更关闭（GEOIP_ENABLED=false）后下一轮自动停摆、
+// 恢复后自动续跑，免提交必败任务。
 //
 // 执行模型：定时同步与手动同步同为任务中心实例（run 由装配期注入「提交任务」闭包），
 // 受任务中心分组互斥统一管控——同互斥组已有任务在跑（人工长任务/上一轮未完）时提交被拒，
@@ -520,6 +527,9 @@ func startGeoSyncTimer(res geoLookup, run func(ctx context.Context)) chan struct
 			case <-stop:
 				return
 			case <-ticker.C:
+				if !res.Ready() {
+					continue // 运行期失稳（热更关闭）→ 本轮跳过，下一轮复查自动停摆/恢复
+				}
 				iv := normalizeGeoSyncInterval(geoipSyncIntervalMin)
 				if iv <= 0 {
 					continue // 0=关闭（运行期动态判定）

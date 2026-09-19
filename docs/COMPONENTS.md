@@ -81,9 +81,10 @@ type MiddlewareLifecycle interface {
 ### 2.7 `internal/geoip` — GeoIP 解析器（框架私有）
 
 - **作用**：基于 MaxMind GeoLite2 mmdb 文件的 IP 地理位置解析（无第三方依赖），供 obs / shield **共享一个实例**（GEOIP_LIST 方案）：地理信息不再逐行落库，由 `geoip_list` 关联表承载（同步器增量构建，见 `cmd/rocksys/geoip_sync.go`）；读侧明细/聚合经 JOIN 关联取用，JOIN 未命中回退实时 `Lookup`（Top IP 等少行场景保持查询时逐行解析）。解析结果四字段：ISO 国家码 / 本地化国名（zh-CN 优先）/ 一级行政区 / 城市名（省与市分离，名实相符）。
+- **服务提供者模式（功能总开关内聚）**：`GEOIP_ENABLED` 总开关内聚在 `Resolver` 单点裁决（`SetEnabled`/`Enabled`/`Ready`/`Lookup` 少数入口），消费方不各自读配置——`Ready()` = 功能开启 **且** mmdb 已加载，消费侧门控（自动同步定时器、日程登记 `enabled`、`geo_ready` 信号）经它自动遵守开关。禁用时实时 `Lookup` 返回零值，读侧展示层以 `geoip.DisabledText`（「服务未开启」）替代（仅展示、绝不落库——写侧自动同步被 `Ready()` 门控阻断；JOIN 命中的 geoip_list 历史地区照常显示）。**手动同步例外**：定位为特殊场景的异步 DB 维护任务（不影响主程序转发），经 `SyncReady()`（仅要求 mmdb 已加载）与 `LookupSync()`（不受开关限制的解析入口）单独门控——功能关闭时数据库页手动同步照常可用。`GEOIP_ENABLED` 支持配置热更（Watch 回调 `SetEnabled`，秒级生效）；已知边界：启动时禁用、运行期再开启，自动同步定时器需重启拉起（手动同步即时可用），运行期关闭由定时器每轮就绪复查自动停摆。
 - **查找链（逐文件独立）**：`GeoLite2-City.mmdb` 与 `GeoLite2-Country.mmdb` 各自按 **`GEOIP_MMDB_DIR`（默认 `geoip`）→ 当前工作目录 → `$HOME/geoip`** 查找，City 优先、缺失回退 Country（仅国家码）。
 - **降级与生效**：惰性加载，未放置 mmdb 时启动日志 warning 告警一次（同步器不启动定时器、明细 geo 显示「未知」），**不阻断转发**；文件补放后**重启生效**（不做运行期热载）。`Ready()` 供端点回传 `geo_ready` 就绪信号（前端引导卡判定）与自动同步生效前置判定。
-- **配置**：`GEOIP_MMDB_DIR`（见 `docs/CONFIGURATION.md`）；调用链路见 `docs/PROJECT_STRUCTURE.md`。
+- **配置**：`GEOIP_ENABLED` / `GEOIP_MMDB_DIR`（见 `docs/CONFIGURATION.md`，WebUI 全局配置页「GeoIP」分组）；调用链路见 `docs/PROJECT_STRUCTURE.md`。
 
 ---
 

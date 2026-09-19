@@ -285,7 +285,8 @@ func (o *Obs) Query(q Query) ([]map[string]any, error) {
 }
 
 // fillGeoRows 行级 geo 回填：JOIN 命中用存量（country_code 非空即跳过），未命中实时解析。
-// nil resolver（未装配 mmdb）安全跳过。
+// nil resolver（未装配 mmdb）安全跳过；功能禁用（GEOIP_ENABLED=false）时实时路径不再解析，
+// 以提供者规范文案「服务未开启」替代（仅展示，不落库；JOIN 命中的历史数据照常显示）。
 func fillGeoRows(res *geoip.Resolver, rows []map[string]any) {
 	if res == nil || len(rows) == 0 {
 		return
@@ -296,6 +297,10 @@ func fillGeoRows(res *geoip.Resolver, rows []map[string]any) {
 		}
 		ip, _ := row["client_ip"].(string)
 		if ip == "" {
+			continue
+		}
+		if !res.Enabled() {
+			row["country_name"] = geoip.DisabledText
 			continue
 		}
 		gi := res.Lookup(ip)

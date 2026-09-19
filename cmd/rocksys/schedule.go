@@ -22,6 +22,7 @@ import (
 
 	"rocksys/internal/conf"
 	"rocksys/internal/db"
+	"rocksys/internal/geoip"
 
 	"github.com/iotames/easyserver/log"
 )
@@ -209,9 +210,9 @@ func scheduleRows(geoipReady bool) []struct {
 	row    ScheduleRow
 	system bool
 } {
-	geoipRemark := "手动：数据库页/概览聚合卡按钮；自动：GEOIP_SYNC_INTERVAL（0=关闭，最小 10 分钟）"
+	geoipRemark := "手动：数据库页/概览聚合卡按钮（特殊异步 DB 维护任务，仅要求 mmdb 已加载，不受 GEOIP_ENABLED 限制）；自动：GEOIP_SYNC_INTERVAL（0=关闭，最小 10 分钟）"
 	if !geoipReady {
-		geoipRemark += "；mmdb 未加载，自动同步未启动（放置 GeoLite2 mmdb 并重启后生效）"
+		geoipRemark += "；当前自动同步停用（GEOIP_ENABLED 未开启或 mmdb 未加载）"
 	}
 	return []struct {
 		row    ScheduleRow
@@ -257,15 +258,16 @@ func RegisterScheduleRows(reg *ScheduleRegistry, geoipReady bool) {
 }
 
 // scheduleEnabledOf 计算 config_key 对应任务的启用状态（读 easyconf 当前值，配置中心唯一真源）：
-// 空 config_key（系统级）恒 true；GEOIP_SYNC_INTERVAL 按 0=关闭语义判定；其余 *_ENABLED 按 "true"。
-func scheduleEnabledOf(items []conf.ConfigItem, geoipReady bool) func(string) bool {
+// 空 config_key（系统级）恒 true；GEOIP_SYNC_INTERVAL 按 0=关闭语义判定（geoipReadyFn
+// 每请求现算，运行期热更开关后 enabled 即随动）；其余 *_ENABLED 按 "true"。
+func scheduleEnabledOf(items []conf.ConfigItem, geoipReadyFn func() bool) func(string) bool {
 	return func(key string) bool {
 		if key == "" {
 			return true
 		}
 		v := configValue(items, key)
 		if key == "GEOIP_SYNC_INTERVAL" {
-			return geoipReady && normalizeGeoSyncInterval(atoiDefault(v, 60)) != 0
+			return geoipReadyFn() && normalizeGeoSyncInterval(atoiDefault(v, 60)) != 0
 		}
 		return v == "true"
 	}
@@ -282,13 +284,22 @@ func atoiDefault(s string, def int) int {
 
 // ScheduleList GET /admin/schedule/list：只读登记清单（定时任务页数据源）。
 // 响应：{ok:true, tasks:[{name,title,kind,config_key,plan,last_run_at,last_status,last_message,remark,enabled}]}。
-func ScheduleList(reg *ScheduleRegistry, cfgMgr conf.Manager, geoipReady bool) http.HandlerFunc {
+// geoip_sync 行额外附带两个独立状态字段（每请求现算，数据库页同步卡据此区分三类状态）：
+//   - geoip_enabled     功能开关当前值（GEOIP_ENABLED，false=实时解析与自动同步停用）；
+//   - geoip_sync_ready  手动同步是否可执行（mmdb 已加载即 true，不受开关限制）。
+func ScheduleList(reg *ScheduleRegistry, cfgMgr conf.Manager, geoRes *geoip.Resolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tasks, err := reg.List(scheduleEnabledOf(cfgMgr.List(), geoipReady))
+		tasks, err := reg.List(scheduleEnabledOf(cfgMgr.List(), geoRes.Ready))
 		if err != nil {
 			log.Error("schedule: 清单查询失败", "err", err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		for i := range tasks {
+			if tasks[i]["name"] == schedGeoipSync {
+				tasks[i]["geoip_enabled"] = geoRes.Enabled()
+				tasks[i]["geoip_sync_ready"] = geoRes.SyncReady()
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "tasks": tasks})

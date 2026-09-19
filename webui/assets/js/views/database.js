@@ -58,6 +58,8 @@
       taskId: '',         // 进行中同步任务 ID（仅内存；页面恢复经 /admin/tasks 查询）
       lastRunAt: '',      // 上次同步时间（schedule_list.geoip_sync 行 last_run_at）
       lastStatus: '',     // 上次同步状态 success/failed
+      syncReady: null,    // 手动同步是否可执行（schedule_list.geoip_sync 行 geoip_sync_ready：mmdb 已加载即 true，不受开关限制；null=未知）
+      geoEnabled: null,   // GeoIP 功能开关当前值（schedule_list.geoip_sync 行 geoip_enabled；false=实时解析与自动同步停用，手动同步仍可用）
     },
     data: {             // 「表数据」页签：数据源 / 表结构对齐 / 数据迁移
       dsn: {              // 外部数据源列表与添加表单
@@ -374,6 +376,12 @@
       if (row) {
         state.geo.lastRunAt = String(row.last_run_at || '');
         state.geo.lastStatus = String(row.last_status || '');
+        // geoip_sync_ready（mmdb 已加载即 true，不受开关限制）与 geoip_enabled（功能开关
+        // 当前值）由服务端每请求现算下发——不借行内 enabled（那是"定时任务启用"语义，
+        // 含 GEOIP_SYNC_INTERVAL=0=关闭的合法状态，误用作就绪信号会在关自动同步时
+        // 谎报"功能未就绪"并吞掉手动同步入口）。
+        state.geo.syncReady = row.geoip_sync_ready !== false;
+        state.geo.geoEnabled = row.geoip_enabled !== false;
         render();
       }
     } catch (e) { /* 静默：保持占位文案 */ }
@@ -487,15 +495,30 @@
         (g.lastStatus ? '（' + esc(g.lastStatus) + '）' : '')
       : '上次同步：未登记（尚未执行过同步）';
     let body;
-    if (g.error) {
-      body = '<div class="alert alert-warn">' + esc(g.error) + '</div>' +
-        '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync">重试同步</button>';
-    } else if (g.result) {
-      body = '<div class="alert alert-info">' + esc(g.result.text || '完成') + '</div>' +
-        '<button class="btn btn-sm" data-act="db-geoip-sync">再次同步（处理新增缺失 IP）</button>';
+    if (g.syncReady === false) {
+      // mmdb 未加载：手动同步无从谈起（同步要逐 IP 解析地理信息），按钮不渲染，
+      // 行内写明原因与恢复路径（文案三要素：发生了什么/为什么/怎么办）。
+      body = '<div class="alert alert-warn">GeoLite2 mmdb 数据文件未加载，同步不可用。</div>' +
+        '<div class="form-hint">补齐数据文件：下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务，详见概览页引导卡。</div>';
     } else {
-      body = '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync"' + (g.running ? ' disabled' : '') + '>' +
-        (g.running ? '同步中…（提交后可在任务列表观察进度）' : '开始同步') + '</button>';
+      // 功能未开启（GEOIP_ENABLED=false）：实时解析与自动同步已停用，但手动同步是
+      // 特殊场景的异步 DB 维护任务、不受开关限制——保留按钮并按实际状态给提示。
+      if (g.geoEnabled === false) {
+        body = '<div class="alert alert-warn">GeoIP 功能未开启（GEOIP_ENABLED=false）：地区实时解析与自动同步已停用，' +
+          '已入库的历史地区数据照常展示。</div>' +
+          '<div class="form-hint">手动同步不受该开关限制（异步后台任务，不影响主程序转发），可正常执行；' +
+          '如需恢复实时解析与自动同步，在「配置 → 全局配置 → GeoIP」分组把 GEOIP_ENABLED 设为 true 并保存（热更秒级生效）。</div>';
+      }
+      if (g.error) {
+        body += '<div class="alert alert-warn">' + esc(g.error) + '</div>' +
+          '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync">重试同步</button>';
+      } else if (g.result) {
+        body += '<div class="alert alert-info">' + esc(g.result.text || '完成') + '</div>' +
+          '<button class="btn btn-sm" data-act="db-geoip-sync">再次同步（处理新增缺失 IP）</button>';
+      } else {
+        body += '<button class="btn btn-sm btn-primary" data-act="db-geoip-sync"' + (g.running ? ' disabled' : '') + '>' +
+          (g.running ? '同步中…（提交后可在任务列表观察进度）' : '开始同步') + '</button>';
+      }
     }
     return '<div class="card"><div class="card-title">GeoIP 数据同步' +
       '<span class="tag tag-blue">维护工具</span></div>' +
@@ -533,8 +556,8 @@
     } catch (e) {
       state.geo.running = false;
       state.geo.error = e.message || '同步失败';
-      // mmdb 提示仅在服务端真返回 503（geo 未就绪）时附带，避免误导
-      const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务' : '';
+      // 503 提示仅在服务端真返回 503（mmdb 未加载）时附带，避免误导
+      const hint = (e && e.status === 503) ? '。请放置 GeoLite2 mmdb 数据文件（GEOIP_MMDB_DIR 目录，缺省 geoip/）并重启服务' : '';
       toast(state.geo.error + hint, 'error');
       render();
     }

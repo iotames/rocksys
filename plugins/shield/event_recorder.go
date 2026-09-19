@@ -537,7 +537,8 @@ func (r *EventRecorder) QueryEvents(q EventQuery) ([]map[string]any, error) {
 }
 
 // fillGeoRows 行级 geo 回填（GEOIP_LIST 方案）：明细查询 LEFT JOIN geoip_list，未命中
-// （同步间隔内新 IP）回退实时 Lookup 补齐展示字段；nil resolver 安全跳过。
+// （同步间隔内新 IP）回退实时 Lookup 补齐展示字段；nil resolver 安全跳过；
+// 功能禁用（GEOIP_ENABLED=false）时实时路径不再解析，以「服务未开启」规范文案替代。
 func fillGeoRows(res *geoip.Resolver, rows []map[string]any) {
 	if res == nil || len(rows) == 0 {
 		return
@@ -548,6 +549,10 @@ func fillGeoRows(res *geoip.Resolver, rows []map[string]any) {
 		}
 		ip, _ := row["client_ip"].(string)
 		if ip == "" {
+			continue
+		}
+		if !res.Enabled() {
+			row["country_name"] = geoip.DisabledText
 			continue
 		}
 		gi := res.Lookup(ip)
@@ -611,9 +616,16 @@ func (r *EventRecorder) StatsTopIP(from time.Time, limit int) ([]map[string]any,
 	for _, row := range rows {
 		normalizeEventRow(row)
 		// geo 查询时解析（TRAFFIC_ANALYSIS D12）：Top IP 行数少，逐行解析免加列；
-		// 未注入 Resolver（mmdb 未配置）时字段为空串，前端显示占位。
+		// 未注入 Resolver（mmdb 未配置）时字段为空串，前端显示占位；
+		// 功能禁用时以「服务未开启」规范文案替代（不解析、不暴露地区）。
 		if r.geo != nil {
 			ip, _ := row["client_ip"].(string)
+			if !r.geo.Enabled() {
+				// 三字段齐备（与启用路径同形）：Top IP 的 country 列全靠本循环写入，
+				// 缺字段会让前端 geoMissing（country===undefined）误判为"缺 mmdb"并弹误导警告。
+				row["country"], row["country_name"], row["city"] = "", geoip.DisabledText, ""
+				continue
+			}
 			gi := r.geo.Lookup(ip)
 			row["country"], row["country_name"], row["city"] = gi.Code, gi.Country, gi.City
 		}

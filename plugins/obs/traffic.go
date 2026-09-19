@@ -337,6 +337,20 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "level 参数非法（可选 country/province）", http.StatusBadRequest)
 		return
 	}
+	// 功能禁用（GEOIP_ENABLED=false，GEOIP_SWITCH D3）：不执行聚合查询（GeoIP 相关任务全部
+	// 停摆），返回空数据 + geo_enabled=false——前端据此渲染「功能未开启」引导，
+	// 与「缺 mmdb」引导（geo_ready=false 且 geo_enabled=true）区分。
+	if o.geo == nil || !o.geo.Enabled() {
+		writeJSON(w, map[string]any{
+			"source":      source,
+			"level":       level,
+			"geo":         []any{},
+			"cache_hit":   false,
+			"geo_enabled": false,
+			"geo_ready":   false,
+		})
+		return
+	}
 	script := "traffic_geo_top.sql"
 	if level == "province" {
 		script = "traffic_geo_province_top.sql"
@@ -394,9 +408,11 @@ func (h *AdminHandler) TrafficGeo(w http.ResponseWriter, r *http.Request) {
 		"level":     level,
 		"geo":       data,
 		"cache_hit": cached,
+		// 功能开关状态（GEOIP_ENABLED）：false 时前端显示「功能未开启」引导而非本卡内容。
+		"geo_enabled": true,
 		// geo 数据就绪信号（D17 引导卡判定）：未装配 mmdb 或加载失败时为 false，
 		// 前端据此显示常驻警告引导卡（缺哪个文件、去哪下载、重启生效）。
-		"geo_ready": o.geo != nil && o.geo.Ready(),
+		"geo_ready": o.geo.Ready(),
 	})
 }
 

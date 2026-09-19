@@ -1,6 +1,9 @@
 // Package geoip 提供基于 GeoLite2 mmdb 文件的 IP 地理位置解析。
 //
 // 设计要点（docs/plan/TRAFFIC_ANALYSIS_PLAN.md §3.3/D12/D15/D17）：
+//   - 服务提供者模式：功能开关（GEOIP_ENABLED）内聚在本包 Resolver 上裁决，
+//     消费方只经 Ready/Enabled/Lookup 少数入口提问，不各自读配置——禁用语义单点收敛。
+//     手动同步是例外（特殊异步 DB 维护任务）：经 SyncReady/LookupSync 不受开关限制。
 //   - 惰性加载：首次 Lookup 才定位加载，"缺失"结论同样缓存，避免热路径反复扫盘；
 //     文件补放后重启生效（不做热加载、不做文件监控），重启后 once 重建自然重新查找。
 //   - 查找链逐文件独立：City 与 Country 库各自按 配置目录 → 当前工作目录 → $HOME/geoip
@@ -27,6 +30,11 @@ const (
 
 	// DefaultDir 默认数据目录（相对工作目录解析），与 hotscripts 等外挂资源同级约定。
 	DefaultDir = "geoip"
+
+	// DisabledText 功能禁用（GEOIP_ENABLED=false）时读侧展示的规范替代文案：
+	// 由提供者单点定义，消费方（明细回填/Top IP 等）直接引用，保证全站口径一致。
+	// 只用于展示，绝不落库——写侧同步被 Ready() 门控阻断，禁用期间不会产生新写入。
+	DisabledText = "服务未开启"
 )
 
 // nameMap mmdb 的多语言名称字典（zh-CN/en 等）。
@@ -128,33 +136,69 @@ type Resolver struct {
 	factory dbFactory
 	homeFn  func() (string, error) // $HOME 获取函数，独立出来便于测试替换
 
+	enabled atomic.Bool // 功能总开关（GEOIP_ENABLED 热更注入；false=服务未开启，禁用语义唯一裁决点）
+
 	city    lazyDB
 	country lazyDB
 }
 
 // NewResolver 构造解析器。dir 为数据目录（空串回落 DefaultDir="geoip"）。
+// 功能默认开启（GEOIP_ENABLED 缺省 true），装配层经 SetEnabled 注入配置实际值。
 // 日志沿用仓库统一的 easyserver/log 包级 API，与既有插件风格一致。
 func NewResolver(dir string) *Resolver {
 	if dir == "" {
 		dir = DefaultDir
 	}
-	return &Resolver{
+	r := &Resolver{
 		cfgDir:  dir,
 		factory: openMaxmind,
 		homeFn:  os.UserHomeDir,
 	}
+	r.enabled.Store(true)
+	return r
 }
 
-// Ready 是否至少成功加载了一个库，供读侧/前端 geo 状态检测。
-// 首次调用会触发一次惰性定位（同样受 once 缓存，后续调用零开销），
-// 这样"文件已就位但尚未有流量"时状态检测也能给出正确结论。
+// SetEnabled 设置功能总开关（装配层经配置热更回调注入，运行期改值即时生效）。
+func (r *Resolver) SetEnabled(v bool) { r.enabled.Store(v) }
+
+// Enabled 功能是否开启（GEOIP_ENABLED 当前值）。
+func (r *Resolver) Enabled() bool { return r.enabled.Load() }
+
+// Ready GeoIP 服务是否就绪（= 功能开启 且 至少成功加载一个库），供装配门控与
+// 前端 geo 状态检测。禁用即未就绪：自动定时同步不启动、读侧降级、日程登记降级，
+// 全部既有门控经本入口自动遵守开关，无需各自感知配置。
+// 首次调用会触发一次惰性定位（同样受 once 缓存，后续调用零开销）；
+// 禁用时短路返回，不触发扫盘。
 func (r *Resolver) Ready() bool {
+	if !r.Enabled() {
+		return false
+	}
+	return r.SyncReady()
+}
+
+// SyncReady 手动同步是否可执行（= 至少成功加载一个库，不受 GEOIP_ENABLED 限制）。
+// 手动同步定位为特殊场景的数据库维护任务：异步后台执行、不影响主程序转发，
+// 即使功能开关关闭（实时解析停用）也允许单独操作补齐 geoip_list 关联表。
+// 首次调用触发一次惰性定位（once 缓存，后续零开销）。
+func (r *Resolver) SyncReady() bool {
 	return r.city.load(r, CityFile) != nil || r.country.load(r, CountryFile) != nil
 }
 
-// Lookup 返回地理信息（ISO 码、本地化国名、省市）。任何失败路径（非法 IP、
+// Lookup 返回地理信息（ISO 码、本地化国名、省市）。任何失败路径（功能禁用、非法 IP、
 // 私有/回环地址、库缺失、解析失败）一律返回零值，绝不 panic、绝不阻断转发主流程。
+// 禁用时返回零值而非"服务未开启"标记——本包不把展示文案混进数据结构，
+// 读侧展示层按 Enabled() 决定以 DisabledText 替代，写侧（同步落库）天然安全跳过。
 func (r *Resolver) Lookup(ipStr string) GeoInfo {
+	if !r.Enabled() {
+		return GeoInfo{}
+	}
+	return r.LookupSync(ipStr)
+}
+
+// LookupSync 与 Lookup 同语义，但不受 GEOIP_ENABLED 限制——仅供 geoip_list 同步
+// 任务（特殊场景的异步 DB 维护操作，cmd/rocksys/geoip_sync.go）使用：功能关闭时
+// 仍可单独手动同步补齐关联表。读侧实时路径禁止使用本入口（统一走 Lookup）。
+func (r *Resolver) LookupSync(ipStr string) GeoInfo {
 	ip, err := netip.ParseAddr(ipStr)
 	if err != nil || !ip.IsValid() {
 		return GeoInfo{}

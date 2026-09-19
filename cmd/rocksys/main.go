@@ -319,6 +319,20 @@ func buildServer(args []string) (*Server, error) {
 		log.Info("db: 数据访问层已就绪", "driver", dataDB.Driver())
 	}
 
+	// ── GeoIP 功能总开关（默认开启；关闭后解析/自动同步/统计全部停用）────────
+	// 开关语义内聚在 geoip.Resolver 单点裁决（Enabled/Ready/Lookup），消费方不各自读配置：
+	// 关闭后——读侧实时解析停用（明细/Top IP 地区列显示「服务未开启」，历史已入库地区照常）、
+	// 自动同步定时器停摆、日程登记降级、概览页地理卡降级为未开启引导；
+	// 手动同步例外（特殊异步 DB 维护任务，只要求 mmdb 已加载，见 SyncReady）。
+	// 支持热更（下方 Watch 注入，秒级生效）。
+	var geoipEnabled bool
+	if err := cfgMgr.Register(&geoipEnabled, "GEOIP_ENABLED", "true",
+		"是否启用 GeoIP 地理位置功能（总开关，默认开启；关闭后地区实时解析与自动同步全部停用）",
+		"关闭后：明细与统计的地区列显示「服务未开启」，概览页地理位置卡降级为功能未开启引导，自动同步定时器停摆；数据库页手动同步不受本开关限制（特殊异步 DB 维护任务，只要求 mmdb 已加载）；修改后热更秒级生效（启动时禁用的自动同步定时器需重启拉起）",
+	); err != nil {
+		return nil, fmt.Errorf("register GEOIP_ENABLED: %w", err)
+	}
+
 	// ── GeoIP 解析器（写时解析：obs/shield 共享一个实例）────────────────
 	// 惰性加载：无 mmdb 时仅告警降级（geo 列空串），不阻断转发；文件补放后重启生效。
 	var geoipDir string
@@ -329,14 +343,18 @@ func buildServer(args []string) (*Server, error) {
 		return nil, fmt.Errorf("register GEOIP_MMDB_DIR: %w", err)
 	}
 	geoRes := geoip.NewResolver(geoipDir)
+	geoRes.SetEnabled(geoipEnabled)
+	// 开关热更注入（Watch 回调在独立 goroutine 执行）：GEOIP_ENABLED 运行期改值秒级生效，
+	// 与其他 GEOIP_* 绑定变量直写热更同一模式。
+	cfgMgr.Watch(func(*conf.Config) { geoRes.SetEnabled(geoipEnabled) })
 
 	// ── GeoIP 自动同步间隔（间隔值内置开关语义：0=关闭，不设独立开关）──
 	// int 分钟：0=关闭自动同步（手动不受影响）；有效最小 10（防设置过小耗尽资源）；
-	// <10（非 0）或非法回落默认 60。生效前置 = mmdb 已加载（未加载则定时器不启动，见下方启动处）；
-	// 运行中改值下一轮生效（每轮触发时重读本变量当前值，含 0=关闭的动态判定）。
+	// <10（非 0）或非法回落默认 60。生效前置 = GeoIP 服务就绪（GEOIP_ENABLED=true 且 mmdb 已加载，
+	// 未就绪则定时器不启动，见下方启动处）；运行中改值下一轮生效（每轮触发时重读本变量当前值，含 0=关闭的动态判定）。
 	if err := cfgMgr.Register(&geoipSyncIntervalMin, "GEOIP_SYNC_INTERVAL", "60",
 		"GeoIP 关联表（geoip_list）自动同步间隔（分钟；0=关闭自动同步，手动同步不受影响；最小 10，更小值回落默认 60）",
-		"生效前置：GeoLite2 mmdb 已加载（未加载时定时器不启动，放置文件后须重启）；运行中修改下一轮生效",
+		"生效前置：GeoIP 服务就绪（GEOIP_ENABLED=true 且 mmdb 已加载；未就绪时定时器不启动）；运行中修改下一轮生效",
 	); err != nil {
 		return nil, fmt.Errorf("register GEOIP_SYNC_INTERVAL: %w", err)
 	}
@@ -486,20 +504,21 @@ func buildServer(args []string) (*Server, error) {
 					log.Warn("schedule: geoip_sync 跳过登记失败", "err", err.Error())
 				}
 			}
-			if err := adminSrv.RegisterPlugin(PathScheduleList, ScheduleList(schedReg, cfgMgr, geoRes.Ready())); err != nil {
+			if err := adminSrv.RegisterPlugin(PathScheduleList, ScheduleList(schedReg, cfgMgr, geoRes)); err != nil {
 				log.Warn("schedule: 端点注册失败", "err", err.Error())
 			}
 		}
 		// GeoIP 增量同步（数据库页「表数据」页签入口，POST 才生效）：增量构建/刷新 geoip_list 关联表。
 		// 后台任务模式：提交任务即返回任务 ID，前端轮询任务详情展示进度与结果；无时间预算
 		// （后台任务默认无超时），取消经任务中心统一取消端点送达。互斥组 = 运行库数据面。
-		// mmdb 未加载时 503 引导（先放置数据文件并重启）。
+		// 手动同步是特殊场景的异步 DB 维护任务：不受 GEOIP_ENABLED 限制（关闭态允许单独
+		// 操作补齐关联表），仅 mmdb 未加载时 503 引导（先放置数据文件并重启）。
 		adminSrv.RegisterPlugin("/admin/db/geoip_sync", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				http.Error(w, "同步为维护操作，仅接受 POST", http.StatusMethodNotAllowed)
 				return
 			}
-			if geoRes == nil || !geoRes.Ready() {
+			if geoRes == nil || !geoRes.SyncReady() {
 				http.Error(w, "geoip: mmdb 未加载，无法同步；请放置 GeoLite2 mmdb（见概览页引导卡）并重启服务后重试", http.StatusServiceUnavailable)
 				return
 			}
@@ -683,8 +702,10 @@ func buildServer(args []string) (*Server, error) {
 		autoBan.Start()
 	}
 
-	// GeoIP 自动同步定时器：mmdb 已加载才启动（生效前置）；
+	// GeoIP 自动同步定时器：服务就绪（功能开启且 mmdb 已加载）才启动（生效前置）；
 	// 手动端点与定时触发收敛 geoSyncAll 唯一入口，同步成功后清流量统计缓存。
+	// 运行期热更关闭（GEOIP_ENABLED=false 或间隔改 0）后每轮就绪复查自动停摆，
+	// 恢复后自动续跑；启动时即禁用的定时器不会创建（动态拉起需重启，见 D6 已知边界）。
 	var geoSyncStop chan struct{}
 	if dataDB != nil {
 		// 定时同步与手动同步同为任务中心实例（工厂到点生产实例），受分组互斥统一管控：
@@ -702,7 +723,11 @@ func buildServer(args []string) (*Server, error) {
 			log.Info("geoip: 定时同步任务已提交", "task_id", taskID)
 		})
 		if geoSyncStop == nil {
-			log.Info("geoip: mmdb 未加载，自动同步未启动（放置 GeoLite2 mmdb 并重启后生效）")
+			if !geoRes.Enabled() {
+				log.Info("geoip: 功能未开启（GEOIP_ENABLED=false），自动同步定时器未启动（开启后需重启拉起；手动同步即时可用）")
+			} else {
+				log.Info("geoip: mmdb 未加载，自动同步未启动（放置 GeoLite2 mmdb 并重启后生效）")
+			}
 		}
 	}
 

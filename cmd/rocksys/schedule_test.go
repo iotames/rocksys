@@ -81,7 +81,7 @@ func TestScheduleEnabledOf(t *testing.T) {
 		{Key: "SHIELD_AUTO_BAN_ENABLED", Current: "true"},
 		{Key: "GEOIP_SYNC_INTERVAL", Current: "0"},
 	}
-	fn := scheduleEnabledOf(items, true)
+	fn := scheduleEnabledOf(items, func() bool { return true })
 	if !fn("") {
 		t.Error("系统级（空 config_key）应恒 true")
 	}
@@ -91,20 +91,20 @@ func TestScheduleEnabledOf(t *testing.T) {
 	if fn("GEOIP_SYNC_INTERVAL") {
 		t.Error("间隔 0 应判定为关闭")
 	}
-	// 间隔合法且 mmdb 就绪 → 启用；mmdb 未就绪 → 不启用（生效前置）
+	// 间隔合法且服务就绪 → 启用；未就绪 → 不启用（生效前置）
 	items[3].Current = "60"
-	if !scheduleEnabledOf(items, true)("GEOIP_SYNC_INTERVAL") {
-		t.Error("间隔 60 且 mmdb 就绪应判定启用")
+	if !scheduleEnabledOf(items, func() bool { return true })("GEOIP_SYNC_INTERVAL") {
+		t.Error("间隔 60 且服务就绪应判定启用")
 	}
-	if scheduleEnabledOf(items, false)("GEOIP_SYNC_INTERVAL") {
-		t.Error("mmdb 未就绪应判定不启用（生效前置）")
+	if scheduleEnabledOf(items, func() bool { return false })("GEOIP_SYNC_INTERVAL") {
+		t.Error("服务未就绪应判定不启用（生效前置）")
 	}
 }
 
 func TestScheduleRegisterRows(t *testing.T) {
 	resetGeoSyncState()
 	reg, _ := mustScheduleRegistry(t)
-	RegisterScheduleRows(reg, false) // mmdb 未加载：geoip_sync remark 注明依赖未满足
+	RegisterScheduleRows(reg, false) // mmdb 未加载：geoip_sync remark 注明自动同步停用
 	rows, err := reg.List(func(string) bool { return true })
 	if err != nil {
 		t.Fatalf("List: %v", err)

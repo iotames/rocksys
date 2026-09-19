@@ -16,11 +16,15 @@ import (
 )
 
 // stubResolver 桩解析器：公网 IP 返回固定地理，其他返回空（模拟私网/库外地址）。
+// Ready（自动同步门控=开关+库）与 SyncReady（手动同步门控=仅库）独立可调，
+// 覆盖「GEOIP_ENABLED=false 但 mmdb 就绪」的开关/就绪组合。
 type stubResolver struct{}
 
 func (stubResolver) Ready() bool { return stubReady }
 
-func (stubResolver) Lookup(ip string) geoip.GeoInfo {
+func (stubResolver) SyncReady() bool { return stubSyncReady }
+
+func (stubResolver) LookupSync(ip string) geoip.GeoInfo {
 	if ip == "8.8.8.8" {
 		return geoip.GeoInfo{Code: "US", Country: "美国", Province: "加利福尼亚州", City: "山景城"}
 	}
@@ -30,7 +34,10 @@ func (stubResolver) Lookup(ip string) geoip.GeoInfo {
 	return geoip.GeoInfo{}
 }
 
-var stubReady = true
+var (
+	stubReady     = true // 自动同步门控（GEOIP_ENABLED && mmdb）
+	stubSyncReady = true // 手动同步门控（仅 mmdb）
+)
 
 // mustDDL 读建表脚本并替换占位符后返回（{table}/{geo} 均替换）。
 func mustDDL(t *testing.T, d *db.DB, script string, tables ...string) string {
@@ -156,18 +163,43 @@ func TestGeoipSyncBuild(t *testing.T) {
 func TestGeoipSyncNotReady(t *testing.T) {
 	resetGeoSyncState()
 	d := openTestDB(t)
-	stubReady = false
-	defer func() { stubReady = true }()
+	stubSyncReady = false
+	defer func() { stubSyncReady = true }()
 	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, nil); err == nil {
-		t.Fatal("mmdb 未就绪应拒绝并报错")
+		t.Fatal("mmdb 未加载应拒绝并报错")
+	}
+}
+
+// TestGeoipSyncDisabledButSyncable 手动同步不受 GEOIP_ENABLED 限制：功能关闭（Ready=false，
+// 自动同步停摆）但 mmdb 已加载（SyncReady=true）时，手动同步照常执行并正常落库。
+func TestGeoipSyncDisabledButSyncable(t *testing.T) {
+	resetGeoSyncState()
+	d := openTestDB(t)
+	ensureGeoipList(t, d)
+	exec(t, d, mustDDL(t, d, "access_log_create_table.sql", "access_log"))
+	exec(t, d, mustDDL(t, d, "shield_event_create_table.sql", "shield_event"))
+	exec(t, d, fmt.Sprintf(
+		`INSERT INTO access_log (time, trace_id, path, method, client_ip, status_code, user_agent, extra)
+		VALUES ('%s','t1','/a','GET','8.8.8.8',200,'UA','{}')`, time.Now().UTC().Format(time.RFC3339)))
+	stubReady = false // 功能关闭
+	defer func() { stubReady = true }()
+	reps, err := geoSyncAll(context.Background(), d, stubResolver{}, nil)
+	if err != nil {
+		t.Fatalf("开关关闭但 mmdb 就绪时手动同步不应被拒绝，err: %v", err)
+	}
+	for _, r := range reps {
+		if r.Table == db.TableAccessLog && r.RowsUpsert != 1 {
+			t.Errorf("开关关闭时手动同步应正常落库，报告 = %+v", r)
+		}
 	}
 }
 
 // stubFlexResolver 段内全解析桩：8.8.8.x 一律返回 US，其他返回空。
 type stubFlexResolver struct{}
 
-func (stubFlexResolver) Ready() bool { return true }
-func (stubFlexResolver) Lookup(ip string) geoip.GeoInfo {
+func (stubFlexResolver) Ready() bool     { return true }
+func (stubFlexResolver) SyncReady() bool { return true }
+func (stubFlexResolver) LookupSync(ip string) geoip.GeoInfo {
 	if strings.HasPrefix(ip, "8.8.8.") {
 		return geoip.GeoInfo{Code: "US", Country: "美国", Province: "加利福尼亚州", City: "山景城"}
 	}
@@ -320,15 +352,15 @@ func TestGeoSyncOnDone(t *testing.T) {
 
 	resetGeoSyncState()
 	called = false
-	stubReady = false
+	stubSyncReady = false
 	geoSyncOnDone = func(s, m string) { called, status, msg = true, s, m }
 	if _, err := geoSyncAll(context.Background(), d, stubResolver{}, nil); err == nil {
-		t.Fatal("mmdb 未就绪应报错")
+		t.Fatal("mmdb 未加载应报错")
 	}
 	if called {
 		t.Error("未就绪拒绝（未进入同步）不应触发回写钩子")
 	}
-	stubReady = true
+	stubSyncReady = true
 }
 
 // TestNormalizeGeoSyncInterval 间隔归一（D34）：0=关闭；<10（非 0）回落 60；合法值原样保留。

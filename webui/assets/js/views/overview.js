@@ -43,7 +43,7 @@
   // 地理位置卡片状态：scope=世界/中国地图切换，source=访问/总拦截切换（联动地图热力与 Top 排名）
   let geoScope = 'china'; // 'world' | 'china'
   let geoSource = 'access'; // 'access' | 'blocked'
-  let geo = null; // 拉取结果 { level, source, geo:[{country|region,cnt}], geo_ready }
+  let geo = null; // 拉取结果 { level, source, geo:[{country|region,cnt}], geo_ready, geo_enabled }
   let geoErr = null; // 行内错误兜底（toast 按 UX 红线在 loadGeo 里弹）
   let geoLoading = false; // 地理分布拉取中（同样是请求锁）
   let geoSyncing = false; // GeoIP 手动同步进行中（按钮禁用防连点；三触发源共用服务端互斥）
@@ -440,6 +440,7 @@
   // D17：依赖 geo 的页面会话内首次进入且 geo 未就绪时弹一次统一警告 toast（sessionStorage 标记防刷屏）
   function maybeGeoToast() {
     if (!geo || geo.geo_ready) return;
+    if (geo.geo_enabled === false) return; // 功能未开启：页内已有常驻引导卡，按降级引导态豁免（不弹 toast 防刷屏）
     if (sessionStorage.getItem('rock-geo-warned')) return;
     sessionStorage.setItem('rock-geo-warned', '1');
     toast('地理位置数据未加载：未找到 mmdb 文件，统计中地区将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效。下载直链见页内引导卡', 'error');
@@ -483,6 +484,14 @@
     '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb" target="_blank" rel="noopener">GeoLite2-City.mmdb</a><br>' +
     '<a href="https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb" target="_blank" rel="noopener">GeoLite2-Country.mmdb</a></div></div>';
 
+  // 功能未开启引导（GEOIP_ENABLED=false）：地理卡内容整体不渲染，仅留未开启提示与开启路径；
+  // 开启为配置热更（秒级生效，无需重启），与「缺 mmdb 需重启」引导区分开。
+  const GEO_DISABLED_GUIDE = '<div class="empty" style="padding:16px 8px;text-align:left">' +
+    '<div><b>GeoIP 功能未开启</b>：地理位置解析与统计已停用（全局配置 GEOIP_ENABLED=false）。</div>' +
+    '<div class="form-hint">下一步：在「配置 → 全局配置 → GeoIP」分组把 GEOIP_ENABLED 设为 true 并保存，' +
+    '热更秒级生效（无需重启）；开启后如地区仍无数据，请再检查 mmdb 数据文件是否就位（见定时任务与数据库页同步入口）。</div>' +
+    '<div class="form-hint">另：数据库页的 GeoIP 手动同步不受本开关限制（异步后台任务，不影响转发），可单独执行补齐 geoip_list 关联表。</div></div>';
+
   function geoTogglesHTML() {
     const chip = (act, key, label, cur) =>
       '<button class="btn btn-sm' + (cur === key ? ' btn-primary' : '') + '" data-act="' + act + '" data-key="' + key + '">' + label + '</button>';
@@ -516,6 +525,12 @@
   }
 
   function geoCardHTML() {
+    // 功能未开启（GEOIP_ENABLED=false）：地图/排名/切换/立即同步整体不渲染，仅留未开启提示（含开启路径）。
+    if (!trafficOff && geo && geo.geo_enabled === false) {
+      return '<div style="border-top:1px solid rgba(127,127,127,.15);margin-top:12px;padding-top:10px">' +
+        '<div class="card-title">地理位置 <span class="card-sub">功能未开启</span></div>' +
+        GEO_DISABLED_GUIDE + '</div>';
+    }
     const srcLabel = geoSource === 'blocked' ? '总拦截' : '访问';
     const scopeLabel = geoScope === 'world' ? '世界' : '中国';
     let body;
