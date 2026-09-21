@@ -155,6 +155,49 @@ func cloneParams(params map[string]string) map[string]string {
 	return out
 }
 
+// matchSegments 公共单模式段匹配（自 Radix Tree 单链语义提取，供新匹配引擎
+// match.go 复用；Radix 树内部逻辑零改动，行为不变）。
+//
+// pattern 形如 /api/order/:id、/api/*、/；pathSegs 为请求路径。语义与 Radix
+// 单链一致：
+//   - 静态段：逐段相等；
+//   - :name 段：匹配任意单个路径段并捕获参数；
+//   - * 段：匹配其后剩余所有路径（至少消费一个段——/api/* 不命中 /api）；
+//   - 前缀语义：模式段全部匹配完即命中，路径剩余任意段均算命中；
+//   - pattern=/ 分段为空，命中一切路径（与 Radix 根兜底同语义）。
+//
+// 命中返回捕获的参数（无参数时为 nil map——cloneParams 空表语义）；未命中
+// 返回 (nil, false)。
+func matchSegments(pattern, path string) (map[string]string, bool) {
+	patSegs := splitSegments(pattern)
+	pathSegs := splitSegments(path)
+	var params map[string]string
+	for i, seg := range patSegs {
+		if seg == "*" {
+			// 通配：至少消费一个段后命中，剩余任意。
+			if i >= len(pathSegs) {
+				return nil, false
+			}
+			return params, true
+		}
+		if i >= len(pathSegs) {
+			return nil, false // 路径段不足
+		}
+		if strings.HasPrefix(seg, ":") {
+			// 参数段：匹配任意单段并捕获。
+			if params == nil {
+				params = make(map[string]string)
+			}
+			params[seg[1:]] = pathSegs[i]
+			continue
+		}
+		if seg != pathSegs[i] {
+			return nil, false // 静态段不等
+		}
+	}
+	return params, true
+}
+
 // splitSegments 按 "/" 分段，去掉首尾空段。
 func splitSegments(p string) []string {
 	p = strings.Trim(p, "/")

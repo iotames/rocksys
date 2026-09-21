@@ -23,7 +23,7 @@
 |---|------|------|------|------|
 | 1 | route_dispatch/STEP1_schema_sql.md | 数据层六表：三方言 SQL 文件组 + DATA_DICT 六表与三枚举章节 | — | 已实施 |
 | 2 | route_dispatch/STEP2_domain_balancer.md | 领域模型与选点引擎：对象图/策略选点/sticky/加载期校验（旁路新建，旧 DSL 保持可编译） | 1 | 已实施 |
-| 3 | route_dispatch/STEP3_match_engine.md | 匹配引擎与快照：Host 归一 + 三类型路径匹配 + (match_order,id) 稳定序 | 2 | 待实施 |
+| 3 | route_dispatch/STEP3_match_engine.md | 匹配引擎与快照：Host 归一 + 三类型路径匹配 + (match_order,id) 稳定序 | 2 | 已实施 |
 | 4 | route_dispatch/STEP4_health_center.md | 健康检查中心：节点级探活任务管理器 + 内存 registry + Tail 收尾件（真 registry 替换桩） | 2 | 待实施 |
 | 5 | route_dispatch/STEP5_assembly_hotswap.md | 装配与热更：双中间件装配 + Start/Rebuild 改造 + DSL 与 DISPATCH_RULES 整体移除 | 3,4 | 待实施 |
 | 6 | route_dispatch/STEP6_admin_api.md | adminapi 端点：rules/upstreams/nodes/tags/health/match-test/reload + 写端点触发 Rebuild | 1,5 | 待实施 |
@@ -50,3 +50,4 @@
 | 2026-09-21 | ZCode 会话 | — | 文档打磨：子智能体两轮审核收敛，修正 registry 联动遗漏等 7 项；开工令已下达（定时启动） |
 | 2026-09-22 | ZCode 会话(定时开工) | 1 | 已实施：六表三方言 SQL 132 个 + DATA_DICT 六表三枚举；偏差 D-STEP1-1（buildTableSpecs 注册六表）；数据库页检查-执行-复检闭环截图留证 |
 | 2026-09-22 | ZCode 会话(定时开工) | 2 | 已实施：model/registry/select/sticky 旁路新建 + 18 表驱动测试；-race 全绿（旧 DSL 测试零改动）；枚举与 DATA_DICT 对照一致 |
+| 2026-09-22 | ZCode 会话(定时开工) | 3 | 已实施：match.go（Host 归一/三类型匹配/D13）+ snapshot.go + 段匹配公共函数提取（router_test 3 用例迁移）；M 表口径全项覆盖，-race 全绿 |

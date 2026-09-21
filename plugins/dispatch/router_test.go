@@ -12,37 +12,9 @@ import (
 	"rocksys/internal/dataflow"
 )
 
-func TestRouter_ParamCapture(t *testing.T) {
-	rt := mustRT(t, "/api/order/:id=http://order-svc:9001")
-	rule, params := rt.MatchParams("/api/order/123")
-	if rule == nil {
-		t.Fatal("应命中参数路由")
-	}
-	if rule.Prefix != "/api/order/:id" {
-		t.Errorf("命中规则应为 :id 路由, got %q", rule.Prefix)
-	}
-	if params["id"] != "123" {
-		t.Errorf("参数 id=%q, want 123", params["id"])
-	}
-}
-
-func TestRouter_ParamCapture_Multi(t *testing.T) {
-	rt := mustRT(t, "/api/:ver/users/:uid=http://user-svc:9001")
-	rule, params := rt.MatchParams("/api/v2/users/42")
-	if rule == nil {
-		t.Fatal("应命中多参数路由")
-	}
-	if params["ver"] != "v2" || params["uid"] != "42" {
-		t.Errorf("多参数捕获错误: ver=%q uid=%q", params["ver"], params["uid"])
-	}
-}
-
-func TestRouter_Wildcard(t *testing.T) {
-	rt := mustRT(t, "/api/*=http://api-svc:9000")
-	if up, ok := matchUp(rt, "/api/anything/deep/nested"); !ok || up != "http://api-svc:9000" {
-		t.Errorf("通配匹配失败, got (%q, %v)", up, ok)
-	}
-}
+// 说明：TestRouter_ParamCapture / TestRouter_ParamCapture_Multi / TestRouter_Wildcard
+// 三个段匹配用例已随公共段匹配函数 matchSegments 的提取迁移至 match_test.go
+// （断言原样），此处保留 Radix 树整体行为（最长匹配、兜底、链路注入）用例。
 
 func TestRouter_ParamBeatsPrefix(t *testing.T) {
 	// 参数路由比纯前缀更具体：/api/order/123 应命中 :id 而非纯前缀。
