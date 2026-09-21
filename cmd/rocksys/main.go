@@ -839,6 +839,13 @@ func buildTableSpecs(shieldEventTable string) []db.TableSpec {
 		{Table: "outbox", CreateScript: "mq_create_table.sql", IndexScript: "mq_create_index.sql"},
 		{Table: db.TableGeoipList, CreateScript: "geoip_list_create_table.sql", IndexScript: "geoip_list_create_index.sql"},
 		{Table: db.TableScheduleList, CreateScript: "schedule_list_create_table.sql"},
+		// 路由分发六表（dispatch 插件，docs/DATA_DICT.md 同源）
+		{Table: "dispatch_rule", CreateScript: "dispatch_rule_create_table.sql", IndexScript: "dispatch_rule_create_index.sql"},
+		{Table: "dispatch_upstream", CreateScript: "dispatch_upstream_create_table.sql", IndexScript: "dispatch_upstream_create_index.sql"},
+		{Table: "dispatch_node", CreateScript: "dispatch_node_create_table.sql", IndexScript: "dispatch_node_create_index.sql"},
+		{Table: "dispatch_upstream_node", CreateScript: "dispatch_upstream_node_create_table.sql", IndexScript: "dispatch_upstream_node_create_index.sql"},
+		{Table: "dispatch_tag", CreateScript: "dispatch_tag_create_table.sql", IndexScript: "dispatch_tag_create_index.sql"},
+		{Table: "dispatch_rule_tag", CreateScript: "dispatch_rule_tag_create_table.sql", IndexScript: "dispatch_rule_tag_create_index.sql"},
 	}
 }
 

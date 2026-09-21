@@ -47,6 +47,12 @@
 | `sql_exec_log` | SQL 执行审计表 | adminapi | 管理端「执行SQL」每条语句执行留痕（审计追溯，不清理） | `sql/{sqlite,postgres,mysql}/sql_exec_log_create_table.sql` |
 | `geoip_list` | IP 地理信息关联表 | cmd/rocksys（装配层） | 一 IP 一行，与 access_log / shield_event 按 client_ip 关联（地理信息归一，取代逐行冗余列）；GeoIP 同步器维护 | `sql/{sqlite,postgres,mysql}/geoip_list_create_table.sql` |
 | `schedule_list` | 定时任务只读登记表 | cmd/rocksys（装配层） | 定时任务登记 + 状态汇总（只读，不驱动任务）；装配期 upsert 登记，geoip_sync 行回写运行状态 | `sql/{sqlite,postgres,mysql}/schedule_list_create_table.sql` |
+| `dispatch_rule` | 路由规则表 | dispatch | 域名/路径匹配规则，命中即转发到指定均衡器；match_order 升序命中即停；标签经 dispatch_rule_tag 关联 | `sql/{sqlite,postgres,mysql}/dispatch_rule_create_table.sql` |
+| `dispatch_upstream` | 负载均衡器表 | dispatch | 均衡器（round_robin/least_conn + 可选会话保持）；被规则引用作转发目标 | `sql/{sqlite,postgres,mysql}/dispatch_upstream_create_table.sql` |
+| `dispatch_node` | 后端服务器节点基础表 | dispatch | 节点资产与探活参数登记（登记一次、全局去重）；健康状态不落库（内存单一事实源） | `sql/{sqlite,postgres,mysql}/dispatch_node_create_table.sql` |
+| `dispatch_upstream_node` | 节点与均衡器关系表 | dispatch | 均衡器 ↔ 节点多对多关系（带属性 weight/priority）；整组替换语义 | `sql/{sqlite,postgres,mysql}/dispatch_upstream_node_create_table.sql` |
+| `dispatch_tag` | 路由规则标签表 | dispatch | 标签实体化（全局唯一、重命名一次生效）；筛选下拉数据源 | `sql/{sqlite,postgres,mysql}/dispatch_tag_create_table.sql` |
+| `dispatch_rule_tag` | 规则与标签关系表 | dispatch | 规则 ↔ 标签多对多纯关联；随规则表单整体保存（整体替换关系行） | `sql/{sqlite,postgres,mysql}/dispatch_rule_tag_create_table.sql` |
 
 ---
 
@@ -256,6 +262,120 @@ mmdb 已加载，不受开关限制），均每请求现算。
 | `remark` | 说明 | 含「不纳入原因/只读」等说明 | `系统级只读` | TEXT / VARCHAR(255) / VARCHAR(255) | `''` |
 | `updated_at` | 行更新时间 | 行最近更新时间（UTC） | `2026-09-15T01:30:41Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
 
+### 2.11 dispatch_rule — 路由规则表（12 列）
+
+**说明**：域名/路径匹配规则，`match_order` 1–999 升序、命中即停，命中后转发到 `upstream_id` 对应均衡器。
+`domain` 空 = 匹配任意域名；非空 = 精确匹配、剥端口、转小写（无通配），**保存时归一落库**（防外部改库存入未归一值永不命中）。
+`path_type` 枚举见 §3.6。标签不在本表存列，经 `dispatch_tag` / `dispatch_rule_tag` 关联（仅列表/筛选时 join 读取，不进运行时快照）。
+运行期行为：Rebuild 拉启用行（`enabled=1 AND deleted_at IS NULL`）构建内存快照，请求热路径零 DB 查询。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `match_order` | 匹配序号 | 匹配顺序 1–999 升序、命中即停；域名默认兜底规则建议 999 | `10`、`999` | INTEGER / INT / INT | — |
+| `domain` | 域名（可选） | 空 = 匹配任意域名；非空 = 精确匹配、剥端口、转小写（无通配，保存时归一落库） | `api.example.com`、``（空） | TEXT / TEXT / VARCHAR(255) | `''` |
+| `path_type` | 路径类型 | 路径类型枚举（数值稳定，见 §3.6） | `1`（前缀） | INTEGER / SMALLINT / TINYINT | `1` |
+| `path_value` | 路径值 | 以 `/` 开头，按 path_type 解释；`/` + 前缀 = 全路径兜底 | `/api/`、`/healthz` | TEXT / TEXT / VARCHAR(512) | — |
+| `title` | 规则标题 | 人类可读，空允许 | `订单 API` | TEXT / TEXT / VARCHAR(255) | `''` |
+| `upstream_id` | 均衡器 | → dispatch_upstream.id，命中规则的转发目标 | `3` | INTEGER / BIGINT / BIGINT | — |
+| `enabled` | 启用 | 1/0；停用行不参与匹配，保留配置 | `1` | INTEGER / SMALLINT / TINYINT | `1` |
+| `remark` | 备注 | 人类备注 | `灰度切流用` | TEXT / TEXT / VARCHAR(255) | `''` |
+| `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除，不参与任何运行期构建 | `2026-09-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `created_at` | 创建时间 | 创建时间（UTC） | `2026-09-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `updated_at` | 更新时间 | 最后更新时间（UTC） | `2026-09-21T08:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+索引：`(enabled, deleted_at, match_order)`。
+
+### 2.12 dispatch_upstream — 负载均衡器表（10 列）
+
+**说明**：均衡器（负载均衡组），被规则引用作转发目标。`algo` 枚举见 §3.7；
+会话保持开启后网关自种 Cookie 粘性（仅 `sticky_enabled=1` 时 `sticky_cookie` 生效）。
+停用（`enabled=0`）= 引用它的规则全部 503（WebUI 停用时提示引用数）；存在未软删规则引用时拒绝删除（应用层校验）。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `name` | 均衡器名称 | 人类可读、唯一（软删行除外） | `订单服务-会话保持池` | TEXT / TEXT / VARCHAR(255) | — |
+| `algo` | 均衡策略 | 均衡策略枚举（数值稳定，见 §3.7） | `1`（round_robin） | INTEGER / SMALLINT / TINYINT | `1` |
+| `sticky_enabled` | 会话保持 | 1/0；开启后网关自种 Cookie 粘性 | `0` | INTEGER / SMALLINT / TINYINT | `0` |
+| `sticky_cookie` | Cookie 名 | 默认 `rocksys_node`；仅 sticky_enabled=1 时生效 | `rocksys_node` | TEXT / TEXT / VARCHAR(128) | `'rocksys_node'` |
+| `enabled` | 启用 | 1/0；停用 = 引用它的规则全部 503 | `1` | INTEGER / SMALLINT / TINYINT | `1` |
+| `remark` | 备注 | 人类备注 | `会话保持试点` | TEXT / TEXT / VARCHAR(255) | `''` |
+| `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除，不参与任何运行期构建 | `2026-09-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `created_at` | 创建时间 | 创建时间（UTC） | `2026-09-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `updated_at` | 更新时间 | 最后更新时间（UTC） | `2026-09-21T08:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+唯一约束：`name`（软删行除外；MySQL/SQLite 复合唯一键 `(name, deleted_at)` 借 NULL 不判重，PG 部分唯一索引 `WHERE deleted_at IS NULL`；下同，不再逐表复述）。
+
+### 2.13 dispatch_node — 后端服务器节点基础表（11 列）
+
+**说明**：登记节点资产与体检参数；登记一次、全局去重（探活去重的前提）。
+`url` 唯一（软删行除外）。`hc_path` 为空 = 不主动探活，视为健康；
+**健康状态不落库**（内存单一事实源，经接口透出）——探活翻转不产生 DB 写放大，管理态（enabled/软删）与运行态（健康）职责分离。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `name` | 节点名称 | 人类可读名称，空允许 | `订单节点-1` | TEXT / TEXT / VARCHAR(255) | `''` |
+| `url` | 节点地址 | `http(s)://host[:port]`，唯一（软删行除外） | `http://10.0.0.11:8080` | TEXT / TEXT / VARCHAR(512) | — |
+| `hc_interval_ms` | 探活周期 | 毫秒，默认 20000；hc_path 为空时不参与探活 | `20000` | INTEGER / INT / INT | `20000` |
+| `hc_timeout_ms` | 探活超时 | 毫秒，默认 5000 | `5000` | INTEGER / INT / INT | `5000` |
+| `hc_path` | 探活路径 | 以 `/` 开头；空 = 不主动探活，视为健康 | `/healthz`、``（空） | TEXT / TEXT / VARCHAR(255) | `''` |
+| `enabled` | 启用 | 1/0；停用 = 不参与任何均衡器构建与探活 | `1` | INTEGER / SMALLINT / TINYINT | `1` |
+| `remark` | 备注 | 人类备注 | `A 区机房` | TEXT / TEXT / VARCHAR(255) | `''` |
+| `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除，不参与任何运行期构建 | `2026-09-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `created_at` | 创建时间 | 创建时间（UTC） | `2026-09-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `updated_at` | 更新时间 | 最后更新时间（UTC） | `2026-09-21T08:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+### 2.14 dispatch_upstream_node — 节点与均衡器关系表（8 列）
+
+**说明**：均衡器 ↔ 节点多对多关系（关系表带属性 weight/priority）；引用完整性由应用层（adminapi）校验，不建数据库外键。
+`priority` 枚举见 §3.8。**关系行整组替换语义**（随均衡器表单整体保存）：不设单行 update/restore，常规编辑走「软删旧行 + 插入新行」。
+节点存在未软删关系引用时拒绝删除节点（应用层校验）。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `upstream_id` | 均衡器 | → dispatch_upstream.id | `3` | INTEGER / BIGINT / BIGINT | — |
+| `node_id` | 节点 | → dispatch_node.id | `1` | INTEGER / BIGINT / BIGINT | — |
+| `weight` | 权重 | 正整数默认 1；round_robin 平滑加权用 | `2` | INTEGER / INT / INT | `1` |
+| `priority` | 优先级 | 优先级枚举（数值稳定，见 §3.8） | `0`（高优） | INTEGER / SMALLINT / TINYINT | `0` |
+| `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除，不参与任何运行期构建 | `2026-09-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `created_at` | 创建时间 | 创建时间（UTC） | `2026-09-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `updated_at` | 更新时间 | 最后更新时间（UTC） | `2026-09-21T08:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+索引：`(upstream_id)`、`(node_id)`；唯一约束 `(upstream_id, node_id)`（软删行除外）。
+
+### 2.15 dispatch_tag — 路由规则标签表（5 列）
+
+**说明**：标签实体化（GitLab label 同款模型）：全局唯一、重命名一次生效、筛选下拉数据源干净。
+`name` 全局唯一、小写（保存时归一；软删行除外）。chip 颜色由前端按名称哈希自动分配，不落库。
+无引用的标签保留（可复用），不自动清理；标签删除时同步软删其关系行（纯管理辅助，无运行态影响）。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `name` | 标签名 | 全局唯一、小写（保存时归一；软删行除外） | `灰度`、`internal` | TEXT / TEXT / VARCHAR(191) | — |
+| `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除；删除时由 adminapi 同步软删其关系行 | `2026-09-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `created_at` | 创建时间 | 创建时间（UTC） | `2026-09-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `updated_at` | 更新时间 | 最后更新时间（UTC） | `2026-09-21T08:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+### 2.16 dispatch_rule_tag — 规则与标签关系表（6 列）
+
+**说明**：规则 ↔ 标签多对多纯关联（无属性）；标签随规则表单整体保存（先 upsert 标签实体、再整体替换该规则的关系行）。
+标签数据仅在列表/筛选时经 SQL join 读取，不进运行时快照。
+
+| 字段名 | 标题 | 说明 | 可能值示例 | 类型（sqlite/postgres/mysql） | 默认 |
+|---|---|---|---|---|---|
+| `id` | 主键 | 自增主键 | `1` | INTEGER AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT | — |
+| `rule_id` | 规则 | → dispatch_rule.id | `1` | INTEGER / BIGINT / BIGINT | — |
+| `tag_id` | 标签 | → dispatch_tag.id | `1` | INTEGER / BIGINT / BIGINT | — |
+| `deleted_at` | 软删除时间 | 软删除时间（UTC）；非 NULL 视为已删除；标签删除时由 adminapi 同步软删其全部关系行 | `2026-09-21T10:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `created_at` | 创建时间 | 创建时间（UTC） | `2026-09-20T12:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+| `updated_at` | 更新时间 | 最后更新时间（UTC） | `2026-09-21T08:00:00Z` | DATETIME / TIMESTAMPTZ / DATETIME(3) | — |
+
+索引：`(rule_id)`、`(tag_id)`；唯一约束 `(rule_id, tag_id)`（软删行除外）。
+
 ## 3. 枚举与取值附录
 
 ### 3.1 block_type — 拦截类别（shield_event.block_type / ip_blacklist.block_type / attack_archive.block_type）
@@ -337,6 +457,34 @@ mmdb 已加载，不受开关限制），均每请求现算。
 | `skipped` | 跳过（预留：该轮未执行，如前置条件不满足） |
 | `partial` | 上一轮未跑完（人工经任务中心取消执行实例，或进程收尾中止）；已完成部分已写入，重复执行从断点续接。区别于 `skipped`「整轮未执行」与 `failed`「执行出错」 |
 | `''`（空） | 未登记（该行无回写者，不代表从未执行） |
+
+### 3.6 path_type — 路径类型（dispatch_rule.path_type）
+
+数值稳定、只增不改（Go 权威定义归 STEP2/5 落地，`plugins/dispatch`）。
+
+| 值 | 中文名 | 说明 |
+|---|---|---|
+| 1 | 前缀 | 前缀匹配（段对齐）；`path_value=/` + 前缀 = 全路径兜底 |
+| 2 | 精确 | 精确匹配 |
+| 3 | 模式 | 模式匹配（`:param` 命名参数 / `*` 通配） |
+
+### 3.7 algo — 均衡策略（dispatch_upstream.algo）
+
+数值稳定、只增不改。
+
+| 值 | 中文名 | 说明 |
+|---|---|---|
+| 1 | round_robin | 平滑加权轮询（默认）；权重取关系表 `weight` |
+| 2 | least_conn | 最小连接优先 |
+
+### 3.8 priority — 节点优先级（dispatch_upstream_node.priority）
+
+数值稳定、只增不改（NGINX backup 同款语义）。
+
+| 值 | 中文名 | 说明 |
+|---|---|---|
+| 0 | 高优 | 默认；参与常规负载均衡 |
+| 1 | 备份 | 备份节点；高优节点全部不健康时才启用 |
 
 ---
 

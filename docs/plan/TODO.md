@@ -21,7 +21,7 @@
 ## §1 状态总表（状态列可带标注，如「实施中(受阻→STEP5)」）
 | # | STEP | 内容 | 依赖 | 状态 |
 |---|------|------|------|------|
-| 1 | route_dispatch/STEP1_schema_sql.md | 数据层六表：三方言 SQL 文件组 + DATA_DICT 六表与三枚举章节 | — | 待实施 |
+| 1 | route_dispatch/STEP1_schema_sql.md | 数据层六表：三方言 SQL 文件组 + DATA_DICT 六表与三枚举章节 | — | 已实施 |
 | 2 | route_dispatch/STEP2_domain_balancer.md | 领域模型与选点引擎：对象图/策略选点/sticky/加载期校验（旁路新建，旧 DSL 保持可编译） | 1 | 待实施 |
 | 3 | route_dispatch/STEP3_match_engine.md | 匹配引擎与快照：Host 归一 + 三类型路径匹配 + (match_order,id) 稳定序 | 2 | 待实施 |
 | 4 | route_dispatch/STEP4_health_center.md | 健康检查中心：节点级探活任务管理器 + 内存 registry + Tail 收尾件（真 registry 替换桩） | 2 | 待实施 |
@@ -48,3 +48,4 @@
 |------|--------|------|------|
 | 2026-09-21 | ZCode 会话 | — | 建纲：DESIGN_PLAN 定稿 v3、IMPL_PLAN 冻结后，按 IMPL 八切片建总纲与 STEP1–8；实施待开工令 |
 | 2026-09-21 | ZCode 会话 | — | 文档打磨：子智能体两轮审核收敛，修正 registry 联动遗漏等 7 项；开工令已下达（定时启动） |
+| 2026-09-22 | ZCode 会话(定时开工) | 1 | 已实施：六表三方言 SQL 132 个 + DATA_DICT 六表三枚举；偏差 D-STEP1-1（buildTableSpecs 注册六表）；数据库页检查-执行-复检闭环截图留证 |
