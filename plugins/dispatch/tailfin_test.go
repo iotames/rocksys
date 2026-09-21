@@ -26,7 +26,7 @@ func tailfinCtx(t *testing.T) *chain.Context {
 func tailfinUpstream(nodeID int64) *UpstreamRT {
 	return &UpstreamRT{
 		ID:    1,
-		Algo:  AlgoKindLeastConn,
+		Algo:  AlgoLeastConn,
 		Nodes: []*NodeRT{{ID: nodeID, URL: "http://n7:9001", Weight: 1}},
 		rr:    rrCursor{current: make([]int, 1)},
 	}

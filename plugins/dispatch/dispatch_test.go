@@ -1,10 +1,15 @@
-// Package dispatch 单测：路由表解析、前缀匹配、节点组负载均衡与健康检查。
-// 覆盖选点语义验收与批次10 增强。
+// Package dispatch 单测：主件生命周期与 Handle 契约（ROUTE_DISPATCH STEP5）。
+// 覆盖：DB 依赖注入（内存行集）、Start 构建/降级重试即停、Rebuild 串行与失败
+// 保旧快照、Handle 匹配/选点/sticky/参数注入/503/续链契约。
 package dispatch
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,335 +19,424 @@ import (
 	"rocksys/internal/dataflow"
 )
 
+// stubSource 内存行集来源（测试注入；可注入失败模拟 DB 不可用）。
+type stubSource struct {
+	mu    sync.Mutex
+	in    *GraphInput
+	err   error        // 非 nil 时全部拉取失败（模拟 DB 不可用）
+	calls atomic.Int64 // 拉取次数（Rebuild 调用计数，断言重试即停）
+}
+
+func (s *stubSource) fail(err error) { s.mu.Lock(); s.err = err; s.mu.Unlock() }
+func (s *stubSource) ok()            { s.mu.Lock(); s.err = nil; s.mu.Unlock() }
+func (s *stubSource) input() *GraphInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.in
+}
+
+func (s *stubSource) LoadRules() ([]RuleRow, error) {
+	s.calls.Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.in.Rules, nil
+}
+func (s *stubSource) LoadUpstreams() ([]UpstreamRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.in.Upstreams, nil
+}
+func (s *stubSource) LoadNodes() ([]NodeRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.in.Nodes, nil
+}
+func (s *stubSource) LoadRelations() ([]UpstreamNodeRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.in.Relations, nil
+}
+
+// baseInput 最小合法对象图输入：up-100（rr、sticky 关）← node-200（w=1 高优）。
+func baseInput(rules []RuleRow) *GraphInput {
+	return &GraphInput{
+		Rules: rules,
+		Upstreams: []UpstreamRow{
+			{ID: 100, Name: "up-a", Algo: int(AlgoRoundRobin), Enabled: true},
+		},
+		Nodes: []NodeRow{
+			{ID: 200, URL: "http://n1:9001", Enabled: true},
+		},
+		Relations: []UpstreamNodeRow{
+			{ID: 300, UpstreamID: 100, NodeID: 200, Weight: 1, Priority: int(PriorityPrimary), Enabled: true},
+		},
+	}
+}
+
+// newCtx 构造链上下文（httptest 请求 + DataFlow + Recorder）。
+func newCtx(t *testing.T, method, target string) (*chain.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	req := httptest.NewRequest(method, target, nil)
+	rec := httptest.NewRecorder()
+	return &chain.Context{W: rec, R: req, DF: dataflow.New(httpsvr.NewDataFlow(), req)}, rec
+}
+
+// TestNewImplementsInterfaces 主件实现链中间件与生命周期接口。
 func TestNewImplementsInterfaces(t *testing.T) {
-	var _ chain.Middleware = New(nil)
-	if _, ok := chain.Middleware(New(nil)).(interface{ Slot() chain.Slot }); !ok {
+	d := New(nil, nil, nil)
+	var _ chain.Middleware = d
+	if _, ok := chain.Middleware(d).(interface{ Slot() chain.Slot }); !ok {
 		t.Fatal("dispatch 未实现 Slot()")
 	}
-}
-
-// matchUp 便捷封装：Match 命中后返回 Select 选中的节点 URL。
-func matchUp(rt *RouteTable, path string) (string, bool) {
-	rule, ok := rt.Match(path)
-	if !ok {
-		return "", false
+	if d.Name() != "dispatch" {
+		t.Errorf("Name=%q, want dispatch", d.Name())
 	}
-	return rule.Select(nil)
-}
-
-func TestRouteTable_Match_newline(t *testing.T) {
-	tests := []struct {
-		name   string
-		rules  *RouteTable
-		path   string
-		wantUp string
-		wantOK bool
-	}{
-		{name: "命中前缀", rules: mustRT(t, "/api/order/=http://order-svc:9001"),
-			path: "/api/order/123", wantUp: "http://order-svc:9001", wantOK: true},
-		{name: "path 末尾自动补斜杠", rules: mustRT(t, "/api/order/=http://order-svc:9001"),
-			path: "/api/order", wantUp: "http://order-svc:9001", wantOK: true},
+	// nil 来源：初始为空表快照，未命中直通。
+	if d.Ready() {
+		t.Error("初始不应 ready")
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			up, ok := matchUp(tt.rules, tt.path)
-			if ok != tt.wantOK || up != tt.wantUp {
-				t.Errorf("Match(%q) = (%q, %v), want (%q, %v)", tt.path, up, ok, tt.wantUp, tt.wantOK)
-			}
-		})
+	ctx, _ := newCtx(t, http.MethodGet, "/any")
+	if !d.Handle(ctx) || ctx.DF.Target() != "" {
+		t.Error("空表快照应未命中直通（true 且不写 Target）")
 	}
 }
 
-func TestRouteMatch(t *testing.T) {
-	rt := mustRT(t, "/api/order/=http://order-svc:9001")
-
-	// 命中
-	if up, ok := matchUp(rt, "/api/order/123"); !ok || up != "http://order-svc:9001" {
-		t.Errorf("Match /api/order/123 = (%q, %v)", up, ok)
-	}
-	// 前缀边界：/api/ordering 不匹配 /api/order/
-	if up, ok := matchUp(rt, "/api/ordering/list"); ok {
-		t.Errorf("Match /api/ordering/list 不应命中，got (%q, %v)", up, ok)
-	}
-	// 其他路径不命中
-	if _, ok := matchUp(rt, "/other/path"); ok {
-		t.Error("Match /other/path 不应命中")
-	}
-}
-
-func TestRouteMatch_LongestPrefix(t *testing.T) {
-	rt := mustRT(t, "/api/=http://api-svc:9000,/api/order/=http://order-svc:9001")
-	// 最长前缀优先
-	if up, ok := matchUp(rt, "/api/order/123"); !ok || up != "http://order-svc:9001" {
-		t.Errorf("Match /api/order/123 = (%q, %v), want order-svc", up, ok)
-	}
-	// 较短前缀仍命中其对应路由
-	if up, ok := matchUp(rt, "/api/user/1"); !ok || up != "http://api-svc:9000" {
-		t.Errorf("Match /api/user/1 = (%q, %v), want api-svc", up, ok)
-	}
-}
-
-func TestRouteMatch_CatchAll(t *testing.T) {
-	rt := mustRT(t, "/api/order/=http://order-svc:9001,/=http://default-svc")
-	// "/" 兜底匹配未命中其他路由的路径
-	if up, ok := matchUp(rt, "/zz/other"); !ok || up != "http://default-svc" {
-		t.Errorf("Match /zz/other = (%q, %v), want default-svc", up, ok)
-	}
-	// 已命中的更长前缀优先于兜底 "/"
-	if up, ok := matchUp(rt, "/api/order/9"); !ok || up != "http://order-svc:9001" {
-		t.Errorf("Match /api/order/9 = (%q, %v), want order-svc", up, ok)
-	}
-}
-
-func TestRouteMatch_Root(t *testing.T) {
-	rt := mustRT(t, "/=http://default-svc")
-	// 根路径 "/" 命中兜底路由
-	if up, ok := matchUp(rt, "/"); !ok || up != "http://default-svc" {
-		t.Errorf("Match / = (%q, %v), want default-svc", up, ok)
-	}
-}
-
-func TestParseRules_Empty(t *testing.T) {
-	rt, err := parseRules("")
-	if err != nil {
-		t.Fatalf("parseRules empty err: %v", err)
-	}
-	if len(rt.rules) != 0 {
-		t.Errorf("empty 路由表应为空, got %d 条", len(rt.rules))
-	}
-}
-
-func TestParseRules_ErrorKeepsOldSnapshot(t *testing.T) {
-	// 格式错误：缺少 "="
-	_, err := parseRules("/api/order")
-	if err == nil {
-		t.Fatal("格式错误应返回 error")
-	}
-	// Prefix 不以 "/" 开头
-	_, err = parseRules("api/=http://x")
-	if err == nil {
-		t.Fatal("Prefix 不以 / 开头应返回 error")
-	}
-	// 节点不以 http(s):// 开头
-	_, err = parseRules("/api/=order-svc:9001")
-	if err == nil {
-		t.Fatal("节点不以 http(s):// 开头应返回 error")
-	}
-	// 节点组为空
-	_, err = parseRules("/api/=")
-	if err == nil {
-		t.Fatal("节点组为空应返回 error")
-	}
-	// 健康检查参数段数错误
-	_, err = parseRules("/api/=http://a:1@10s@2s")
-	if err == nil {
-		t.Fatal("健康检查参数段数错误应返回 error")
-	}
-	// 权重非法
-	_, err = parseRules("/api/=http://a:1|w=0")
-	if err == nil {
-		t.Fatal("权重为 0 应返回 error")
-	}
-}
-
-func TestStart_ErrorKeepsOldSnapshot(t *testing.T) {
-	d := New(nil)
-	d.rules = "/api/order/=http://order-svc:9001"
+// TestStart_BuildAndHandle 主流程：Start 同步构建成功 → Handle 命中写 Target。
+func TestStart_BuildAndHandle(t *testing.T) {
+	src := &stubSource{in: baseInput([]RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 100, Enabled: true},
+	})}
+	d := New(nil, src, nil)
 	if err := d.Start(nil); err != nil {
 		t.Fatalf("Start err: %v", err)
 	}
-	old := d.rt.Load().(*RouteTable)
-	if old == nil || len(old.rules) == 0 {
-		t.Fatal("初始 Start 后快照不应为空")
+	defer func() { _ = d.Stop() }()
+	if !d.Ready() {
+		t.Fatal("Start 构建成功后应 ready")
 	}
-
-	// 非法配置 → Start 应失败且保留旧快照。
-	d.rules = "/api/no-equal-sign"
-	if err := d.Start(nil); err == nil {
-		t.Fatal("Start 非法配置应返回 error")
-	}
-	if got := d.rt.Load().(*RouteTable); got != old {
-		t.Error("Start 失败后不应替换旧快照")
-	}
-}
-
-func TestHandle_SetsTargetOnMatch(t *testing.T) {
-	d := New(nil)
-	d.rules = "/api/order/=http://order-svc:9001"
-	if err := d.Start(nil); err != nil {
-		t.Fatalf("Start err: %v", err)
-	}
-	df := dataflow.New(httpsvr.NewDataFlow(), httptest.NewRequest(http.MethodGet, "/api/order/123", nil))
-	ctx := &chain.Context{R: httptest.NewRequest(http.MethodGet, "/api/order/123", nil), DF: df}
+	ctx, _ := newCtx(t, http.MethodGet, "http://example.com/api/order/123")
 	if !d.Handle(ctx) {
-		t.Error("Handle 应返回 true（不中断链）")
+		t.Error("Handle 应返回 true")
 	}
-	if got := df.Target(); got != "http://order-svc:9001" {
-		t.Errorf("Target()=%q, want order-svc", got)
+	if got := ctx.DF.Target(); got != "http://n1:9001" {
+		t.Errorf("Target=%q, want http://n1:9001", got)
 	}
-}
-
-func TestHandle_NoTargetOnMiss(t *testing.T) {
-	cfg := New(nil)
-	cfg.rules = "/api/order/=http://order-svc:9001"
-	if err := cfg.Start(nil); err != nil {
-		t.Fatalf("Start err: %v", err)
+	// DF 节点 id 已写（收尾件递减依据）；在途 +1 已计。
+	var nodeID int64
+	if v, ok := ctx.DF.Get(DFKeyDispatchNodeID); ok {
+		nodeID, _ = v.(int64)
 	}
-	df := dataflow.New(httpsvr.NewDataFlow(), httptest.NewRequest(http.MethodGet, "/other/path", nil))
-	ctx := &chain.Context{R: httptest.NewRequest(http.MethodGet, "/other/path", nil), DF: df}
-	cfg.Handle(ctx)
-	if got := df.Target(); got != "" {
-		t.Errorf("未命中时 Target()=%q, want 空串（回退默认 upstream）", got)
+	if nodeID != 200 {
+		t.Errorf("DF 节点 id=%v, want 200", nodeID)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// 批次10 新增：节点组 / 负载均衡 / 健康检查
-// ---------------------------------------------------------------------------
-
-func TestParseRules_NodeGroup(t *testing.T) {
-	rt := mustRT(t, "/api/order/=http://o1:9001;http://o2:9001|w=2;http://o3:9001|w=1|p=1@10s@2s@/healthz")
-	if len(rt.rules) != 1 {
-		t.Fatalf("应解析 1 条规则, got %d", len(rt.rules))
+	if got := d.reg.Inflight(200); got != 1 {
+		t.Errorf("在途计数=%d, want 1", got)
 	}
-	rule := rt.rules[0]
-	if len(rule.Nodes) != 3 {
-		t.Fatalf("节点组应为 3 个节点, got %d", len(rule.Nodes))
+	// 收尾件递减闭环。
+	tail := NewTailFin(d.reg)
+	if err := tail.OnResponse(ctx); err != nil {
+		t.Fatalf("OnResponse err: %v", err)
 	}
-	if rule.Nodes[0].Weight != 1 || rule.Nodes[0].Priority != 0 {
-		t.Errorf("node0 应为默认权重1/高优, got w=%d p=%d", rule.Nodes[0].Weight, rule.Nodes[0].Priority)
-	}
-	if rule.Nodes[1].Weight != 2 || rule.Nodes[1].Priority != 0 {
-		t.Errorf("node1 应为权重2/高优, got w=%d p=%d", rule.Nodes[1].Weight, rule.Nodes[1].Priority)
-	}
-	if rule.Nodes[2].Weight != 1 || rule.Nodes[2].Priority != 1 {
-		t.Errorf("node2 应为权重1/备份, got w=%d p=%d", rule.Nodes[2].Weight, rule.Nodes[2].Priority)
-	}
-	if rule.HealthCheck == nil {
-		t.Fatal("应解析出健康检查")
-	}
-	if rule.HealthCheck.Interval != 10*time.Second || rule.HealthCheck.Timeout != 2*time.Second || rule.HealthCheck.Path != "/healthz" {
-		t.Errorf("健康检查解析错误: %+v", rule.HealthCheck)
-	}
-	// 配置了健康检查：节点初始为不健康（fail-closed），直到探活确认。
-	if rule.Nodes[0].healthy.Load() {
-		t.Error("配置健康检查的节点初始不应为健康")
+	if got := d.reg.Inflight(200); got != 0 {
+		t.Errorf("递减后在途=%d, want 0", got)
 	}
 }
 
-func TestRule_Select_WeightedRoundRobin(t *testing.T) {
-	rt := mustRT(t, "/api/=http://a:1|w=2;http://b:1|w=1")
-	rule := rt.rules[0]
-	counts := map[string]int{}
-	const n = 300
-	for i := 0; i < n; i++ {
-		up, ok := rule.Select(nil)
-		if !ok {
-			t.Fatal("Select 应返回节点")
-		}
-		counts[up]++
-	}
-	// 权重 2:1 → 约 2:1 分配
-	ratio := float64(counts["http://a:1"]) / float64(counts["http://b:1"])
-	if ratio < 1.5 || ratio > 2.5 {
-		t.Errorf("加权轮询比例应约 2:1, got %v (a=%d b=%d)", ratio, counts["http://a:1"], counts["http://b:1"])
-	}
-}
-
-func TestRule_Select_PriorityBackup(t *testing.T) {
-	// 高优节点 b 不健康（p=0），备份节点 c 健康（p=1）→ 应选备份。
-	rt := mustRT(t, "/api/=http://a:1|p=0;http://b:1|p=0;http://c:1|p=1")
-	rule := rt.rules[0]
-	rule.Nodes[0].healthy.Store(false)
-	rule.Nodes[1].healthy.Store(false)
-	rule.Nodes[2].healthy.Store(true)
-
-	for i := 0; i < 5; i++ {
-		up, ok := rule.Select(nil)
-		if !ok || up != "http://c:1" {
-			t.Errorf("高优全挂应选备份节点, got (%q, %v)", up, ok)
-		}
-	}
-}
-
-func TestRule_Select_AllDown(t *testing.T) {
-	rt := mustRT(t, "/api/=http://a:1;http://b:1")
-	rule := rt.rules[0]
-	rule.Nodes[0].healthy.Store(false)
-	rule.Nodes[1].healthy.Store(false)
-	if _, ok := rule.Select(nil); ok {
-		t.Error("全部节点不健康时应返回 ok=false")
-	}
-}
-
-func TestHealthCheck_Probe_PicksHealthy(t *testing.T) {
-	healthySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer healthySrv.Close()
-	downSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer downSrv.Close()
-
-	d := New(nil)
-	d.rules = "/api/=" + healthySrv.URL + ";" + downSrv.URL + "@30ms@200ms@/healthz"
+// TestHandle_Miss_FallsThrough 未命中：true 且不写 Target（默认 upstream 兜底）。
+func TestHandle_Miss_FallsThrough(t *testing.T) {
+	src := &stubSource{in: baseInput([]RuleRow{
+		{ID: 1, MatchOrder: 1, Domain: "a.com", PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 100, Enabled: true},
+	})}
+	d := New(nil, src, nil)
 	if err := d.Start(nil); err != nil {
 		t.Fatalf("Start err: %v", err)
 	}
-	rule, ok := d.rt.Load().(*RouteTable).Match("/api/x")
-	if !ok {
-		t.Fatal("Match 应命中")
+	defer func() { _ = d.Stop() }()
+	// 路径不匹配。
+	ctx, _ := newCtx(t, http.MethodGet, "/other")
+	if !d.Handle(ctx) || ctx.DF.Target() != "" {
+		t.Error("未命中应 true 且不写 Target")
 	}
-	// 等待首次探活完成
-	time.Sleep(250 * time.Millisecond)
-	for i := 0; i < 5; i++ {
-		up, ok := rule.Select(nil)
-		if !ok || up != healthySrv.URL {
-			t.Errorf("Select 应只选健康节点 %q, got (%q, %v)", healthySrv.URL, up, ok)
-		}
+	// domain 不匹配。
+	ctx, _ = newCtx(t, http.MethodGet, "http://b.com/api/x")
+	if !d.Handle(ctx) || ctx.DF.Target() != "" {
+		t.Error("domain 不匹配应 true 且不写 Target")
 	}
-	if err := d.Stop(); err != nil {
-		t.Fatalf("Stop err: %v", err)
+	// domain 匹配（大小写不敏感 + 剥端口）。
+	ctx, _ = newCtx(t, http.MethodGet, "http://A.COM:8443/api/x")
+	if !d.Handle(ctx) || ctx.DF.Target() != "http://n1:9001" {
+		t.Error("归一 domain 命中应写 Target")
 	}
 }
 
-func TestHandle_NoHealthyNode_Writes503(t *testing.T) {
-	downSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer downSrv.Close()
-
-	d := New(nil)
-	d.rules = "/api/=" + downSrv.URL + "@30ms@100ms@/healthz"
+// TestHandle_ParamInject 模式规则：参数注入 X-Route-Param-* 请求头。
+func TestHandle_ParamInject(t *testing.T) {
+	src := &stubSource{in: baseInput([]RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypeMode), PathValue: "/api/order/:id", UpstreamID: 100, Enabled: true},
+	})}
+	d := New(nil, src, nil)
 	if err := d.Start(nil); err != nil {
 		t.Fatalf("Start err: %v", err)
 	}
-	// 等首次探活标记不健康
-	time.Sleep(200 * time.Millisecond)
+	defer func() { _ = d.Stop() }()
+	ctx, _ := newCtx(t, http.MethodGet, "/api/order/123")
+	if !d.Handle(ctx) {
+		t.Error("Handle 应返回 true")
+	}
+	if got := ctx.R.Header.Get("X-Route-Param-id"); got != "123" {
+		t.Errorf("X-Route-Param-id=%q, want 123", got)
+	}
+	if got := ctx.DF.Target(); got != "http://n1:9001" {
+		t.Errorf("Target=%q", got)
+	}
+}
 
-	rec := httptest.NewRecorder()
-	df := dataflow.New(httpsvr.NewDataFlow(), httptest.NewRequest(http.MethodGet, "/api/1", nil))
-	ctx := &chain.Context{W: rec, R: httptest.NewRequest(http.MethodGet, "/api/1", nil), DF: df}
+// TestHandle_DisabledUpstream_503 fail-closed：均衡器停用不剔除规则，命中 503 中断链。
+func TestHandle_DisabledUpstream_503(t *testing.T) {
+	in := baseInput(nil)
+	in.Upstreams[0].Enabled = false
+	src := &stubSource{in: baseInput([]RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 100, Enabled: true},
+	})}
+	src.in.Upstreams = in.Upstreams // 停用均衡器
+	d := New(nil, src, nil)
+	if err := d.Start(nil); err != nil {
+		t.Fatalf("Start err: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+	ctx, rec := newCtx(t, http.MethodGet, "/api/x")
 	if d.Handle(ctx) {
-		t.Error("Handle 应返回 false（中断链）")
+		t.Error("停用均衡器应 503 中断链（false）")
 	}
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("code=%d, want 503", rec.Code)
 	}
-	if got := df.Target(); got != "" {
-		t.Errorf("Target()=%q, want 空串（不错误转发）", got)
+	if ctx.DF.Target() != "" {
+		t.Error("503 路径不应写 Target")
+	}
+}
+
+// TestHandle_NoHealthyNode_503 全部节点无健康结论（未探活登记）→ 503 中断链。
+func TestHandle_NoHealthyNode_503(t *testing.T) {
+	src := &stubSource{in: baseInput([]RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 100, Enabled: true},
+	})}
+	d := New(nil, src, nil)
+	if err := d.Start(nil); err != nil {
+		t.Fatalf("Start err: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+	// 节点 hc_path 为空 → 免探活登记健康，先走通；再显式判死模拟探活失败。
+	ctx, _ := newCtx(t, http.MethodGet, "/api/x")
+	if !d.Handle(ctx) {
+		t.Error("免探活登记健康节点应可选")
+	}
+	d.reg.SetHealth(200, HealthBad)
+	ctx, rec := newCtx(t, http.MethodGet, "/api/x")
+	if d.Handle(ctx) {
+		t.Error("无健康节点应 503 中断链（false）")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("code=%d, want 503", rec.Code)
+	}
+}
+
+// TestHandle_StickyPlant 会话保持：开启 sticky 后策略选点种 Cookie（只设头，不写体）。
+func TestHandle_StickyPlant(t *testing.T) {
+	in := baseInput([]RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 100, Enabled: true},
+	})
+	in.Upstreams[0].StickyEnabled = true
+	src := &stubSource{in: in}
+	d := New(nil, src, nil)
+	if err := d.Start(nil); err != nil {
+		t.Fatalf("Start err: %v", err)
+	}
+	defer func() { _ = d.Stop() }()
+	ctx, rec := newCtx(t, http.MethodGet, "/api/x")
+	if !d.Handle(ctx) {
+		t.Fatal("Handle 应返回 true")
+	}
+	// 种值：Set-Cookie 经 Add 追加（续链契约：true 路径只设响应头，未 Write）。
+	cookies := rec.Header().Values("Set-Cookie")
+	if len(cookies) != 1 || !strings.HasPrefix(cookies[0], DefaultStickyCookie+"=200;") {
+		t.Errorf("Set-Cookie=%v, want %s=200", cookies, DefaultStickyCookie)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("true 路径禁止写体，got %q", rec.Body.String())
+	}
+	// 二次请求携带 sticky Cookie → 直路由同一节点（不再重种）。
+	req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
+	req.AddCookie(&http.Cookie{Name: DefaultStickyCookie, Value: "200"})
+	df := dataflow.New(httpsvr.NewDataFlow(), req)
+	rec2 := httptest.NewRecorder()
+	ctx2 := &chain.Context{W: rec2, R: req, DF: df}
+	if !d.Handle(ctx2) {
+		t.Fatal("Handle 应返回 true")
+	}
+	if n := len(rec2.Header().Values("Set-Cookie")); n != 0 {
+		t.Errorf("直路由不应重种 Cookie，got %d 个", n)
+	}
+}
+
+// TestStart_DegradedAndRetry recovers：DB 不可用 → 空表快照降级；恢复后后台重试
+// 首次成功即停（拉取次数停止增长）。
+func TestStart_DegradedAndRetry(t *testing.T) {
+	src := &stubSource{in: baseInput([]RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 100, Enabled: true},
+	})}
+	src.fail(errors.New("db down"))
+	d := New(nil, src, nil)
+	d.retryEvery = 20 * time.Millisecond
+	if err := d.Start(nil); err != nil {
+		t.Fatalf("Start 降级不应报错，got: %v", err)
+	}
+	if d.Ready() {
+		t.Error("DB 不可用不应 ready")
+	}
+	// 降级期间：空表快照全走默认 upstream、无 panic。
+	ctx, _ := newCtx(t, http.MethodGet, "/api/x")
+	if !d.Handle(ctx) || ctx.DF.Target() != "" {
+		t.Error("降级空表快照应未命中直通")
+	}
+
+	// DB 恢复 → 后台重试自动完成首次构建。
+	src.ok()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !d.Ready() {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !d.Ready() {
+		t.Fatal("恢复后后台重试应完成首次构建")
+	}
+	ctx, _ = newCtx(t, http.MethodGet, "/api/x")
+	if !d.Handle(ctx) || ctx.DF.Target() != "http://n1:9001" {
+		t.Error("首次构建成功后规则应生效")
+	}
+
+	// 重试即停：ready 后拉取次数不再增长（非常驻轮询）。
+	calls := src.calls.Load()
+	time.Sleep(5 * d.retryEvery)
+	if got := src.calls.Load(); got != calls {
+		t.Errorf("首次成功后重试应停止，拉取次数 %d → %d", calls, got)
+	}
+	_ = d.Stop()
+
+	// Stop 后重试 goroutine 不再拉取。
+	after := src.calls.Load()
+	time.Sleep(3 * d.retryEvery)
+	if got := src.calls.Load(); got != after {
+		t.Errorf("Stop 后不应再有拉取，%d → %d", after, got)
+	}
+}
+
+// TestRebuild_ConcurrentSerial Rebuild 并发调用串行安全（-race 下验证）。
+func TestRebuild_ConcurrentSerial(t *testing.T) {
+	src := &stubSource{in: baseInput([]RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 100, Enabled: true},
+	})}
+	d := New(nil, src, nil)
+	defer func() { _ = d.Stop() }()
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := d.Rebuild(); err != nil {
+				t.Errorf("并发 Rebuild err: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if !d.Ready() {
+		t.Error("并发 Rebuild 后应 ready")
+	}
+}
+
+// TestRebuild_FailureKeepsOldSnapshot 构建失败保留旧快照（引用不变）。
+func TestRebuild_FailureKeepsOldSnapshot(t *testing.T) {
+	rules := []RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 100, Enabled: true},
+	}
+	src := &stubSource{in: baseInput(rules)}
+	d := New(nil, src, nil)
+	if err := d.Rebuild(); err != nil {
+		t.Fatalf("首次 Rebuild err: %v", err)
+	}
+	old := d.snapshot()
+
+	// 非法行集（规则引用不存在的均衡器）→ Rebuild 报错且快照指针不变。
+	// 注意：规则行须独立构造（与合法输入不共享底层数组）。
+	badRules := []RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 999, Enabled: true},
+	}
+	bad := baseInput(badRules)
+	src.mu.Lock()
+	src.in = bad
+	src.mu.Unlock()
+	if err := d.Rebuild(); err == nil {
+		t.Fatal("非法对象图 Rebuild 应报错")
+	}
+	if d.snapshot() != old {
+		t.Error("构建失败不应替换旧快照")
+	}
+
+	// 数据源失败同理。
+	src.mu.Lock()
+	src.in = baseInput(rules)
+	src.mu.Unlock()
+	src.fail(errors.New("db down"))
+	if err := d.Rebuild(); err == nil {
+		t.Fatal("数据源失败 Rebuild 应报错")
+	}
+	if d.snapshot() != old {
+		t.Error("拉取失败不应替换旧快照")
+	}
+
+	// 恢复合法数据 → 重建成功替换快照。
+	src.ok()
+	if err := d.Rebuild(); err != nil {
+		t.Fatalf("恢复后 Rebuild err: %v", err)
+	}
+	if d.snapshot() == old {
+		t.Error("成功重建应替换为新快照")
+	}
+}
+
+// TestStop_DrainsHealthCenter Stop 排空探活任务（带 hc_path 的被引用节点）。
+func TestStop_DrainsHealthCenter(t *testing.T) {
+	in := baseInput([]RuleRow{
+		{ID: 1, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/api", UpstreamID: 100, Enabled: true},
+	})
+	in.Nodes[0].HCPath = "/healthz" // 触发探活任务
+	src := &stubSource{in: in}
+	d := New(nil, src, nil)
+	if err := d.Start(nil); err != nil {
+		t.Fatalf("Start err: %v", err)
+	}
+	if d.hc.taskCount() != 1 {
+		t.Fatalf("探活任务数=%d, want 1", d.hc.taskCount())
 	}
 	if err := d.Stop(); err != nil {
 		t.Fatalf("Stop err: %v", err)
 	}
-}
-
-func mustRT(t *testing.T, s string) *RouteTable {
-	t.Helper()
-	rt, err := parseRules(s)
-	if err != nil {
-		t.Fatalf("parseRules(%q) err: %v", s, err)
+	if n := d.hc.taskCount(); n != 0 {
+		t.Errorf("Stop 后探活任务应排空，got %d", n)
 	}
-	return rt
+	// 停止后拒绝 Rebuild（防探活任务泄漏）。
+	if err := d.Rebuild(); err == nil {
+		t.Error("停止后 Rebuild 应报错")
+	}
 }

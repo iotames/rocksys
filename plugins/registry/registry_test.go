@@ -1,5 +1,5 @@
 // Package registry 单测：StaticTable 加载、Server 注册/心跳/超时摘除、
-// 实例变更联动（Watcher 回调 + conf.Set DISPATCH_RULES）与组件生命周期。
+// 实例变更 Watcher 回调与组件生命周期。
 package registry
 
 import (
@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -138,33 +137,6 @@ func TestNewStaticTable_Reload(t *testing.T) {
 	}
 }
 
-// TestBuildRules 实例列表 → DISPATCH_RULES 格式字符串
-func TestBuildRules(t *testing.T) {
-	now := time.Now()
-	insts := []Instance{
-		{Name: "order-svc", Addr: "http://order-svc:9001", Healthy: true, LastHeartbeat: now},
-		{Name: "user-svc", Addr: "http://user-svc:9002", Healthy: true, LastHeartbeat: now},
-	}
-	got := buildRules(insts)
-	want := "/api/order-svc/=http://order-svc:9001,/api/user-svc/=http://user-svc:9002"
-	if got != want {
-		t.Errorf("buildRules=%q，want %q", got, want)
-	}
-	// 不健康实例不进路由
-	insts[1].Healthy = false
-	if got := buildRules(insts); got != "/api/order-svc/=http://order-svc:9001" {
-		t.Errorf("不健康实例应排除，got %q", got)
-	}
-	// 同名多副本 → 保留心跳最新的健康实例
-	insts = []Instance{
-		{Name: "order-svc", Addr: "http://order-svc:9001", Healthy: true, LastHeartbeat: now},
-		{Name: "order-svc", Addr: "http://order-svc:9002", Healthy: true, LastHeartbeat: now.Add(time.Minute)},
-	}
-	if got := buildRules(insts); got != "/api/order-svc/=http://order-svc:9002" {
-		t.Errorf("同名多副本应取心跳最新，got %q", got)
-	}
-}
-
 // startTestServer 启动随机端口 Server，返回 baseURL 与清理函数。
 func startTestServer(t *testing.T, s *Server) string {
 	t.Helper()
@@ -229,31 +201,6 @@ func TestServer_RegisterAndHeartbeat(t *testing.T) {
 	if code, _ := postJSON(t, http.MethodPost, base+"/register",
 		map[string]string{"name": "x"}); code != http.StatusBadRequest {
 		t.Errorf("缺少 addr 应 400，got %d", code)
-	}
-}
-
-// TestServer_Register_TriggersConfSet 实例变更联动 conf.Set(DISPATCH_RULES)
-func TestServer_Register_TriggersConfSet(t *testing.T) {
-	cfg := newFakeConfMgr()
-	s := NewServer("127.0.0.1:0")
-	s.SetConfMgr(cfg)
-	base := startTestServer(t, s)
-
-	postJSON(t, http.MethodPost, base+"/register",
-		map[string]string{"name": "order-svc", "addr": "http://order-svc:9001"})
-	postJSON(t, http.MethodPost, base+"/register",
-		map[string]string{"name": "user-svc", "addr": "http://user-svc:9002"})
-
-	want := "/api/order-svc/=http://order-svc:9001,/api/user-svc/=http://user-svc:9002"
-	if got := cfg.value("DISPATCH_RULES"); got != want {
-		t.Errorf("DISPATCH_RULES=%q，want %q", got, want)
-	}
-
-	// 摘除后联动更新（不再包含 user-svc）
-	s.Remove("user-svc", "http://user-svc:9002")
-	want = "/api/order-svc/=http://order-svc:9001"
-	if got := cfg.value("DISPATCH_RULES"); got != want {
-		t.Errorf("摘除后 DISPATCH_RULES=%q，want %q", got, want)
 	}
 }
 
@@ -347,14 +294,6 @@ func TestRegistryComponent(t *testing.T) {
 		t.Errorf("重复 Start err: %v", err)
 	}
 
-	// 经组件 Server 注册实例 → conf 联动
-	base := "http://" + r.Server().Addr()
-	postJSON(t, http.MethodPost, base+"/register",
-		map[string]string{"name": "order-svc", "addr": "http://order-svc:9001"})
-	if got := cfg.value("DISPATCH_RULES"); !strings.Contains(got, "/api/order-svc/=http://order-svc:9001") {
-		t.Errorf("组件联动 DISPATCH_RULES=%q，want 含 order-svc 规则", got)
-	}
-
 	if err := r.Stop(); err != nil {
 		t.Fatalf("Stop err: %v", err)
 	}
@@ -370,11 +309,10 @@ func TestRegistryComponent(t *testing.T) {
 	}
 }
 
-// TestRegistryComponent_StaticPath 静态实例随组件启动发布并联动 dispatch
+// TestRegistryComponent_StaticPath 静态实例随组件启动加载（不参与心跳过期摘除）
 func TestRegistryComponent_StaticPath(t *testing.T) {
-	cfg := newFakeConfMgr()
 	path := writeTemp(t, "instances.yaml", "instances:\n  - name: pay-svc\n    addr: http://pay-svc:9003\n")
-	r := New(cfg)
+	r := New(newFakeConfMgr())
 	r.SetAddr("127.0.0.1:0")
 	r.SetStaticPath(path)
 
@@ -386,9 +324,6 @@ func TestRegistryComponent_StaticPath(t *testing.T) {
 	got := r.Server().Instances()
 	if len(got) != 1 || got[0].Name != "pay-svc" || !got[0].Static {
 		t.Fatalf("静态实例未加载，got %+v", got)
-	}
-	if got := cfg.value("DISPATCH_RULES"); !strings.Contains(got, "/api/pay-svc/=http://pay-svc:9003") {
-		t.Errorf("静态实例未联动 DISPATCH_RULES，got %q", got)
 	}
 
 	// 静态实例不参与心跳过期摘除

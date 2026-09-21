@@ -269,32 +269,12 @@ func buildServer(args []string) (*Server, error) {
 	mgr := hotswap.NewManager(ch, cfgMgr)
 	mgr.SetScriptHub(scriptHub) // 外挂文件监控循环随管理器生命周期启停（Shutdown 统一停止）
 
-	// 5. 注册挂件（链中间件用 RegisterMiddleware，独立组件用 RegisterComponent；见 §6.1）
-	// 链中间件执行顺序：Head/Middle 槽位按注册顺序；Tail 槽位逆序（§4.4）——
-	// 故 Tail 上 obs 先注册、result 后注册 → result 先改写响应、obs 后记录最终状态。
-	shieldMw, err := shield.New(cfgMgr, scriptHub) // hub 注入：rules/ 子目录注册 + 订阅热更（≤3s 自动重建 WAF 快照）
-	if err != nil {
-		return nil, fmt.Errorf("shield.New: %w", err)
-	}
-	mgr.RegisterMiddleware(shieldMw)             // L1 防护 → chain.Head
-	mgr.RegisterMiddleware(trace.New(&cfgMgr))   // trace 透传 → chain.Head
-	mgr.RegisterMiddleware(auth.New(&cfgMgr))    // JWT 认证 → chain.Head
-	mgr.RegisterMiddleware(dispatch.New(cfgMgr)) // L2 路由 → chain.Middle
-	mgr.RegisterMiddleware(rewrite.New(cfgMgr))  // L2 转发前改写 → chain.Middle
-
-	// Lua 策略执行超时经配置中心注册（默认 100ms，可经 SCRIPT_TIMEOUT 覆盖）。
-	// 装配期生效：script.New 拷贝超时值，热更改值需重启进程才生效。
-	var scriptTimeoutMS int
-	if err := cfgMgr.Register(&scriptTimeoutMS, "SCRIPT_TIMEOUT", "100", "Lua 脚本执行超时(毫秒)", "修改后需重启服务生效"); err != nil {
-		return nil, fmt.Errorf("register SCRIPT_TIMEOUT: %w", err)
-	}
-	mgr.RegisterMiddleware(script.New(time.Duration(scriptTimeoutMS)*time.Millisecond, cfgMgr)) // Lua 策略 → chain.Middle
-
-	// 统一数据访问层（§? 数据访问层）：为可插拔组件（obs/mq 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
+	// 统一数据访问层（§? 数据访问层）：为可插拔组件（obs/mq/dispatch 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
 	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）。
 	// SQL 脚本外挂覆写目录统一为 HOT_SCRIPTS_DIR/sql（默认 hotscripts/sql，内嵌 sql/ 兜底；不再有独立 SQL_DIR 配置）。
-	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；obs 的默认 db 存储与 mq 等依赖方因此不可用。
+	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；obs 的默认 db 存储与 mq/dispatch 等依赖方因此不可用。
 	// ★ 必须先于 obs 创建：obs 复用本数据访问层写 access_log 表；未就绪时 obs 降级丢弃日志并告警。
+	// ★ 必须先于 dispatch 主件装配：dispatch 注入本数据访问层拉路由四表（未就绪时 dispatch 走降级重试）。
 	var dataDB *db.DB
 	var dbDriver, dbDSN string
 	if err := cfgMgr.Register(&dbDriver, "DB_DRIVER", "sqlite", "数据库驱动名（sqlite/mysql/postgres）"); err != nil {
@@ -318,6 +298,35 @@ func buildServer(args []string) (*Server, error) {
 		dataDB = d
 		log.Info("db: 数据访问层已就绪", "driver", dataDB.Driver())
 	}
+
+	// 5. 注册挂件（链中间件用 RegisterMiddleware，独立组件用 RegisterComponent；见 §6.1）
+	// 链中间件执行顺序：Head/Middle 槽位按注册顺序；Tail 槽位逆序（§4.4）——
+	// 故 Tail 上 obs 先注册、result 后注册 → result 先改写响应、obs 后记录最终状态。
+	shieldMw, err := shield.New(cfgMgr, scriptHub) // hub 注入：rules/ 子目录注册 + 订阅热更（≤3s 自动重建 WAF 快照）
+	if err != nil {
+		return nil, fmt.Errorf("shield.New: %w", err)
+	}
+	mgr.RegisterMiddleware(shieldMw)           // L1 防护 → chain.Head
+	mgr.RegisterMiddleware(trace.New(&cfgMgr)) // trace 透传 → chain.Head
+	mgr.RegisterMiddleware(auth.New(&cfgMgr))  // JWT 认证 → chain.Head
+
+	// L2 路由分发（ROUTE_DISPATCH）：双中间件共用同一 registry 运行态——
+	// 主件（Middle：匹配 + 选点 + 在途 +1 + sticky 种值 + 写 Target）与收尾件
+	// （Tail：转发完成后在途 -1，Start/Stop 为 no-op，生命周期由主件统一驱动）；
+	// DISPATCH_ENABLED 经 autoEnableMap 两名同键联动启停（装配注册顺序固定保证链序确定）。
+	dispatchReg := dispatch.NewRegistry()
+	mgr.RegisterMiddleware(dispatch.New(cfgMgr, dispatch.NewDBSource(dataDB), dispatchReg)) // 主件 → chain.Middle
+	mgr.RegisterMiddleware(dispatch.NewTailFin(dispatchReg))                                // 收尾件 → chain.Tail
+
+	mgr.RegisterMiddleware(rewrite.New(cfgMgr)) // L2 转发前改写 → chain.Middle
+
+	// Lua 策略执行超时经配置中心注册（默认 100ms，可经 SCRIPT_TIMEOUT 覆盖）。
+	// 装配期生效：script.New 拷贝超时值，热更改值需重启进程才生效。
+	var scriptTimeoutMS int
+	if err := cfgMgr.Register(&scriptTimeoutMS, "SCRIPT_TIMEOUT", "100", "Lua 脚本执行超时(毫秒)", "修改后需重启服务生效"); err != nil {
+		return nil, fmt.Errorf("register SCRIPT_TIMEOUT: %w", err)
+	}
+	mgr.RegisterMiddleware(script.New(time.Duration(scriptTimeoutMS)*time.Millisecond, cfgMgr)) // Lua 策略 → chain.Middle
 
 	// ── GeoIP 功能总开关（默认开启；关闭后解析/自动同步/统计全部停用）────────
 	// 开关语义内聚在 geoip.Resolver 单点裁决（Enabled/Ready/Lookup），消费方不各自读配置：
@@ -671,15 +680,16 @@ func buildServer(args []string) (*Server, error) {
 	// ★ 独立组件（config/registry/object）无"HTTP 流动/观测"行为、无 ENABLED 概念，不纳入；
 	//   mq 已由 MQ_ENABLED 条件装配控制，维持现状。
 	autoEnableMap := map[string]string{
-		"shield":   "SHIELD_ENABLED",
-		"trace":    "TRACE_ENABLED",
-		"auth":     "AUTH_ENABLED",
-		"dispatch": "DISPATCH_ENABLED",
-		"rewrite":  "REWRITE_ENABLED",
-		"script":   "SCRIPT_ENABLED",
-		"obs":      "OBS_ENABLED",
-		"copy":     "COPY_ENABLED",
-		"result":   "RESULT_ENABLED",
+		"shield":        "SHIELD_ENABLED",
+		"trace":         "TRACE_ENABLED",
+		"auth":          "AUTH_ENABLED",
+		"dispatch":      "DISPATCH_ENABLED", // 主件（Middle）
+		"dispatch-tail": "DISPATCH_ENABLED", // 收尾件（Tail）：与主件同键联动启停
+		"rewrite":       "REWRITE_ENABLED",
+		"script":        "SCRIPT_ENABLED",
+		"obs":           "OBS_ENABLED",
+		"copy":          "COPY_ENABLED",
+		"result":        "RESULT_ENABLED",
 	}
 	mgr.SetAutoEnableMap(autoEnableMap)
 	adminSrv.SetAutoEnableMap(autoEnableMap) // switch on/off 持久化到 .env（重启后按配置恢复）

@@ -53,7 +53,7 @@ func pickHealthy(u *UpstreamRT, reg NodeRegistry, p Priority) *NodeRT {
 	if len(cands) == 0 {
 		return nil
 	}
-	if u.Algo == AlgoKindLeastConn {
+	if u.Algo == AlgoLeastConn {
 		return u.pickLeastConn(reg, cands)
 	}
 	return u.pickRR(cands)

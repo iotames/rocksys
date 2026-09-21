@@ -1,5 +1,4 @@
-// 路由匹配引擎与 Host 归一化（ROUTE_DISPATCH 三层模型，STEP3 旁路新建，
-// 与旧 DSL 链 dispatch.go/router.go 的 RouteTable 完全解耦）。
+// 路由匹配引擎与 Host 归一化（ROUTE_DISPATCH 三层模型）。
 //
 // 匹配语义（唯一权威：docs/plan/ROUTE_DISPATCH_DESIGN_PLAN.md S1 策略与 M 表）：
 //   - Host 归一：剥端口（含 IPv6 `[::1]:80` 方括号形态）+ 转小写；空 Host 保持空；
@@ -7,11 +6,11 @@
 //   - domain 条件：空 = 匹配任意 Host；非空 = 与归一 Host 精确相等（快照内已归一小写，
 //     请求侧经 normalizeHost 归一后比对，域名匹配不敏感大小写）；
 //   - 路径条件（路径匹配大小写敏感）：
-//       前缀 = 段对齐且命中自身（/api 命中 /api 与 /api/x、不匹配 /apix；
-//              / 命中一切路径含 / 本身，D13）；
-//       精确 = 全等，不做尾斜杠归一；
-//       模式 = :param 捕获 / * 通配的段匹配，沿用旧 Radix 语义（经公共段匹配
-//              函数 matchSegments 实现），命中产出 X-Route-Param-* 参数；
+//     前缀 = 段对齐且命中自身（/api 命中 /api 与 /api/x、不匹配 /apix；
+//     / 命中一切路径含 / 本身，D13）；
+//     精确 = 全等，不做尾斜杠归一；
+//     模式 = :param 捕获 / * 通配的段匹配，沿用旧 Radix 语义（经公共段匹配
+//     函数 matchSegments 实现），命中产出 X-Route-Param-* 参数；
 //   - 主流程：快照规则已按 (match_order, id) 稳定升序，依序逐条判定，
 //     命中即停返回（规则 + 捕获参数）；全未命中返回 nil。
 package dispatch
@@ -98,4 +97,54 @@ func Match(snap *RouteSnapshot, host, path string) (*RuleRT, map[string]string) 
 		}
 	}
 	return nil, nil
+}
+
+// matchSegments 公共单模式段匹配（STEP5 自 Radix Tree 单链语义收编，供模式匹配
+// matchRoutePath 使用；断言语义见 match_test.go）。
+//
+// pattern 形如 /api/order/:id、/api/*、/；语义：
+//   - 静态段：逐段相等；
+//   - :name 段：匹配任意单个路径段并捕获参数；
+//   - * 段：匹配其后剩余所有路径（至少消费一个段——/api/* 不命中 /api）；
+//   - 前缀语义：模式段全部匹配完即命中，路径剩余任意段均算命中；
+//   - pattern=/ 分段为空，命中一切路径。
+//
+// 命中返回捕获的参数（无参数时为 nil）；未命中返回 (nil, false)。
+func matchSegments(pattern, path string) (map[string]string, bool) {
+	patSegs := splitSegments(pattern)
+	pathSegs := splitSegments(path)
+	var params map[string]string
+	for i, seg := range patSegs {
+		if seg == "*" {
+			// 通配：至少消费一个段后命中，剩余任意。
+			if i >= len(pathSegs) {
+				return nil, false
+			}
+			return params, true
+		}
+		if i >= len(pathSegs) {
+			return nil, false // 路径段不足
+		}
+		if strings.HasPrefix(seg, ":") {
+			// 参数段：匹配任意单段并捕获。
+			if params == nil {
+				params = make(map[string]string)
+			}
+			params[seg[1:]] = pathSegs[i]
+			continue
+		}
+		if seg != pathSegs[i] {
+			return nil, false // 静态段不等
+		}
+	}
+	return params, true
+}
+
+// splitSegments 按 "/" 分段，去掉首尾空段。
+func splitSegments(p string) []string {
+	p = strings.Trim(p, "/")
+	if p == "" {
+		return nil
+	}
+	return strings.Split(p, "/")
 }

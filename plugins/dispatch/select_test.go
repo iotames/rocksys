@@ -39,7 +39,7 @@ func newTestUpstream(t *testing.T, algo AlgoKind, weights []int, prios []Priorit
 
 // TestSelectRoundRobinWeightedSequence 平滑加权序列断言：权重 1:2 → [b,a,b] 循环。
 func TestSelectRoundRobinWeightedSequence(t *testing.T) {
-	u, reg := newTestUpstream(t, AlgoKindRoundRobin, []int{1, 2}, nil) // n1 w=1, n2 w=2
+	u, reg := newTestUpstream(t, AlgoRoundRobin, []int{1, 2}, nil) // n1 w=1, n2 w=2
 	var got []int64
 	for i := 0; i < 6; i++ {
 		n, ok := SelectNode(u, reg)
@@ -56,7 +56,7 @@ func TestSelectRoundRobinWeightedSequence(t *testing.T) {
 
 // TestSelectRoundRobinWeightDistribution 权重 5:1:1 分布断言：21 次选中 15/3/3。
 func TestSelectRoundRobinWeightDistribution(t *testing.T) {
-	u, reg := newTestUpstream(t, AlgoKindRoundRobin, []int{5, 1, 1}, nil)
+	u, reg := newTestUpstream(t, AlgoRoundRobin, []int{5, 1, 1}, nil)
 	counts := map[int64]int{}
 	for i := 0; i < 21; i++ {
 		n, ok := SelectNode(u, reg)
@@ -73,7 +73,7 @@ func TestSelectRoundRobinWeightDistribution(t *testing.T) {
 
 // TestSelectLeastConnBias 并发计数下偏向低在途节点；递减后回位。
 func TestSelectLeastConnBias(t *testing.T) {
-	u, reg := newTestUpstream(t, AlgoKindLeastConn, []int{1, 1, 1}, nil)
+	u, reg := newTestUpstream(t, AlgoLeastConn, []int{1, 1, 1}, nil)
 	// 预置在途：n1=5, n2=2, n3=0 → 必选 n3。
 	reg.IncInflight(101)
 	reg.IncInflight(101)
@@ -103,7 +103,7 @@ func (noopIncRegistry) IncInflight(int64) {}
 // TestSelectLeastConnTieFallbackRR 平局回落轮询游标：两节点同在途（屏蔽 +1 反馈）
 // 时按平滑加权纯轮询交替 101,102,101,102。
 func TestSelectLeastConnTieFallbackRR(t *testing.T) {
-	u, reg := newTestUpstream(t, AlgoKindLeastConn, []int{1, 1}, nil)
+	u, reg := newTestUpstream(t, AlgoLeastConn, []int{1, 1}, nil)
 	fixed := noopIncRegistry{reg}
 	var got []int64
 	for i := 0; i < 4; i++ {
@@ -122,7 +122,7 @@ func TestSelectLeastConnTieFallbackRR(t *testing.T) {
 
 // TestSelectPriorityFallback 优先级回落：高优健康 → 备份 → 不可用。
 func TestSelectPriorityFallback(t *testing.T) {
-	u, reg := newTestUpstream(t, AlgoKindRoundRobin, []int{1, 1},
+	u, reg := newTestUpstream(t, AlgoRoundRobin, []int{1, 1},
 		[]Priority{PriorityPrimary, PriorityBackup})
 
 	// 高优健康：永远选高优，不碰备份。
@@ -153,7 +153,7 @@ func TestSelectPriorityFallback(t *testing.T) {
 
 // TestSelectIncrementsInflight 选中即在途 +1（策略选点与 sticky 直路由同口径）。
 func TestSelectIncrementsInflight(t *testing.T) {
-	u, reg := newTestUpstream(t, AlgoKindRoundRobin, []int{1, 1}, nil)
+	u, reg := newTestUpstream(t, AlgoRoundRobin, []int{1, 1}, nil)
 	before := reg.Inflight(101)
 	if _, ok := SelectNode(u, reg); !ok {
 		t.Fatal("选点失败")
@@ -173,7 +173,7 @@ func TestSelectIncrementsInflight(t *testing.T) {
 
 // TestSelectUnavailableNoSideEffect 全部不可用时不得产生计数副作用。
 func TestSelectUnavailableNoSideEffect(t *testing.T) {
-	u, reg := newTestUpstream(t, AlgoKindLeastConn, []int{1, 1}, nil)
+	u, reg := newTestUpstream(t, AlgoLeastConn, []int{1, 1}, nil)
 	for _, n := range u.Nodes {
 		reg.SetHealth(n.ID, HealthBad)
 	}

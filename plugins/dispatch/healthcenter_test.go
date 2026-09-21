@@ -17,7 +17,7 @@ func hcInput(rules int64, ups []int64, nodes []NodeRow, rels [][2]int64) *GraphI
 		Rules: []RuleRow{{ID: rules, MatchOrder: 1, PathType: int(PathTypePrefix), PathValue: "/", UpstreamID: ups[0], Enabled: true}},
 	}
 	for _, id := range ups {
-		in.Upstreams = append(in.Upstreams, UpstreamRow{ID: id, Name: "up", Algo: int(AlgoKindLeastConn), Enabled: true})
+		in.Upstreams = append(in.Upstreams, UpstreamRow{ID: id, Name: "up", Algo: int(AlgoLeastConn), Enabled: true})
 	}
 	in.Nodes = nodes
 	for _, r := range rels {

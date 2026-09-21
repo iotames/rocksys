@@ -12,7 +12,7 @@ func mkGraphInput(rules []RuleRow) *GraphInput {
 	return &GraphInput{
 		Rules: rules,
 		Upstreams: []UpstreamRow{
-			{ID: 100, Name: "up-a", Algo: int(AlgoKindRoundRobin), Enabled: true},
+			{ID: 100, Name: "up-a", Algo: int(AlgoRoundRobin), Enabled: true},
 		},
 		Nodes: []NodeRow{
 			{ID: 200, URL: "http://n1:9001", Enabled: true},
@@ -37,14 +37,14 @@ func TestNormalizeHost(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"", ""},                                 // 空 Host 保持空
-		{"Example.COM", "example.com"},           // 转小写
+		{"", ""},                       // 空 Host 保持空
+		{"Example.COM", "example.com"}, // 转小写
 		{"api.example.com:8443", "api.example.com"}, // 剥端口
-		{"[::1]:80", "[::1]"},                    // IPv6 方括号形态剥端口
-		{"[::1]", "[::1]"},                       // 方括号无端口
-		{"::1", "::1"},                           // 裸 IPv6 多冒号不误剥
-		{"  Host.COM:80 ", "host.com"},           // 去空白 + 剥端口 + 小写
-		{"localhost", "localhost"},               // 无端口原样小写
+		{"[::1]:80", "[::1]"},                       // IPv6 方括号形态剥端口
+		{"[::1]", "[::1]"},                          // 方括号无端口
+		{"::1", "::1"},                              // 裸 IPv6 多冒号不误剥
+		{"  Host.COM:80 ", "host.com"},              // 去空白 + 剥端口 + 小写
+		{"localhost", "localhost"},                  // 无端口原样小写
 	}
 	for _, c := range cases {
 		if got := normalizeHost(c.in); got != c.want {

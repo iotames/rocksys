@@ -41,12 +41,12 @@ type AlgoKind int
 
 // 均衡策略枚举（数值稳定，禁止改动已有值）。
 const (
-	AlgoKindRoundRobin AlgoKind = 1 // round_robin：平滑加权轮询（默认；权重默认 1 即纯轮询）
-	AlgoKindLeastConn  AlgoKind = 2 // least_conn：在途最少优先（平局回落轮询游标）
+	AlgoRoundRobin AlgoKind = 1 // round_robin：平滑加权轮询（默认；权重默认 1 即纯轮询）
+	AlgoLeastConn  AlgoKind = 2 // least_conn：在途最少优先（平局回落轮询游标）
 )
 
 // Valid 判断是否为合法枚举值。
-func (a AlgoKind) Valid() bool { return a == AlgoKindRoundRobin || a == AlgoKindLeastConn }
+func (a AlgoKind) Valid() bool { return a == AlgoRoundRobin || a == AlgoLeastConn }
 
 // Priority 节点优先级（dispatch_upstream_node.priority，INTEGER 存储，数值稳定
 // 只增不改；NGINX backup 同款语义，数据字典见 docs/DATA_DICT.md §3.8）。
@@ -120,6 +120,7 @@ type UpstreamRT struct {
 	Algo          AlgoKind  // 均衡策略
 	StickyEnabled bool      // 会话保持开关
 	StickyCookie  string    // Cookie 名（空时取 DefaultStickyCookie）
+	Enabled       bool      // 启用（fail-closed：停用不剔除引用它的规则，命中后由 Handle 503）
 	Nodes         []*NodeRT // 关系展开的节点列表（构建期已校验非空）
 
 	rr rrCursor // 平滑加权轮询游标（与 Nodes 等长；互斥锁保护，快照内唯一可变状态）
@@ -173,6 +174,7 @@ func BuildGraph(in *GraphInput) (*RouteSnapshot, error) {
 			Algo:          AlgoKind(u.Algo),
 			StickyEnabled: u.StickyEnabled,
 			StickyCookie:  u.StickyCookie,
+			Enabled:       u.Enabled,
 		}
 	}
 	// 关系展开：均衡器聚合其节点（保持输入顺序，游标与列表按下标对应）。
