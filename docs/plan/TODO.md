@@ -27,7 +27,7 @@
 | 4 | route_dispatch/STEP4_health_center.md | 健康检查中心：节点级探活任务管理器 + 内存 registry + Tail 收尾件（真 registry 替换桩） | 2 | 已实施 |
 | 5 | route_dispatch/STEP5_assembly_hotswap.md | 装配与热更：双中间件装配 + Start/Rebuild 改造 + DSL 与 DISPATCH_RULES 整体移除 | 3,4 | 已实施 |
 | 6 | route_dispatch/STEP6_admin_api.md | adminapi 端点：rules/upstreams/nodes/tags/health/match-test/reload + 写端点触发 Rebuild | 1,5 | 已实施 |
-| 7 | route_dispatch/STEP7_webui.md | WebUI 路由分发页：三视图 + 表单弹层 + 命中测试器 + 引导态与降级文案 | 6 | 待实施 |
+| 7 | route_dispatch/STEP7_webui.md | WebUI 路由分发页：三视图 + 表单弹层 + 命中测试器 + 引导态与降级文案 | 6 | 已实施 |
 | 8 | route_dispatch/STEP8_bench_final.md | 性能与终验：benchmark 两档 ≤10µs + 全量回归 + 文档同步核对 + 实请求终验 | 7 | 待实施 |
 
 依赖列＝前置 STEP 编号（多个逗号分隔，无前置写 —）：受阻时"转向不依赖它的步骤"（铁律 4）以本列为准，不靠推断。
@@ -54,3 +54,4 @@
 | 2026-09-22 | ZCode 会话(定时开工) | 4 | 已实施：HealthCenter 探活任务管理器（差量/保序/排空）+ 真 Registry + TailFin 收尾件（DF 键 rocksys:dispatch_node_id）；泄漏用例 -race 3 连绿 |
 | 2026-09-22 | ZCode 会话(定时开工) | 5 | 已实施：Handle 新引擎 + Rebuild/Start 降级重试 + 双中间件装配 + DSL/registry 联动整体移除；grep 零残留、全量测试绿、default.env 冒烟通过 |
 | 2026-09-22 | ZCode 会话(定时开工) | 6 | 已实施：19 端点 + 引用保护/restore 查重/match-test 只读；修复 STEP5 DBSource 脚本后缀与占位符缺陷；PG 实测 CRUD→match-test→reload 回路通过 |
+| 2026-09-22 | ZCode 会话(定时开工) | 7 | 已实施：dispatch.js 三视图/三表单/测试器/引导卡 + pages.md §4.18；修复软删行不可见致恢复不可达（18 脚本 CASE 谓词 + 前后端参数）；浏览器实看截图留证 |

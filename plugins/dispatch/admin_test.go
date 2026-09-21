@@ -604,3 +604,117 @@ func TestAdminPostOnly(t *testing.T) {
 		}
 	}
 }
+
+// listRows 取列表响应 rows（空列表序列化为 null，统一归一为空切片）。
+func listRows(t *testing.T, rec *httptest.ResponseRecorder) []map[string]any {
+	t.Helper()
+	rows, _ := adminJSON(t, rec)["rows"].([]any)
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.(map[string]any))
+	}
+	return out
+}
+
+// TestAdminListIncludeDeleted 列表 include_deleted 筛选（表驱动覆盖规则/均衡器/节点三视图）：
+// 软删行缺省不可见（现状语义不变）、include_deleted=1 时可见且携带 deleted_at（供前端恢复按钮判定）、
+// 恢复后重回活跃列表——保证 /restore 端点经由「仅已删除」筛选可达。
+func TestAdminListIncludeDeleted(t *testing.T) {
+	_, h := newAdminFixture(t)
+	cases := []struct {
+		name    string                   // 视图名
+		setup   func(t *testing.T) int64 // 造数，返回被软删行 id
+		list    http.HandlerFunc         // 列表 handler
+		del     http.HandlerFunc         // 软删 handler
+		restore http.HandlerFunc         // 恢复 handler
+		path    string                   // 列表端点路径
+	}{
+		{
+			name: "规则",
+			setup: func(t *testing.T) int64 {
+				nodeID := addNodeViaAdmin(t, h, "n-rule", "http://127.0.0.1:9101")
+				upID := addUpstreamViaAdmin(t, h, "up-rule", nodeID)
+				rec := adminDo(t, h.Rules, http.MethodPost, "/admin/dispatch/rules",
+					`{"match_order":10,"domain":"del.com","path_type":1,"path_value":"/a","upstream_id":`+i64s(upID)+`,"title":"软删用例"}`)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("新增规则: %d %s", rec.Code, rec.Body.String())
+				}
+				return int64(adminJSON(t, rec)["id"].(float64))
+			},
+			list: h.Rules, del: h.RulesDelete(), restore: h.RulesRestore(),
+			path: "/admin/dispatch/rules",
+		},
+		{
+			name: "均衡器",
+			setup: func(t *testing.T) int64 {
+				nodeID := addNodeViaAdmin(t, h, "n-up", "http://127.0.0.1:9102")
+				return addUpstreamViaAdmin(t, h, "up-del", nodeID)
+			},
+			list: h.Upstreams, del: h.UpstreamsDelete(), restore: h.UpstreamsRestore(),
+			path: "/admin/dispatch/upstreams",
+		},
+		{
+			name: "节点",
+			setup: func(t *testing.T) int64 {
+				// 独立节点（不被均衡器引用，规避删除保护 409）。
+				return addNodeViaAdmin(t, h, "n-del", "http://127.0.0.1:9103")
+			},
+			list: h.Nodes, del: h.NodesDelete(), restore: h.NodesRestore(),
+			path: "/admin/dispatch/nodes",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := tc.setup(t)
+			// 软删。
+			if rec := adminDo(t, tc.del, http.MethodPost, tc.path+"/delete", `{"id":`+i64s(id)+`}`); rec.Code != http.StatusOK {
+				t.Fatalf("软删: %d %s", rec.Code, rec.Body.String())
+			}
+			// 缺省（include_deleted=0）不可见。
+			rec := adminDo(t, tc.list, http.MethodGet, tc.path, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("活跃列表: %d %s", rec.Code, rec.Body.String())
+			}
+			for _, row := range listRows(t, rec) {
+				if int64(row["id"].(float64)) == id {
+					t.Errorf("软删行 %d 不应出现在缺省活跃列表", id)
+				}
+			}
+			// include_deleted=1 可见且携带 deleted_at。
+			rec = adminDo(t, tc.list, http.MethodGet, tc.path+"?include_deleted=1", "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("仅已删除列表: %d %s", rec.Code, rec.Body.String())
+			}
+			var found map[string]any
+			for _, m := range listRows(t, rec) {
+				if int64(m["id"].(float64)) == id {
+					found = m
+				}
+			}
+			if found == nil {
+				t.Fatalf("软删行 %d 应出现在 include_deleted=1 列表: %v", id, listRows(t, rec))
+			}
+			if s, _ := found["deleted_at"].(string); s == "" {
+				t.Errorf("include_deleted=1 行应携带非空 deleted_at: %v", found)
+			}
+			// include_deleted 非法值 400。
+			if rec := adminDo(t, tc.list, http.MethodGet, tc.path+"?include_deleted=2", ""); rec.Code != http.StatusBadRequest {
+				t.Errorf("include_deleted=2 应 400，got %d", rec.Code)
+			}
+			// 恢复后重回活跃列表。
+			if rec := adminDo(t, tc.restore, http.MethodPost, tc.path+"/restore", `{"id":`+i64s(id)+`}`); rec.Code != http.StatusOK {
+				t.Fatalf("恢复: %d %s", rec.Code, rec.Body.String())
+			}
+			rec = adminDo(t, tc.list, http.MethodGet, tc.path, "")
+			visible := false
+			for _, m := range listRows(t, rec) {
+				if int64(m["id"].(float64)) == id {
+					visible = true
+				}
+			}
+			if !visible {
+				t.Errorf("恢复后行 %d 应重回活跃列表", id)
+			}
+		})
+	}
+}

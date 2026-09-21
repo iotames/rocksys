@@ -367,7 +367,7 @@ func (h *AdminHandler) Rules(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listRules 规则列表：关键词（domain/path_value/title 模糊）+ path_type + enabled 筛选，分页。
+// listRules 规则列表：关键词（domain/path_value/title 模糊）+ path_type + enabled + include_deleted 筛选，分页。
 func (h *AdminHandler) listRules(w http.ResponseWriter, r *http.Request) {
 	limit, offset, ok := listPage(r)
 	if !ok {
@@ -394,12 +394,24 @@ func (h *AdminHandler) listRules(w http.ResponseWriter, r *http.Request) {
 		}
 		enabled = n
 	}
+	incDel := 0
+	if v := q.Get("include_deleted"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 1 {
+			writeJSONErr(w, http.StatusBadRequest, "include_deleted 参数非法：应为 0-1 的整数（0=仅活跃行；1=仅已删除行）。请修正后重试")
+			return
+		}
+		incDel = n
+	}
 	// 关键词占位符个数随方言：sqlite/mysql 脚本重复 ? 四次，PG 脚本复用 $2（仅需两个）。
 	kwN := 4
 	if h.data.Driver() == "postgres" {
 		kwN = 2
 	}
-	args := make([]any, 0, kwN+6)
+	// include_deleted 为首参（谓词位于 WHERE 首行）；关键词占位符个数随方言：
+	// sqlite/mysql 脚本重复 ? 四次，PG 脚本复用 $2（仅需两个）。
+	args := make([]any, 0, kwN+7)
+	args = append(args, incDel)
 	for i := 0; i < kwN; i++ {
 		args = append(args, keyword)
 	}
@@ -881,7 +893,7 @@ func (h *AdminHandler) Upstreams(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listUpstreams 均衡器列表：名称模糊 + enabled 筛选；附节点关系（含节点名/URL/实时健康）
+// listUpstreams 均衡器列表：名称模糊 + enabled + include_deleted 筛选；附节点关系（含节点名/URL/实时健康）
 // 与被引用规则数。
 func (h *AdminHandler) listUpstreams(w http.ResponseWriter, r *http.Request) {
 	limit, offset, ok := listPage(r)
@@ -896,14 +908,24 @@ func (h *AdminHandler) listUpstreams(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "enabled 参数非法：应为 0-1 的整数（0=不限；1=仅启用）。请修正后重试")
 		return
 	}
-	args := []any{keyword, keyword, enabled, enabled, limit, offset}
+	incDel := 0
+	if v := q.Get("include_deleted"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 1 {
+			writeJSONErr(w, http.StatusBadRequest, "include_deleted 参数非法：应为 0-1 的整数（0=仅活跃行；1=仅已删除行）。请修正后重试")
+			return
+		}
+		incDel = n
+	}
+	// include_deleted 为首参（谓词位于 WHERE 首行）。
+	args := []any{incDel, keyword, keyword, enabled, enabled, limit, offset}
 	rows, err := h.queryScript("dispatch_upstream_query_list", args, orderOf(idOrderMap, q.Get("sort"), "id DESC"))
 	if err != nil {
 		log.Error("dispatch: 均衡器列表查询失败", "err", err.Error())
 		writeJSONErr(w, http.StatusInternalServerError, "负载均衡器列表查询失败（数据库异常），请稍后重试；若持续出现请检查数据库状态或查看服务日志")
 		return
 	}
-	cnt, err := h.queryScript("dispatch_upstream_count", args[:4])
+	cnt, err := h.queryScript("dispatch_upstream_count", args[:5])
 	if err != nil {
 		log.Error("dispatch: 均衡器列表计数失败", "err", err.Error())
 		writeJSONErr(w, http.StatusInternalServerError, "负载均衡器列表计数失败（数据库异常），请稍后重试")
@@ -1300,7 +1322,7 @@ func (h *AdminHandler) Nodes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listNodes 节点列表：名称/URL 模糊 + enabled 筛选；附被引用数与实时健康。
+// listNodes 节点列表：名称/URL 模糊 + enabled + include_deleted 筛选；附被引用数与实时健康。
 func (h *AdminHandler) listNodes(w http.ResponseWriter, r *http.Request) {
 	limit, offset, ok := listPage(r)
 	if !ok {
@@ -1315,14 +1337,24 @@ func (h *AdminHandler) listNodes(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "enabled 参数非法：应为 0-1 的整数（0=不限；1=仅启用）。请修正后重试")
 		return
 	}
-	args := []any{nameKw, nameKw, urlKw, urlKw, enabled, enabled, limit, offset}
+	incDel := 0
+	if v := q.Get("include_deleted"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 1 {
+			writeJSONErr(w, http.StatusBadRequest, "include_deleted 参数非法：应为 0-1 的整数（0=仅活跃行；1=仅已删除行）。请修正后重试")
+			return
+		}
+		incDel = n
+	}
+	// include_deleted 为首参（谓词位于 WHERE 首行）。
+	args := []any{incDel, nameKw, nameKw, urlKw, urlKw, enabled, enabled, limit, offset}
 	rows, err := h.queryScript("dispatch_node_query_list", args, orderOf(idOrderMap, q.Get("sort"), "id DESC"))
 	if err != nil {
 		log.Error("dispatch: 节点列表查询失败", "err", err.Error())
 		writeJSONErr(w, http.StatusInternalServerError, "上游节点列表查询失败（数据库异常），请稍后重试；若持续出现请检查数据库状态或查看服务日志")
 		return
 	}
-	cnt, err := h.queryScript("dispatch_node_count", args[:6])
+	cnt, err := h.queryScript("dispatch_node_count", args[:7])
 	if err != nil {
 		log.Error("dispatch: 节点列表计数失败", "err", err.Error())
 		writeJSONErr(w, http.StatusInternalServerError, "上游节点列表计数失败（数据库异常），请稍后重试")
