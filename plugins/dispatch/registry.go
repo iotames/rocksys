@@ -1,8 +1,9 @@
-// 节点状态 registry：健康三态与在途计数的单一事实源（S5 供应商-消费者模型）。
+// 节点状态 registry：健康三态与在途计数的单一事实源（生产者-消费者模型：
+// 健康检查中心生产健康态，选点/收尾件消费）。
 //
-// STEP2 旁路新建：选点引擎（select.go）与 sticky（sticky.go）只依赖本接口，
-// 健康态判定经注入完成——不依赖真实健康检查（STEP4 才生产）。MemRegistry 为
-// 内存桩实现（map + 原子），供单测预设健康/失效态；STEP4 真 registry 实现同一
+// 选点引擎（select.go）与 sticky（sticky.go）只依赖本接口，
+// 健康态判定经注入完成——不依赖真实健康检查。MemRegistry 为
+// 内存桩实现（map + 原子），供单测预设健康/失效态；真 registry（Registry）实现同一
 // 接口后无缝替换（接口方法集刻意最小：读健康三态、在途 +1/-1、写健康态）。
 package dispatch
 
@@ -23,16 +24,17 @@ const (
 
 // NodeRegistry 节点状态接口（选点/sticky/收尾递减的唯一依赖面）。
 //
-// 设计约束：以节点 id 为键（跨热更稳定），不暴露底层存储形态；STEP4 真实现
+// 设计约束：以节点 id 为键（跨热更稳定），不暴露底层存储形态；真实现
 // （探活 goroutine 生产 + atomic 承载）实现同接口即可替换，调用方零改动。
 type NodeRegistry interface {
 	// Health 查询节点健康三态。未登记节点返回 HealthUnknown。
 	Health(nodeID int64) HealthState
-	// IncInflight 在途计数 +1（选点选中与 sticky 直路由均须真实计入——S4）。
+	// IncInflight 在途计数 +1（选点选中与 sticky 直路由均须真实计入，
+	// 否则 least_conn 统计失真）。
 	IncInflight(nodeID int64)
 	// Inflight 读取节点在途计数（least_conn 取最小；未登记返回 0）。
 	Inflight(nodeID int64) int64
-	// DecInflight 在途计数 -1（STEP4 Tail 收尾件调用；饱和处理 ≥0，
+	// DecInflight 在途计数 -1（转发完成后由 Tail 收尾件调用；饱和处理 ≥0，
 	// 记录不存在时 no-op——防节点失引用重登后迟到递减打成负数）。
 	DecInflight(nodeID int64)
 }
@@ -44,7 +46,7 @@ type memNode struct {
 }
 
 // MemRegistry 内存桩实现（map + 原子；测试可预设健康/失效态）。
-// map 结构变化经互斥锁保护，字段读写走原子（与 STEP4 真实现同款并发口径）。
+// map 结构变化经互斥锁保护，字段读写走原子（与真实现同款并发口径）。
 type MemRegistry struct {
 	mu    *sync.RWMutex
 	nodes map[int64]*memNode
@@ -99,7 +101,7 @@ func (m *MemRegistry) IncInflight(nodeID int64) {
 	n.inflight.Add(1)
 }
 
-// DecInflight 实现 NodeRegistry：饱和递减；记录不存在时 no-op（S4）。
+// DecInflight 实现 NodeRegistry：饱和递减；记录不存在时 no-op。
 func (m *MemRegistry) DecInflight(nodeID int64) {
 	m.mu.RLock()
 	n := m.nodes[nodeID]
@@ -126,10 +128,10 @@ func (m *MemRegistry) Inflight(nodeID int64) int64 {
 	return n.inflight.Load()
 }
 
-// Registry 真 registry 实现（STEP4）：健康检查中心（生产者）与选点/收尾件
+// Registry 真 registry 实现：健康检查中心（生产者）与选点/收尾件
 // （消费者）之间的单一事实源，与 MemRegistry 桩实现同一 NodeRegistry 接口。
 //
-// 记录集口径（S5）：记录集 = 探活任务集 ∪ 免探活登记集（hc_path 为空的被引用
+// 记录集口径：记录集 = 探活任务集 ∪ 免探活登记集（hc_path 为空的被引用
 // 节点登记为健康态显绿）；健康检查中心 Rebuild 差量时经 Ensure/SetHealth/Remove
 // 维护：任务保留的节点记录不动（跨热更保序，状态不清零），差量移除即 Remove
 // 转灰（HealthUnknown）。map 结构变化经互斥锁保护，字段读写走原子（与桩同款

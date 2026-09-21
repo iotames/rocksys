@@ -1,4 +1,4 @@
-// dispatch 插件管理端点（ROUTE_DISPATCH STEP6；数据字典见 docs/DATA_DICT.md）。
+// dispatch 插件管理端点（数据字典见 docs/DATA_DICT.md）。
 //
 // 端点由 cmd/rocksys 装配时经 adminapi.RegisterPlugin 注入（仿 shield admin 模式），
 // 全部路径前缀 /admin/dispatch/（副作用一律 POST，GET 无副作用，防本机恶意页面触发）：
@@ -18,7 +18,7 @@
 //	POST     /admin/dispatch/tags/update · /delete（同步软删关系行；不触发 Rebuild，无 restore）
 //	GET      /admin/dispatch/health           节点实时健康快照 + 在途计数（读内存 registry）
 //
-// 热更口径（S6）：路由四表（规则/均衡器/节点/关系）任一写端点成功后自动触发
+// 热更口径：路由四表（规则/均衡器/节点/关系）任一写端点成功后自动触发
 // Dispatch.Rebuild()（保存即热更）；Rebuild 失败保留旧快照并报错回前端。
 // 标签两表仅影响管理展示，变更不触发 Rebuild。
 package dispatch
@@ -178,7 +178,7 @@ func normalizeRow(row map[string]any, intCols []string) {
 	}
 }
 
-// ── DB 存取层（消费 STEP1 SQL 脚本组；{table} 占位符运行时替换） ─────────
+// ── DB 存取层（消费 sql/ 建表与查询脚本组；{table} 占位符运行时替换） ─────────
 
 const (
 	tblRule      = "dispatch_rule"
@@ -520,7 +520,7 @@ func (h *AdminHandler) RulesDelete() http.HandlerFunc {
 	})
 }
 
-// RulesRestore 规则恢复：恢复前校验其均衡器引用仍存在（悬空拒绝，D11）。
+// RulesRestore 规则恢复：恢复前校验其均衡器引用仍存在（悬空拒绝——引用不存在的规则不可用，恢复即产生坏规则）。
 func (h *AdminHandler) RulesRestore() http.HandlerFunc {
 	return postOnly(func(w http.ResponseWriter, r *http.Request) {
 		if !h.ready(w) {
@@ -560,7 +560,7 @@ func (h *AdminHandler) RulesRestore() http.HandlerFunc {
 	})
 }
 
-// afterWrite 路由四表写端点成功后的统一收尾：触发 Rebuild（保存即热更，S6）。
+// afterWrite 路由四表写端点成功后的统一收尾：触发 Rebuild（保存即热更）。
 // Rebuild 失败说明新数据非法（构建失败保留旧快照），须报错回前端。
 func (h *AdminHandler) afterWrite(w http.ResponseWriter, resp map[string]any) {
 	if err := h.d.Rebuild(); err != nil {
@@ -614,7 +614,7 @@ func (h *AdminHandler) validateRule(b *ruleBody, excludeID int64) (warnings []st
 			}
 		}
 	}
-	// domain 保存时归一落库（转小写），并拒绝端口与通配（精确匹配语义，D2）。
+	// domain 保存时归一落库（转小写），并拒绝端口与通配（domain 走精确匹配语义，端口/通配无意义故不接受）。
 	b.Domain = strings.ToLower(strings.TrimSpace(b.Domain))
 	if b.Domain != "" {
 		if strings.ContainsAny(b.Domain, ":/ \t") || strings.Contains(b.Domain, "*") {
@@ -650,7 +650,7 @@ func (h *AdminHandler) validateRule(b *ruleBody, excludeID int64) (warnings []st
 }
 
 // sqlPh 按驱动生成第 i 个占位符（sqlite/mysql 用 ?，postgres 用 $n——
-// 与 STEP1 脚本源的同款方言约定一致；i 从 1 起）。
+// 与 sql/ 脚本源的同款方言约定一致；i 从 1 起）。
 func (h *AdminHandler) sqlPh(i int) string {
 	if h.data.Driver() == "postgres" {
 		return "$" + strconv.Itoa(i)
@@ -987,7 +987,7 @@ func (h *AdminHandler) restoreRelationsAt(upID int64, at, now time.Time) error {
 	return nil
 }
 
-// mustRuleRefs 均衡器被未软删规则引用数（含停用规则，D11；失败返回 -1 由前端显示未知）。
+// mustRuleRefs 均衡器被未软删规则引用数（含停用规则——停用规则删除即失其配置，引用保护须一并计数；失败返回 -1 由前端显示未知）。
 func (h *AdminHandler) mustRuleRefs(upID int64) int64 {
 	n, err := h.queryCount("SELECT COUNT(*) AS n FROM "+tblRule+" WHERE upstream_id = "+h.sqlPh(1)+" AND deleted_at IS NULL", upID)
 	if err != nil {
@@ -1081,7 +1081,7 @@ func (h *AdminHandler) UpstreamsUpdate() http.HandlerFunc {
 	})
 }
 
-// UpstreamsDelete 软删均衡器：存在未软删规则引用（含停用规则，D11）→ 409 拒绝。
+// UpstreamsDelete 软删均衡器：存在未软删规则引用（含停用规则，引用保护）→ 409 拒绝。
 func (h *AdminHandler) UpstreamsDelete() http.HandlerFunc {
 	return postOnly(func(w http.ResponseWriter, r *http.Request) {
 		if !h.ready(w) {
@@ -1269,7 +1269,7 @@ func (h *AdminHandler) softDeletedUpstreamName(id int64) (string, bool, error) {
 }
 
 // replaceRelations 节点关系组整体替换：软删该均衡器现有活跃关系行，再插入新行
-// （关系表无单行 update，整组替换语义；STEP1 脚本同款约定）。
+// （关系表无单行 update，整组替换语义；sql/ 脚本同款约定）。
 func (h *AdminHandler) replaceRelations(upID int64, rels []relBody, now time.Time) error {
 	old, err := h.queryScript("dispatch_upstream_node_query_list", []any{upID, upID, 0, 0, maxLimit, 0}, "id ASC")
 	if err != nil {
@@ -1421,7 +1421,7 @@ func (h *AdminHandler) NodesUpdate() http.HandlerFunc {
 	})
 }
 
-// NodesDelete 软删节点：存在未软删关系引用 → 409 拒绝（D11）。
+// NodesDelete 软删节点：存在未软删关系引用 → 409 拒绝（引用保护）。
 func (h *AdminHandler) NodesDelete() http.HandlerFunc {
 	return postOnly(func(w http.ResponseWriter, r *http.Request) {
 		if !h.ready(w) {
@@ -1611,7 +1611,7 @@ func (h *AdminHandler) addTag(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusInternalServerError, "标签新建失败（数据库写入异常），请稍后重试")
 		return
 	}
-	// 标签变更不触发 Rebuild（S6：标签不进运行时快照）。
+	// 标签变更不触发 Rebuild（标签不进运行时快照，仅管理展示）。
 	writeJSONOK(w, map[string]any{"id": id})
 }
 

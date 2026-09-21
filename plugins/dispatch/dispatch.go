@@ -1,9 +1,9 @@
 // Package dispatch L2 路由分发（转发链中间件）。
 //
-// 职责（ROUTE_DISPATCH 三层模型）：请求 Host + 路径 → 路由快照匹配 → 均衡器
+// 职责：请求 Host + 路径 → 路由快照匹配 → 均衡器
 // 选点（sticky 感知）→ 写 DataFlow.Target（在途 +1、sticky 种值）；未命中 →
 // 不写 Target（Adapter 回退默认 upstream）。
-// 规则源：DB 路由四表（S6，DB 为唯一规则源）——Rebuild 全量拉取构建快照，
+// 规则源：DB 路由四表（DB 为唯一规则源）——Rebuild 全量拉取构建快照，
 // 原子替换；请求路径只读快照，零锁零阻塞。
 package dispatch
 
@@ -207,7 +207,7 @@ type Dispatch struct {
 	hc      *HealthCenter // 探活任务中心（供应商：写 reg；Rebuild 差量 / Stop 排空）
 	snap    atomic.Value  // 持有 *RouteSnapshot 不可变快照
 
-	rebuildMu sync.Mutex  // Rebuild 互斥：防并发保存下旧拉取结果覆盖新快照（S6）
+	rebuildMu sync.Mutex  // Rebuild 互斥：防并发保存下旧拉取结果覆盖新快照
 	ready     atomic.Bool // 首次快照是否已成功构建（状态透出：false = 降级空表）
 	stopped   atomic.Bool // 组件已停止（停止后拒绝 Rebuild，防探活任务泄漏）
 	stopMu    sync.Mutex
@@ -295,7 +295,7 @@ func (d *Dispatch) loadInput() (*GraphInput, error) {
 }
 
 // Start 启动：同步构建一次快照；成功即返回。失败（DB 不可用/数据非法）保持
-// 空表快照（全部请求走默认 upstream，S6 降级），转入后台按固定间隔重试直至
+// 空表快照（全部请求走默认 upstream，降级语义），转入后台按固定间隔重试直至
 // 首次构建成功即停（非常驻轮询）——进程重启赶上 DB 慢启时路由自动恢复，
 // 无需人工点重载。Start 自身不因构建失败报错（降级属预期语义，非致命）。
 func (d *Dispatch) Start(_ any) error {
@@ -349,7 +349,7 @@ func (d *Dispatch) Stop() error {
 }
 
 // Ready 返回快照是否已成功构建（状态透出：false = 降级空表，全部请求走默认
-// upstream；供管理面/WebUI 展示，STEP6 接线）。
+// upstream；供管理面/WebUI 展示）。
 func (d *Dispatch) Ready() bool { return d.ready.Load() }
 
 // Handle 路由分发主流程（请求路径零锁：只读快照 + registry 原子读写）：
@@ -359,7 +359,7 @@ func (d *Dispatch) Ready() bool { return d.ready.Load() }
 //     无可用健康节点 → 503 中断链返回 false）→ sticky 感知选点（在途 +1）→
 //     DF 写节点 id（收尾件递减）→ 按需种 sticky Cookie → 写 Target → 返回 true。
 //
-// 续链契约（IMPL_PLAN §4）：返回 true 时只设响应头（sticky 种 Cookie 依赖此
+// 续链契约：返回 true 时只设响应头（sticky 种 Cookie 依赖此
 // 契约），禁止 Write/WriteHeader；503 属已自行响应（中断链）路径。
 func (d *Dispatch) Handle(ctx *chain.Context) bool {
 	rule, params := Match(d.snapshot(), ctx.R.Host, ctx.R.URL.Path)

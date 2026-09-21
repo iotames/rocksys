@@ -1,4 +1,4 @@
-// sticky cookie 会话保持（S3）：直路由判定 / 种值 / 失效回落标记。
+// sticky cookie 会话保持：直路由判定 / 种值 / 失效回落标记。
 //
 // 语义（与任意策略正交组合）：
 //  1. 请求携带本均衡器的 sticky Cookie 且所指节点在当前关系内且健康 → 直路由
@@ -69,7 +69,7 @@ func PlantSticky(w http.ResponseWriter, u *UpstreamRT, nodeID int64, r *http.Req
 	if isHTTPS(r) {
 		value += "; Secure"
 	}
-	// 必须追加：Set 会整键覆盖，抹掉上游应用自身的 Set-Cookie（S3 红线）。
+	// 必须追加：Set 会整键覆盖，抹掉上游应用自身的 Set-Cookie（红线）。
 	w.Header().Add("Set-Cookie", stickyCookieName(u)+"="+strconv.FormatInt(nodeID, 10)+"; "+value)
 }
 

@@ -85,9 +85,11 @@ HOT_SCRIPTS_DIR = hotscripts
 HOT_FILES_WATCH_INTERVAL = 3
 
 # ===== 分发 dispatch（L2）=====
-# 格式：<prefix>=<spec>[;<spec>...]；节点 <url>[|w=权重]；可选 @间隔@超时@路径 健康检查
-# 例：/api/order/ 走 o1/o2 两个节点（加权轮询 + 健康检查）
-DISPATCH_RULES = /api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz;/=http://default-svc:9000
+# 父开关：是否启用 L2 路由分发（false=不挂载）。
+# 路由数据（节点/均衡器/规则）不经配置项管理，统一存数据库路由四表
+# （dispatch_rule / dispatch_upstream / dispatch_node / dispatch_upstream_node），
+# 经管理接口 /admin/dispatch/* 或 WebUI「路由分发」页维护，保存后自动热更（免重启）。
+DISPATCH_ENABLED = false
 
 # ===== 改写 rewrite =====
 REWRITE_RULES = /api/v1/=uri|/api/;header=X-Proxy-Tag:rewrite

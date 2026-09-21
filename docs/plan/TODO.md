@@ -3,7 +3,7 @@
 > 执行依据：docs/plan/README.md（计划目录工作宪法）——记号语义、状态机、关口与裁决以宪法为准。
 > 蓝本：ROUTE_DISPATCH_IMPL_PLAN.md（已随 DESIGN_PLAN 定稿冻结，2026-09-21）；设计依据：ROUTE_DISPATCH_DESIGN_PLAN.md（定稿 v3，决策 D1–D13）。
 
-项目状态：进行中（建纲完成；开工令已下达——用户 2026-09-21 明示定时启动实施，届时按 §0 续传，常规事务不再请示）
+项目状态：待人类验收（终验完成，验收结论已回写 DESIGN；呈报点：验收结论 + 已知边界 + 临时决策清单——无 DECISIONS 文件，实施期无重大决策落档）
 
 ## §0 断点续传（接手者从这里开始）
 1. 读项目状态行与 §1 总表（多项目合表时逐项目判定，某项目完结不阻塞其余「进行中」项目的续传）：
@@ -28,7 +28,7 @@
 | 5 | route_dispatch/STEP5_assembly_hotswap.md | 装配与热更：双中间件装配 + Start/Rebuild 改造 + DSL 与 DISPATCH_RULES 整体移除 | 3,4 | 已实施 |
 | 6 | route_dispatch/STEP6_admin_api.md | adminapi 端点：rules/upstreams/nodes/tags/health/match-test/reload + 写端点触发 Rebuild | 1,5 | 已实施 |
 | 7 | route_dispatch/STEP7_webui.md | WebUI 路由分发页：三视图 + 表单弹层 + 命中测试器 + 引导态与降级文案 | 6 | 已实施 |
-| 8 | route_dispatch/STEP8_bench_final.md | 性能与终验：benchmark 两档 ≤10µs + 全量回归 + 文档同步核对 + 实请求终验 | 7 | 待实施 |
+| 8 | route_dispatch/STEP8_bench_final.md | 性能与终验：benchmark 两档 ≤10µs + 全量回归 + 文档同步核对 + 实请求终验 | 7 | 已实施 |
 
 依赖列＝前置 STEP 编号（多个逗号分隔，无前置写 —）：受阻时"转向不依赖它的步骤"（铁律 4）以本列为准，不靠推断。
 
@@ -55,3 +55,4 @@
 | 2026-09-22 | ZCode 会话(定时开工) | 5 | 已实施：Handle 新引擎 + Rebuild/Start 降级重试 + 双中间件装配 + DSL/registry 联动整体移除；grep 零残留、全量测试绿、default.env 冒烟通过 |
 | 2026-09-22 | ZCode 会话(定时开工) | 6 | 已实施：19 端点 + 引用保护/restore 查重/match-test 只读；修复 STEP5 DBSource 脚本后缀与占位符缺陷；PG 实测 CRUD→match-test→reload 回路通过 |
 | 2026-09-22 | ZCode 会话(定时开工) | 7 | 已实施：dispatch.js 三视图/三表单/测试器/引导卡 + pages.md §4.18；修复软删行不可见致恢复不可达（18 脚本 CASE 谓词 + 前后端参数）；浏览器实看截图留证 |
+| 2026-09-22 | ZCode 会话(定时开工) | 8 | 已实施+终验：benchmark 100 档≈0.9µs/1000 档≈6.5µs 达标（首测超标经预分段+归并候选序优化）；实请求终验 5 项全过；文档同步清单核对完毕；DB 降级演练通过 |

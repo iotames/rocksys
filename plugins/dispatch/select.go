@@ -1,6 +1,6 @@
 // 选点引擎（新对象图）：策略选点 + 高优/备份回落 + 在途计数 +1。
 //
-// 选点统一语义（S2）：
+// 选点统一语义：
 //  1. 高优节点（priority=0）健康集优先；
 //  2. 高优全部不健康 → 回落备份节点（priority=1）健康集；
 //  3. 再无 → 不可用（ok=false，由调用方写 503 中断链）。
@@ -9,7 +9,8 @@
 //   - round_robin（1）：平滑加权轮询（复用 balancer.go rrState 思路，作用于新对象图）；
 //   - least_conn（2）：读 registry 在途计数取最小；平局回落轮询游标。
 //
-// 选中即调 registry 在途 +1（sticky 直路由同样真实计入——S4；递减归 STEP4 Tail 收尾件）。
+// 选中即调 registry 在途 +1（sticky 直路由同样真实计入；递减由转发完成后
+// 的 Tail 收尾件统一执行，见 tailfin.go）。
 package dispatch
 
 // SelectNode 按均衡器策略选择一个健康节点并计在途 +1。
@@ -25,7 +26,7 @@ func SelectNode(u *UpstreamRT, reg NodeRegistry) (*NodeRT, bool) {
 }
 
 // SelectStickyNode sticky 直路由：Cookie 所指节点在当前均衡器关系内且健康即直路由
-// （优先于策略选点；不校验 priority——粘性优先于高优回落，S3）。命中计在途 +1。
+// （优先于策略选点；不校验 priority——粘性优先于高优回落）。命中计在途 +1。
 // 不在关系内 / 不健康 / 未登记返回 ok=false（调用方回落策略选点）。
 func SelectStickyNode(u *UpstreamRT, reg NodeRegistry, nodeID int64) (*NodeRT, bool) {
 	for _, n := range u.Nodes {

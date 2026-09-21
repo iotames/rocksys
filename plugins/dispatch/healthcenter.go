@@ -1,6 +1,6 @@
-// 健康检查中心（S5 供应商-消费者模型的生产者侧）：探活任务管理器。
+// 健康检查中心（供应商-消费者模型的生产者侧）：探活任务管理器。
 //
-// 职责（STEP4）：
+// 职责：
 //   - 任务集计算：Rebuild 时从对象图输入行计算「被启用均衡器经有效关系引用的
 //     启用节点」去重集合（多均衡器引用同节点只探一份）；
 //   - 差量增减：新增启探、移除停探并等待退出、探活参数变更视为差量重启该节点
@@ -11,7 +11,7 @@
 //     hc_path 为空 = 不探活、视为健康（免探活登记集，登记显绿、不启任务）；
 //   - 供应商角色：探活结论经 Registry.SetHealth 写入，消费侧（选点/sticky）只读。
 //
-// 停止语义：Stop 全量排空（停止全部任务并等待 goroutine 退出，供 STEP5 主件
+// 停止语义：Stop 全量排空（停止全部任务并等待 goroutine 退出，供转发主件
 // Stop 调用）；单任务经 chan 关闭 + done 应答排空，无泄漏。
 package dispatch
 
@@ -57,7 +57,7 @@ type HealthCenter struct {
 	tasks   map[hcTaskKey]*hcTask // 探活任务集（仅 path 非空节点；键含参数）
 }
 
-// NewHealthCenter 创建健康检查中心（绑定真 registry；装配归 STEP5）。
+// NewHealthCenter 创建健康检查中心（绑定真 registry；装配归转发主件）。
 func NewHealthCenter(reg *Registry) *HealthCenter {
 	return &HealthCenter{
 		reg:     reg,
@@ -67,7 +67,7 @@ func NewHealthCenter(reg *Registry) *HealthCenter {
 	}
 }
 
-// Rebuild 热更重建入口（STEP5 主件 Rebuild 时调用）：按对象图输入行计算任务集，
+// Rebuild 热更重建入口（转发主件 Rebuild 时调用）：按对象图输入行计算任务集，
 // 与当前任务集差量增减（新增启探 / 移除停探排空 / 参数变更重启），并同步维护
 // registry 记录集（任务集 ∪ 免探活登记集口径）。
 func (h *HealthCenter) Rebuild(in *GraphInput) {
@@ -157,7 +157,7 @@ func (h *HealthCenter) Rebuild(in *GraphInput) {
 	}
 }
 
-// Stop 组件级全量排空：停止全部探活任务并等待 goroutine 退出（供 STEP5 主件
+// Stop 组件级全量排空：停止全部探活任务并等待 goroutine 退出（供转发主件
 // Stop 调用；幂等——空任务集时为 no-op）。
 func (h *HealthCenter) Stop() {
 	h.mu.Lock()

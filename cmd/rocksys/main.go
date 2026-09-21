@@ -310,7 +310,7 @@ func buildServer(args []string) (*Server, error) {
 	mgr.RegisterMiddleware(trace.New(&cfgMgr)) // trace 透传 → chain.Head
 	mgr.RegisterMiddleware(auth.New(&cfgMgr))  // JWT 认证 → chain.Head
 
-	// L2 路由分发（ROUTE_DISPATCH）：双中间件共用同一 registry 运行态——
+	// L2 路由分发：双中间件共用同一 registry 运行态——
 	// 主件（Middle：匹配 + 选点 + 在途 +1 + sticky 种值 + 写 Target）与收尾件
 	// （Tail：转发完成后在途 -1，Start/Stop 为 no-op，生命周期由主件统一驱动）；
 	// DISPATCH_ENABLED 经 autoEnableMap 两名同键联动启停（装配注册顺序固定保证链序确定）。
@@ -544,7 +544,7 @@ func buildServer(args []string) (*Server, error) {
 			})
 		})
 
-		// 启动缺列检测（TRAFFIC_ANALYSIS D16）：访问/拦截两表缺列只告警不自动迁移
+		// 启动缺列检测：访问/拦截两表缺列只告警不自动迁移
 		// （结构同步始终人工确认），提示管理员经 WebUI 补齐。
 		for table, cols := range missingLogColumns(dataDB, buildTableSpecs(db.TableShieldEvent)) {
 			log.Warn("db: 访问/拦截日志表缺列，统计与落库将受影响",
@@ -668,7 +668,7 @@ func buildServer(args []string) (*Server, error) {
 		}
 	}
 
-	// 路由分发管理端点（ROUTE_DISPATCH STEP6；仿 shield admin 模式）：规则/均衡器/节点/
+	// 路由分发管理端点（仿 shield admin 模式）：规则/均衡器/节点/
 	// 标签四组 CRUD + 命中测试 + 枚举字典 + 全局重载 + 健康快照，共 19 个。
 	// DB 未配置时端点统一 503 降级（handler 内部自检）。
 	dispatchAdmin := dispatch.NewAdminHandler(dispatchMain, dataDB)
@@ -749,7 +749,7 @@ func buildServer(args []string) (*Server, error) {
 	// GeoIP 自动同步定时器：服务就绪（功能开启且 mmdb 已加载）才启动（生效前置）；
 	// 手动端点与定时触发收敛 geoSyncAll 唯一入口，同步成功后清流量统计缓存。
 	// 运行期热更关闭（GEOIP_ENABLED=false 或间隔改 0）后每轮就绪复查自动停摆，
-	// 恢复后自动续跑；启动时即禁用的定时器不会创建（动态拉起需重启，见 D6 已知边界）。
+	// 恢复后自动续跑；启动时即禁用的定时器不会创建（动态拉起需重启，已知边界）。
 	var geoSyncStop chan struct{}
 	if dataDB != nil {
 		// 定时同步与手动同步同为任务中心实例（工厂到点生产实例），受分组互斥统一管控：
@@ -826,7 +826,7 @@ func genDefaultEnv(args []string) error {
 	return nil
 }
 
-// missingLogColumns 启动缺列检测（TRAFFIC_ANALYSIS D16）：返回 访问/拦截两表 → 缺失列名列表
+// missingLogColumns 启动缺列检测：返回 访问/拦截两表 → 缺失列名列表
 // （表名取 specs 实值；只看 create 脚本为两表者）。DiffTable 对不存在表返回 A 级缺表项，
 // 本检测只关心缺列（Actual == "列不存在"），缺表交给既有建表流程。
 func missingLogColumns(d *db.DB, specs []db.TableSpec) map[string][]string {

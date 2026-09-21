@@ -1,13 +1,13 @@
-// 路由快照构建与参数注入辅助（ROUTE_DISPATCH 三层模型，STEP3 旁路新建）。
+// 路由快照构建与参数注入辅助。
 //
 // 职责：
-//   - BuildSnapshot：启用且未软删的规则行 + 全量均衡器/节点/关系行 → STEP2 对象图
-//     快照（复用 BuildGraph：内含 (match_order, id) 稳定升序排序与 domain 构建期
-//     归一转小写放行）；
+//   - BuildSnapshot：启用且未软删的规则行 + 全量均衡器/节点/关系行 → 运行时
+//     对象图快照（复用 BuildGraph：内含 (match_order, id) 稳定升序排序与 domain
+//     构建期归一转小写放行）；
 //   - fail-closed 红线：不做引用有效性剔除——停用均衡器/停用节点不吞规则，规则行
 //     一律保留在快照中（命中后由转发层按均衡器状态 503），构建期仅做引用存在性校验；
 //   - RouteParamHeaders：命中模式规则时把捕获参数转为 X-Route-Param-* 请求头键值对
-//     （键名沿用旧 DSL Handle 注入惯例），供 STEP5 Handle 写入 DataFlow 与请求头。
+//     （键名沿用旧 DSL Handle 注入惯例），供转发主件写入 DataFlow 与请求头。
 package dispatch
 
 // BuildSnapshot 构建路由匹配快照。入参约定：

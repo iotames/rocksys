@@ -1,11 +1,11 @@
-// Tail 收尾件（S4 least_conn 在途递减收尾）：转发完成（响应返回）后按
+// Tail 收尾件（least_conn 在途递减收尾）：转发完成（响应返回）后按
 // DataFlow 中的节点 id 对 registry 在途计数 -1。
 //
 // 设计要点：
 //   - 独立中间件类型，Name 独立（dispatch-tail），挂 chain.Tail 槽位，
-//     可独立实例化（装配归 STEP5 主件）；
+//     可独立实例化（装配归转发主件）；
 //   - Handle 直通放行返回 true（不写 ResponseWriter，遵守链红线）；
-//   - 递减按节点 id：选点阶段由主件（STEP5）把选中节点 id 写入 DataFlow
+//   - 递减按节点 id：选点阶段由主件把选中节点 id 写入 DataFlow
 //     （DFKeyDispatchNodeID），节点 id 跨热更稳定，不经快照 url 反查——
 //     杜绝 Rebuild 替换快照后递减失配；
 //   - Start/Stop 为 no-op：生命周期由主件统一驱动（registry 排空与探活中心
@@ -18,7 +18,7 @@ import (
 )
 
 // DFKeyDispatchNodeID DataFlow 中「本次请求选中的转发节点 id」的 KV key
-// （rocksys: 前缀惯例）。主件（STEP5）选点成功后写入，收尾件读取后递减。
+// （rocksys: 前缀惯例）。主件选点成功后写入，收尾件读取后递减。
 const DFKeyDispatchNodeID = "rocksys:dispatch_node_id"
 
 // TailFin Tail 收尾件：least_conn 在途递减的唯一收口。
@@ -26,7 +26,7 @@ type TailFin struct {
 	reg NodeRegistry // 递减目标（真 registry；接口注入便于测试）
 }
 
-// NewTailFin 创建收尾件（独立实例化，装配归 STEP5）。
+// NewTailFin 创建收尾件（独立实例化，装配归主件）。
 func NewTailFin(reg NodeRegistry) *TailFin {
 	return &TailFin{reg: reg}
 }

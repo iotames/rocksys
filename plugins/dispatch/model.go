@@ -1,16 +1,16 @@
-// 运行时对象图：路由规则 → 负载均衡器 → 上游节点（ROUTE_DISPATCH 三层模型）。
+// 运行时对象图：路由规则 → 负载均衡器 → 上游节点（三层模型）。
 //
-// 本文件为 STEP2 旁路新建（与旧 DSL 链 dispatch.go/router.go/chash.go 完全解耦）：
+// 本文件与旧 DSL 链 dispatch.go/router.go/chash.go 完全解耦：
 //   - DB 行结构（RuleRow/UpstreamRow/NodeRow/UpstreamNodeRow）与三方言建表脚本、
 //     docs/DATA_DICT.md 字段一一对应；
 //   - BuildGraph 从四表行构建不可变运行时快照（RouteSnapshot）：均衡器经关系表
 //     展开为节点列表（含权重/优先级），规则持均衡器引用；
-//   - ValidateGraph 加载期校验（S6）：引用存在、节点 URL 合法 http(s)://、weight
+//   - ValidateGraph 加载期校验：引用存在、节点 URL 合法 http(s)://、weight
 //     正整数、priority ∈ {0,1}、match_order 1–999、path_value 以 / 开头、path_type/
 //     algo 枚举值合法；domain 构建期统一归一转小写——放行不拒绝（外部改库存入
 //     大写 domain 时静默归一，不导致快照构建失败）。
 //
-// 并发安全注记：快照整体不可变（含游标初始状态），热更经整体原子替换（STEP5）；
+// 并发安全注记：快照整体不可变（含游标初始状态），热更经整体原子替换；
 // UpstreamRT 内的轮询游标是唯一的可变状态，经互斥锁保护。
 package dispatch
 
@@ -88,7 +88,7 @@ type NodeRow struct {
 	ID           int64  // 自增主键
 	Name         string // 节点名称（空允许）
 	URL          string // http(s)://host[:port]，唯一
-	HCIntervalMS int    // 探活周期毫秒（本步不消费，STEP4 健康检查中心使用）
+	HCIntervalMS int    // 探活周期毫秒（本结构不消费，健康检查中心使用）
 	HCTimeoutMS  int    // 探活超时毫秒（同上）
 	HCPath       string // 探活路径；空 = 不探活视为健康（同上）
 	Enabled      bool   // 启用
@@ -127,7 +127,7 @@ type UpstreamRT struct {
 }
 
 // rrCursor 平滑加权轮询游标状态（复用 balancer.go rrState 思路，作用于新对象图）。
-// 并发安全：互斥锁保护 current；快照替换（STEP5）后新快照携带全新零值游标，
+// 并发安全：互斥锁保护 current；快照替换后新快照携带全新零值游标，
 // 旧游标随旧快照被在途请求安全使用至请求结束。
 type rrCursor struct {
 	mu      sync.Mutex
@@ -143,12 +143,27 @@ type RuleRT struct {
 	PathValue  string      // 路径值
 	Title      string      // 规则标题
 	Upstream   *UpstreamRT // 命中后的转发目标均衡器（构建期已校验存在）
+
+	// patSegs 预分段：模式规则（PathTypeMode）的 pattern 段数组，构建期切好，
+	// 匹配热路径零分配直接消费（否则每请求重复 strings.Split，千规则档
+	// 分配数随扫描条数线性放大）；非模式规则为 nil。
+	patSegs []string
 }
 
-// RouteSnapshot 运行时路由快照（整体不可变，热更经原子替换——STEP5）。
+// RouteSnapshot 运行时路由快照（整体不可变，热更经原子替换）。
 type RouteSnapshot struct {
 	Rules     []*RuleRT             // 规则列表（按 match_order,id 升序，仅启用行）
 	Upstreams map[int64]*UpstreamRT // 均衡器 id → 运行时对象
+
+	// anyDomain 无域名规则候选序（全局 (match_order,id) 序的子序列）：空 Host
+	// 请求的扫描表——非空域名规则与空 Host 比对必不等，直接跳过语义等价。
+	anyDomain []*RuleRT
+	// byDomain 域名候选表：每个快照中出现过的域名 d → 「无域名规则 ∪ 域名 d 的
+	// 规则」按 (match_order,id) 两路归并后的候选数组。归并而非"先域名桶再通用表"
+	// 是语义正确的前提：命中即停按全局序取首个命中，只有保持全局相对次序才与
+	// 全表线性扫描等价（反例见 buildHostCandidates 注释）。
+	// 未收录域名的 Host 不查本表——该域名规则必不命中，直接复用 anyDomain 即可。
+	byDomain map[string][]*RuleRT
 }
 
 // GraphInput 构建对象图的四表行输入（调用方负责只传参与构建的行——启用且未软删）。
@@ -201,21 +216,73 @@ func BuildGraph(in *GraphInput) (*RouteSnapshot, error) {
 	rules := make([]*RuleRT, 0, len(in.Rules))
 	for i := range in.Rules {
 		r := &in.Rules[i]
-		rules = append(rules, &RuleRT{
+		rt := &RuleRT{
 			ID:         r.ID,
 			MatchOrder: r.MatchOrder,
-			Domain:     strings.ToLower(r.Domain), // 构建期归一：转小写放行不拒绝（S6）
+			Domain:     strings.ToLower(r.Domain), // 构建期归一：转小写放行不拒绝
 			PathType:   PathType(r.PathType),
 			PathValue:  r.PathValue,
 			Title:      r.Title,
 			Upstream:   ups[r.UpstreamID],
-		})
+		}
+		if rt.PathType == PathTypeMode {
+			// 加载期预分段：匹配热路径直接消费，免每请求重复切分。
+			rt.patSegs = splitSegments(rt.PathValue)
+		}
+		rules = append(rules, rt)
 	}
 	sortRules(rules)
-	return &RouteSnapshot{Rules: rules, Upstreams: ups}, nil
+	snap := &RouteSnapshot{Rules: rules, Upstreams: ups}
+	buildHostCandidates(snap)
+	return snap, nil
 }
 
-// sortRules 按 (match_order, id) 稳定升序排列（S1 命中即停的扫描顺序）。
+// buildHostCandidates 由全局有序规则表派生 Host 候选序（写入快照，构建期一次性）：
+//   - anyDomain = 无域名规则子序列（天然保持全局序）；
+//   - byDomain[d] = anyDomain 与「域名 d 规则子序列」按 (match_order,id) 两路归并。
+//
+// 两路归并正确性：Rules 已按 (match_order,id) 全局升序，任一子序列继承全序，
+// 两个各自有序的子序列归并即还原其并集在全局序中的唯一排列，故候选数组内的
+// 依序首个命中与全表线性扫描的命中即停结果完全一致。
+//
+// 简单分桶（先查域名桶、未中再扫通用表）为何错误——命中优先序会被破坏：
+//
+//	R1(order=5, domain="a.com", 精确 /x)、R2(order=6, domain="", 精确 /x)、
+//	R3(order=7, domain="a.com", 精确 /x)，请求 Host=a.com Path=/x：
+//	全局序正确冠军是 R2（order=6 最小）；分桶先扫 a.com 桶会先命中 R3——
+//	路径重复时赢家取决于桶扫描次序而非全局序，与原语义不符。
+func buildHostCandidates(snap *RouteSnapshot) {
+	var any []*RuleRT
+	perDomain := make(map[string][]*RuleRT)
+	for _, r := range snap.Rules {
+		if r.Domain == "" {
+			any = append(any, r)
+		} else {
+			perDomain[r.Domain] = append(perDomain[r.Domain], r)
+		}
+	}
+	snap.anyDomain = any
+	snap.byDomain = make(map[string][]*RuleRT, len(perDomain))
+	for d, list := range perDomain {
+		merged := make([]*RuleRT, 0, len(any)+len(list))
+		i, j := 0, 0
+		for i < len(any) && j < len(list) {
+			a, b := any[i], list[j]
+			if a.MatchOrder < b.MatchOrder || (a.MatchOrder == b.MatchOrder && a.ID < b.ID) {
+				merged = append(merged, a)
+				i++
+			} else {
+				merged = append(merged, b)
+				j++
+			}
+		}
+		merged = append(merged, any[i:]...)
+		merged = append(merged, list[j:]...)
+		snap.byDomain[d] = merged
+	}
+}
+
+// sortRules 按 (match_order, id) 稳定升序排列（命中即停的扫描顺序）。
 func sortRules(rules []*RuleRT) {
 	for i := 1; i < len(rules); i++ {
 		for j := i; j > 0; j-- {
@@ -228,7 +295,7 @@ func sortRules(rules []*RuleRT) {
 	}
 }
 
-// ValidateGraph 加载期校验（S6）：逐行校验并聚合全部问题返回（便于一次看全）。
+// ValidateGraph 加载期校验：逐行校验并聚合全部问题返回（便于一次看全）。
 // 校验项：引用存在（规则→均衡器、关系→均衡器/节点）、节点 URL 合法 http(s)://、
 // weight 正整数、priority ∈ {0,1}、match_order 1–999、path_value 以 / 开头、
 // path_type/algo 枚举值合法。domain 不做拒绝项（构建期归一放行）。

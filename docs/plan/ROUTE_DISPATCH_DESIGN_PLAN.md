@@ -259,3 +259,20 @@ SQL 文件组（每表）：`create_table` / `create_index` / `query_list`（分
 - WebSocket 隧道在途计数全程占用至连接结束（S4，与 NGINX least_conn 计入活跃连接一致）；sticky 读取与直路由对升级请求有效，但 **101 隧道响应经 `resp.Write(clientConn)` 直写劫持连接、绕过 `w.Header()`，网关新种的 Set-Cookie 不会出现在 101 握手响应上**——客户端首次 WS 连接拿不到粘性 Cookie（通常由先前普通 HTTP 请求种好），属可接受边界。
 - 多实例部署下他实例/他进程改库不自动同步，经「重载」按钮或 POST `/admin/dispatch/reload` 手动触发（重载四表全量快照）。
 - sticky Cookie 明文节点 id：内网网关场景可接受（HAProxy SERVERID 同款），不引入签名加密。
+
+## 验收结论与已知边界（2026-09-22 终验回写）
+
+**验收结论：全项达成，项目转待人类验收。**
+
+1. 全量 `go test ./...`（27 包）与 `go vet ./...` 全绿；核心包 `go test -race` 全绿；生产构建通过。
+2. 匹配性能达标：100 规则档 ≈0.9µs/次、1000 规则档 ≈6.5µs/次（i5-10400，-benchtime=10x），均低于 10µs 绝对门槛；allocs/op 由 532 降至 1。
+3. 实请求终验（真实 PG + 3 本地后端）：分流正确（域名+路径/纯路径/域名兜底三类规则全命中预期）；sticky Cookie 种植（rocksys_node，HttpOnly/SameSite=Lax）与携带直路由生效；least_conn 均匀轮转；杀后端约一个探活周期后 health 转 bad、流量自动切走，重启后恢复；match-test 与实请求逐场景一致。
+4. 降级演练：DB 不可用 → 管理面明确报数据库未配置引导、请求全部走默认 upstream、零 panic；恢复后后台重试自动重建 ready=true。
+5. WebUI 实看截图留证：三视图、三表单弹层（least_conn 警告/sticky WS 警告/关系编辑器）、命中测试器两态、引导卡、409 error toast、软删-恢复闭环。
+6. 「明确不做」清单未越界。
+
+**实施期偏差与临时决策**：无 DECISIONS 文件（无超出设计范围的重大决策）。实施层偏差均已按宪法落各 STEP 回填区并随码修复，要点：① registry↔DISPATCH_RULES 联动拆除（设计已列，实施落地）；② 六表注册 buildTableSpecs（表结构检查闭环必需）；③ DBSource 脚本名/占位符缺陷修复；④ 软删行列表不可见致恢复不可达（query_list 增 include_deleted 谓词）；⑤ 匹配性能优化（预分段+归并候选序，IMPL §5 预案，语义保持有反例论证）。
+
+**已知边界（补充实施期发现，与上文既有边界合并生效）**：
+- 1000 规则档性能达标依赖加载期预分段与归并候选序；规则量继续增大一个量级时线性扫描将重回瓶颈，届时再评估分桶演进。
+- least_conn 串行请求下表现为轮询游标平局回落（在途全 0），与 NGINX 同款语义；并发场景才体现最小在途优先。
