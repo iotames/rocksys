@@ -1,15 +1,16 @@
 # 路由分发宏观设计（ROUTE_DISPATCH DESIGN PLAN）
 
 > 层级定位：本文是**宏观设计层（最权威最上层）**，以 OGSM 框架承载"为什么与做到什么程度"，指导同源实施文档 `ROUTE_DISPATCH_IMPL_PLAN.md`（实施指导层，下层）。冲突时本文优先；操作细节以下层为准。
-> 状态：**定稿 v3（2026-09-21）**——人类已明确授权"问题收敛后直接定稿"，宪法 §2 设计定稿单关口视为已过；可据此建 STEP、落地实施。实施文档 `ROUTE_DISPATCH_IMPL_PLAN.md` 随本定稿自主细化，不需单独请示。
+> 状态：**定稿 v3（2026-09-21）**——人类已明确授权"问题收敛后直接定稿"，宪法 §2 设计定稿单关口视为已过；可据此建总纲与 STEP，**实施待开工令（宪法 §2.2 两段式：定稿 ≠ 开工令）**。2026-09-21 开工令已另行下达，见总纲。实施文档 `ROUTE_DISPATCH_IMPL_PLAN.md` 随本定稿自主细化，不需单独请示。
 
 ## 现状结论（带证据）
 
 - **装配**：`plugins/dispatch` 为转发链 L2 中间件（`cmd/rocksys/main.go:282`，`chain.Middle` 槽位），`DISPATCH_ENABLED` 开关控制（默认 false，`dispatch.go:82`）。
 - **匹配维度单一**：仅 URI 路径，不感知 Host。规则为 `DISPATCH_RULES` 单行字符串 DSL（`<Prefix>=<spec>`），内部 Radix Tree 最长前缀优先（`router.go`）；未命中不写 `DataFlow.Target`，回退 Adapter 默认 upstream（`internal/chain/adapter.go:74-78`，全局单值、无域名维度）；无默认 upstream 时不写响应直接放行、交 easyserver 链尾处理（`adapter.go:78-83`）。该 DSL **无真实存量数据**，处置 = 连同代码整体移除（见 G6），不存在迁移与兼容问题。
 - **节点组能力已备但内聚于规则字符串**：多节点平滑加权轮询、高优/备份（priority）、规则级主动健康检查（interval/timeout/path，2xx/3xx 判健康）——`balancer.go` / `healthcheck.go`，`Select` 选点与探活生命周期可直接改造复用。局限：同一物理节点出现在多条规则即重复登记、重复探活，无单一状态事实源。
+- **registry 与 DSL 存在联动写入**：registry 组件存在经 `conf.Set(DISPATCH_RULES)` 的实例变更联动（`plugins/registry/registry.go:35` `rulesKey`、约 :450 联动写入）——随 DSL 整体移除时须一并拆除该联动（registry 服务发现本体保留，仅去掉 dispatch 联动代码与对应测试）。
 - **热更骨架已备**：路由表不可变快照经 `atomic.Value` 原子替换，`Start(nil)` 重建、`Stop()` 停旧探活，请求路径零锁。
-- **响应链钩子可挂，但仅 Tail 槽位生效**：chain 提供响应阶段回调——`ResponseHook.OnResponse`（转发完成后、写回客户端前执行，转发成功与失败两类路径均覆盖；但**链中断与无 target 放行两类路径不经过**，`internal/chain/interface.go:45-50`、`adapter.go:73-84/109-123`）与 `DoneHook.OnDone`（写回完成后，同样不覆盖中断路径；obs 为消费先例）。★ Adapter 只收集 **Tail 槽位**实现的钩子（判定证据：`adapter.go:99` `chain.HasResponseHook(Tail)`；`internal/chain/impl.go:103-116` 为 `ResponseHooks(slot)` 通用收集机制）——dispatch 挂 Middle，其自身的 OnResponse 永不被调用，响应期收尾须经独立 Tail 收尾件（落地机制见 S4 双中间件）。缓冲代价口径：obs 启用时全站响应本就走缓冲路径，dispatch 收尾件增挂无新增代价；obs 停用而 dispatch 启用时由收尾件引入缓冲路径——收尾件只要 dispatch 启用即挂 Tail，缓冲代价覆盖 dispatch 启用期的全部命中流量，与所选策略无关（round_robin 亦然；这是 least_conn 递减的必要代价）。WebUI 侧对 least_conn 选项做 obs 门控与警告提示（见 WebUI 设计章节均衡器编辑表单），向用户透出该代价与边界。least_conn 递减与观测透出有现成挂载点。转发写回经 `copyHeader` 逐值 `Add` 合并上游响应头（`internal/chain/impl.go:140`）——Middle 槽位预设的响应头不会被上游覆盖，与上游同名头（如 Set-Cookie）共存。
+- **响应链钩子可挂，但仅 Tail 槽位生效**：chain 提供响应阶段回调——`ResponseHook.OnResponse`（转发完成后、写回客户端前执行，转发成功与失败两类路径均覆盖；但**链中断与无 target 放行两类路径不经过**，`internal/chain/interface.go:45-50`、`adapter.go:73-84/109-123`）与 `DoneHook.OnDone`（写回完成后，同样不覆盖中断路径；obs 为消费先例）。★ Adapter 只收集 **Tail 槽位**实现的钩子（判定证据：`adapter.go:99` `chain.HasResponseHook(Tail)`；`internal/chain/impl.go:103-116` 为 `ResponseHooks(slot)` 通用收集机制）——dispatch 挂 Middle，其自身的 OnResponse 永不被调用，响应期收尾须经独立 Tail 收尾件（落地机制见 S4 双中间件）。缓冲代价口径：obs 启用时全站响应本就走缓冲路径，dispatch 收尾件增挂无新增代价；obs 停用而 dispatch 启用时由收尾件引入缓冲路径——收尾件只要 dispatch 启用即挂 Tail，缓冲代价覆盖 dispatch 启用期的全部命中流量，与所选策略无关（round_robin 亦然；这是 least_conn 递减的必要代价）。WebUI 侧对 least_conn 选中弹非阻断警告（见 WebUI 设计章节均衡器编辑表单），向用户透出该代价与边界。least_conn 递减与观测透出有现成挂载点。转发写回经 `copyHeader` 逐值 `Add` 合并上游响应头（`internal/chain/impl.go:140`）——Middle 槽位预设的响应头不会被上游覆盖，与上游同名头（如 Set-Cookie）共存。
 - **数据层默认可用**：`DB_DRIVER` 默认 `sqlite` 零外部依赖；SQL 脚本按 `<表>_<动作>.sql` 三方言组织（`sql/<dbtype>/`），表结构检查/执行闭环已有产品化能力（adminapi `dbschema.go` + WebUI 数据库页）。
 - **DB CRUD 管理全链路有成熟先例**：ip_blacklist（软删/恢复/行详情编辑弹层，`plugins/shield/admin.go` + WebUI），端点经 `adminapi.RegisterPlugin(path, handler)` 注入。
 - **WebUI 规范体系完备**：`filterBar`/`dataTable`/`detailModal` 公共组件（pages.md §4.7）、toast 唯一提示组件（§4.10）、数据类资产不设功能开关（§4.14）、枚举字典经接口下发（先例：配置项类型接口）。
@@ -143,7 +144,7 @@
 
 索引：`dispatch_rule (enabled, deleted_at, match_order)`；`dispatch_upstream_node (upstream_id)`、`(node_id)`、唯一 `(upstream_id, node_id)`（软删行除外）；`dispatch_rule_tag (rule_id)`、`(tag_id)`；唯一索引 `dispatch_node (url)`、`dispatch_upstream (name)`、`dispatch_tag (name)`（均软删行除外）。**「软删行除外」三方言实现口径**：MySQL/SQLite 经复合唯一键 `(列, deleted_at)` 借 NULL 不判重实现（活跃行重复由 adminapi 保存查重兜底，与引用完整性应用层校验惯例一致）；PG 经部分唯一索引 `WHERE deleted_at IS NULL`。
 
-SQL 文件组（每表）：`create_table` / `create_index` / `query_list`（分页+筛选）/ `insert_returning_id` / `update` / `soft_delete` / `restore`；规则表另加 `query_active`（快照构建拉启用行）、均衡器/节点/关系表另加 `query_all_active`（Rebuild 全量拉取）；标签表加 `query_all`（下拉全量）。
+SQL 文件组（每表）：`create_table` / `create_index` / `query_list`（分页+筛选）/ `count`（分页总数，`X-Total-Count`）/ `insert_returning_id` / `update` / `soft_delete` / `restore`；规则表另加 `query_active`（快照构建拉启用行）、均衡器/节点/关系表另加 `query_all_active`（Rebuild 全量拉取）；标签表加 `query_all`（下拉全量）；关系表无单行 `update`（整组替换语义）。
 
 **数据关系**：`dispatch_rule.upstream_id → dispatch_upstream`（多对一）；`dispatch_upstream ←→ dispatch_node` 经 `dispatch_upstream_node`（多对多，关系表带属性 weight/priority）；`dispatch_rule ←→ dispatch_tag` 经 `dispatch_rule_tag`（多对多，纯关联无属性）。删除约束：均衡器存在未软删规则引用时拒绝删除（含停用规则，理由见 D11；前端文案三要素提示）；节点存在未软删关系引用时同理；标签删除时同步软删其关系行（标签是纯管理辅助，无运行态影响）。引用完整性由应用层（adminapi）校验，不建数据库外键（项目惯例）。
 
@@ -173,7 +174,7 @@ SQL 文件组（每表）：`create_table` / `create_index` / `query_list`（分
 **表单弹层**：
 
 1. 规则编辑：域名输入（可空，失焦转小写、拒绝端口与通配，占位"留空=任意域名"）、类型下拉（meta 枚举）、路径值（按类型切换占位与校验）、序号（1–999，默认 = 当前最大序号+10，超 999 上界时钳到 999 并提示；域名+路径`/`组合默认 999；**保存时同序号已存在其他规则则非阻断提示并列出**——同序号按 id 升序先后、先建者先匹配，防全局兜底静默吞掉域名专属规则）、均衡器下拉（显示名称+节点数）、标签多选（下拉选已有标签或回车新建实体，来源 `/admin/dispatch/tags`）、标题/备注；
-2. 均衡器编辑：名称、策略下拉（round_robin/least_conn + 说明文字；**least_conn 可用性跟随 obs**——obs 组件未开启时该选项显示为不可用置灰，点击选中无效并弹 toast 说明原因："least_conn 需要响应收尾件引入缓冲路径，建议先开启观测（obs）组件以复用其缓冲路径，避免额外代价"；obs 开启时可选，**选中 least_conn 即弹出警告说明**（非阻断，可继续）：least_conn 依赖 Tail 收尾件做在途递减，dispatch 启用期命中流量走缓冲路径；已知边界——dispatch 之后的中间件中断链的请求不经过收尾回调，存在在途计数泄漏（低频统计偏差不影响转发正确性））、sticky 开关（开启展开 Cookie 名输入，默认值；**开启即弹警告说明**：会话保持对普通 HTTP 请求完全生效；浏览器 WebSocket 首次连接的握手响应拿不到粘性 Cookie（隧道直写、不经响应头），需先有过一次普通 HTTP 请求完成种值，否则 WS 连接不保证粘住原节点）、备注、**节点关系编辑器**（行列表：节点下拉（已登记节点，显示实时健康点）+ 权重数字（注记"仅 round_robin 生效"）+ 高优/备份下拉 + 行删除/添加；提交时整组保存关系）；停用/删除时展示引用计数与影响提示；
+2. 均衡器编辑：名称、策略下拉（round_robin/least_conn + 说明文字；**选中 least_conn 即弹出非阻断警告说明**（可继续）：least_conn 的在途递减依赖 Tail 收尾件，dispatch 启用期命中流量走缓冲路径（该代价与策略选择无关，round_robin 亦然）；已知边界——dispatch 之后的中间件中断链的请求不经过收尾回调，存在在途计数泄漏（低频统计偏差不影响转发正确性））、sticky 开关（开启展开 Cookie 名输入，默认值；**开启即弹警告说明**：会话保持对普通 HTTP 请求完全生效；浏览器 WebSocket 首次连接的握手响应拿不到粘性 Cookie（隧道直写、不经响应头），需先有过一次普通 HTTP 请求完成种值，否则 WS 连接不保证粘住原节点）、备注、**节点关系编辑器**（行列表：节点下拉（已登记节点，显示实时健康点）+ 权重数字（注记"仅 round_robin 生效"）+ 高优/备份下拉 + 行删除/添加；提交时整组保存关系）；停用/删除时展示引用计数与影响提示；
 3. 节点编辑：名称、URL（`http(s)://` 校验 + 唯一性）、探活折叠区（周期/超时毫秒 + 路径；周期注记"节点故障到被自动摘除，最长存在约一个探活周期的窗口期，期间该节点的新请求仍会被转发并失败"；路径留空时显式提示"留空 = 不做探活，该节点将**始终被视为健康**——节点宕机后流量不会被自动摘除，将持续转发失败，建议生产环境配置探活路径"）、备注；删除时被引用则拒绝（文案三要素）。
 
 **提示与降级红线**：全站 toast 唯一组件（§4.10）；DB 未就绪 503 按普通错误弹 toast；页面不设"路由功能开关"——路由数据是数据资产，有数据即生效（§4.14），唯一开关是组件级 `DISPATCH_ENABLED`。
@@ -254,7 +255,6 @@ SQL 文件组（每表）：`create_table` / `create_index` / `query_list`（分
 ## 已知边界
 
 - 请求级 failover 不做（D9）：探活判死前窗口期（默认 20s）内被选中死节点的请求直接透传失败，不换节点重试；后续随被动健康检查一并演进。
-
 - least_conn 计数在「选点后、后继中间件中断链」路径存在泄漏（低频统计偏差，不影响转发正确性）；chain 补中断路径收尾回调后消除，本期不做。
 - WebSocket 隧道在途计数全程占用至连接结束（S4，与 NGINX least_conn 计入活跃连接一致）；sticky 读取与直路由对升级请求有效，但 **101 隧道响应经 `resp.Write(clientConn)` 直写劫持连接、绕过 `w.Header()`，网关新种的 Set-Cookie 不会出现在 101 握手响应上**——客户端首次 WS 连接拿不到粘性 Cookie（通常由先前普通 HTTP 请求种好），属可接受边界。
 - 多实例部署下他实例/他进程改库不自动同步，经「重载」按钮或 POST `/admin/dispatch/reload` 手动触发（重载四表全量快照）。

@@ -53,7 +53,7 @@
 ### 产物锚点清单（拆步时预写，实施中随手更正；改名同步更新）
 - 新增文件：`plugins/dispatch/admin.go`、`admin_test.go`
 - 修改文件：`cmd/rocksys/main.go`（RegisterPlugin 装配一处）
-- 新增端点：上列 19 个（rules 7 + reload 1 + upstreams 4 + nodes 4 + tags 3... 以实际清单为准）
+- 新增端点：上列 19 个（rules 6 + reload 1 + upstreams 4 + nodes 4 + tags 3 + health 1，以实际清单为准）
 - 新增测试：TestAdmin* 用例组
 
 ### 偏差与现场记录

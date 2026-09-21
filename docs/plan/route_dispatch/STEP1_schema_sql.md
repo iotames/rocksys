@@ -29,7 +29,7 @@
 
 - 接手核实命令（拆步时预写；无副作用、可重复执行；断点后一条命令自证已完成部分完好）：
   `ls sql/sqlite/dispatch_*.sql sql/postgres/dispatch_*.sql sql/mysql/dispatch_*.sql | wc -l && go test ./internal/db/...`
-  （预期：三方言 dispatch 脚本齐全（每方言 38 个左右，按实际文件组计数核对）；既有 db 包测试不因脚本引入而破坏）
+  （预期：三方言 dispatch 脚本齐全，每方言 44 个——node/upstream/rule 各 9、upstream_node/tag 各 6、rule_tag 5，按实施步骤文件组核对；既有 db 包测试不因脚本引入而破坏）
 - 本步完整验证（勾选＝该项已真实执行且通过，凭意图不得勾选；按需含受影响面的全量回归）：
   - [ ] `go test ./internal/db/...` 全绿
   - [ ] sqlite 实建验证：临时库逐表执行 create_table/create_index 无错（经 `go run` 临时程序或 sqlite3 CLI，用后即删临时文件）

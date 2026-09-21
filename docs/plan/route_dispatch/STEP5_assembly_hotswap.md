@@ -16,6 +16,7 @@
 - 修改 `plugins/dispatch/dispatch.go`：New（删 DISPATCH_RULES 注册，注入 DB 读取能力与 registry/healthcenter）、Start/Stop、新增 `Rebuild()`（互斥锁）、Handle 全面改写（新引擎）
 - 删除 `plugins/dispatch/router.go`、`chash.go`、`router_test.go`、`chash_test.go`（STEP3 已提取段匹配公共函数的除外——提取物迁入 match.go/snapshot.go 后删源文件）；`balancer.go` 中未被新引擎复用的部分一并删除；`dispatch_test.go` 旧 DSL 用例删除
 - 修改 `cmd/rocksys/main.go`：装配双中间件（`mgr.RegisterMiddleware(dispatch.New(cfgMgr))` 主件 + 收尾件注册，约 :282 位置）；autoEnableMap 两个名称同键 `DISPATCH_ENABLED`（约 :673-684 位置）
+- 修改 `plugins/registry/registry.go`：拆除 DISPATCH_RULES 联动（registry 服务发现本体保留）；其 dispatch 联动测试用例删除
 - 修改配置注册：`DISPATCH_RULES` 消失后 default.env 由程序自动同步刷新（禁止手工编辑）
 
 ## 实施步骤（完成一项立即勾选保存；粒度到不可再分的动作）
@@ -25,14 +26,14 @@
 - [ ] dispatch.go：`Start`（DB 可用同步构建一次；不可用空表快照 + 后台固定间隔重试至首次成功即停）与 `Stop`（停探活排空）
 - [ ] dispatch.go：Handle 改写（归一 Host → 快照匹配 → 均衡器选点/ sticky 直路由 → 计数 +1 → DF 存节点 id + 参数注入 + 写 Target；命中但均衡器停用/无可用节点 → 503 返回 false；未命中返回 true 不写 Target；true 路径只设头禁止写体）
 - [ ] cmd/rocksys/main.go：收尾件装配（共用主件运行态）+ autoEnableMap 补收尾件名同键联动（主件名 `dispatch` 保持，收尾件名与 STEP4 Name 一致）
-- [ ] 删除 DSL：`DISPATCH_RULES` 注册代码、parseRules 及解析链、Radix Tree、chash、旧语义测试用例
+- [ ] 删除 DSL：`DISPATCH_RULES` 注册代码、parseRules 及解析链、Radix Tree、chash、旧语义测试用例；同步拆除 plugins/registry 的 DISPATCH_RULES 联动代码与对应测试用例
 - [ ] 全量回归修复：受删除影响的引用与测试
 
 ## 验证
 
 - 接手核实命令（拆步时预写；无副作用、可重复执行；断点后一条命令自证已完成部分完好）：
   `go build ./... && go test ./plugins/dispatch/ ./cmd/... -race -count=1 && ! grep -rn "DISPATCH_RULES" --include="*.go" .`
-  （预期：构建与测试全绿；源码中 DISPATCH_RULES 零残留——docs 历史归档与 docs/plan 除外）
+  （预期：构建与测试全绿；全仓 .go 源码含 plugins/registry 零残留——docs 历史归档与 docs/plan 除外）
 - 本步完整验证（勾选＝该项已真实执行且通过，凭意图不得勾选；按需含受影响面的全量回归）：
   - [ ] `go test ./... -race -count=1` 全绿
   - [ ] `go vet ./...` 通过
