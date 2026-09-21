@@ -1,6 +1,6 @@
 # STEP4：健康检查中心与 Tail 收尾件
 
-状态：待实施
+状态：已实施
 
 ## 目标
 
@@ -18,22 +18,22 @@
 
 ## 实施步骤（完成一项立即勾选保存；粒度到不可再分的动作）
 
-- [ ] registry.go 真实现：记录集 = 任务集 ∪ 免探活登记集；三态原子读写；在途 +1/-1（饱和 ≥0、记录缺失 no-op）
-- [ ] healthcenter.go：任务集计算（去重集合，来源对象图）+ 差量算法（新增/移除/参数变更重启）
-- [ ] healthcenter.go：单节点探活 goroutine（启动即探、周期循环、2xx/3xx 判据、path 空跳过探测恒健康）；停止经 context/chan 排空退出
-- [ ] healthcenter.go：组件 Stop 全量排空接口（供 STEP5 主件 Stop 调用）
-- [ ] tailfin.go：收尾件类型（Tail 槽位、Handle 直通、OnResponse 按 DF 键读节点 id 递减；DF 键名沿用 `rocksys:` 前缀惯例，如 `rocksys:dispatch_node_id`）
-- [ ] STEP2 桩退场：select/sticky 测试改注入真 registry（或保留桩仅测试用），回归 STEP2 单测
-- [ ] 测试：多均衡器引用同节点只探一份 / Rebuild 差量（增/删/参数变更重启）与跨热更保序（保留节点状态不清零、移除节点转灰）/ goroutine 无泄漏（`-race` + runtime.NumGoroutine 前后对照）/ 收尾件递减跨 Rebuild（旧快照选中、新快照替换后递减仍命中同节点 id）不失配 / 饱和递减不为负
+- [x] registry.go 真实现：记录集 = 任务集 ∪ 免探活登记集；三态原子读写；在途 +1/-1（饱和 ≥0、记录缺失 no-op）
+- [x] healthcenter.go：任务集计算（去重集合，来源对象图）+ 差量算法（新增/移除/参数变更重启）
+- [x] healthcenter.go：单节点探活 goroutine（启动即探、周期循环、2xx/3xx 判据、path 空跳过探测恒健康）；停止经 context/chan 排空退出
+- [x] healthcenter.go：组件 Stop 全量排空接口（供 STEP5 主件 Stop 调用）
+- [x] tailfin.go：收尾件类型（Tail 槽位、Handle 直通、OnResponse 按 DF 键读节点 id 递减；DF 键名沿用 `rocksys:` 前缀惯例，如 `rocksys:dispatch_node_id`）
+- [x] STEP2 桩退场：select/sticky 测试改注入真 registry（或保留桩仅测试用），回归 STEP2 单测
+- [x] 测试：多均衡器引用同节点只探一份 / Rebuild 差量（增/删/参数变更重启）与跨热更保序（保留节点状态不清零、移除节点转灰）/ goroutine 无泄漏（`-race` + runtime.NumGoroutine 前后对照）/ 收尾件递减跨 Rebuild（旧快照选中、新快照替换后递减仍命中同节点 id）不失配 / 饱和递减不为负
 
 ## 验证
 
 - 接手核实命令（拆步时预写；无副作用、可重复执行；断点后一条命令自证已完成部分完好）：
   `go test ./plugins/dispatch/ -run 'TestHealth|TestRegistry|TestTailfin' -race -count=1`
 - 本步完整验证（勾选＝该项已真实执行且通过，凭意图不得勾选；按需含受影响面的全量回归）：
-  - [ ] `go test ./plugins/dispatch/ -race -count=1` 全绿（含 STEP2/3 用例随真 registry 回归）
-  - [ ] `go vet ./plugins/dispatch/` 通过
-  - [ ] goroutine 泄漏用例：热更重建 N 次后 goroutine 数不增长
+  - [x] `go test ./plugins/dispatch/ -race -count=1` 全绿（含 STEP2/3 用例随真 registry 回归）
+  - [x] `go vet ./plugins/dispatch/` 通过
+  - [x] goroutine 泄漏用例：热更重建 N 次后 goroutine 数不增长（泄漏用例单独连跑 3 次均绿）
 
 ## 完成标准
 
@@ -48,6 +48,12 @@
 - 新增文件：`plugins/dispatch/healthcenter.go`、`tailfin.go`、`healthcenter_test.go`、`registry_test.go`、`tailfin_test.go`
 - 修改文件：`plugins/dispatch/registry.go`（桩 → 真实现）；STEP2 测试文件（注入对象随动）
 - 新增类型/函数：任务管理器、差量算法、探活 goroutine 主循环、真 registry、Tail 收尾件类型
+- 实际落点：`HealthCenter`（`NewHealthCenter(reg)`，入口 `Rebuild(*GraphInput)` / 全量排空 `Stop()`，成员表 `members` + 任务表 `tasks` 双 map 差量）；`Registry`（`NewRegistry()`，`Ensure(id, init)` / `SetHealth` / `Remove` / `Len`，实现既有 `NodeRegistry` 接口）；`TailFin`（`NewTailFin(reg)`，Name=`dispatch-tail`，Slot=Tail，编译期断言 chain.Middleware/ResponseHook/MiddlewareLifecycle）；DF 键常量 `DFKeyDispatchNodeID = "rocksys:dispatch_node_id"`（定义于 tailfin.go，STEP5 主件选点后写入）；兜底默认 `defaultHCIntervalMS=5000` / `defaultHCTimeoutMS=3000`
 
 ### 偏差与现场记录
-- <设计与现实的偏差、试过放弃的方案、阻塞原因——先写这里再继续动手>
+- `NodeRT` 不携带探活参数（仅 ID/URL/Weight/Priority），任务集计算改从 `GraphInput` 行（NodeRow 的 hc_* 字段）计算，STEP5 主件 Rebuild 时把同一份行传给 `HealthCenter.Rebuild` 即可，语义与设计一致（来源仍是对象图输入）。
+- 差量移除除任务表外需「记录集成员表」（`members`）：免探活节点没有任务，仅扫任务表会漏清其 registry 记录（实测踩到：免探活节点失引用后记录残留未转灰），故记录集口径以成员表为准、任务表只管 goroutine。
+- hc_interval_ms/hc_timeout_ms 非正值时兜底默认 5s/3s（设计未明说，避免 ticker/超时为 0 失效）。
+- `MemRegistry` 桩保留原位（registry.go，仅测试用）；select/sticky 测试注入对象零改动，STEP2/3 用例随真 `Registry` 回归通过。
+- 泄漏用例基线差 1 的排查：探活 `http.Client` 空闲连接池的读写 goroutine 在 Stop 后驻留，`Stop()` 补 `CloseIdleConnections()` 后稳定（连跑 3 次基线精确回落）。
+- 探活测试全部走 httptest 本地服务器（含 503/404 判死用例），无外网依赖。
