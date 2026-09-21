@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,14 +45,43 @@ type DBSource struct{ d *db.DB }
 // NewDBSource 创建 DB 行来源（d 可为 nil，此时视为 DB 不可用）。
 func NewDBSource(d *db.DB) *DBSource { return &DBSource{d: d} }
 
+// loadRows 读脚本（含 .sql 后缀）并替换 {table} 表名占位符后查询多行
+// （表名为编译期常量，非用户输入；db.DB 不做占位符替换，由消费方负责——mq/shield 同款约定）。
+// 行以 map 承载后手工映射到 Row 结构（easydb 结构体扫描要求逐列 db tag，模型行不设
+// tag，手工映射保持 model.go 与建表脚本解耦）。
+func (s *DBSource) loadRows(script, table string) ([]map[string]any, error) {
+	txt, err := s.d.SQL(script)
+	if err != nil {
+		return nil, err
+	}
+	var rows []map[string]any
+	err = s.d.EasyDB().GetMany(strings.ReplaceAll(txt, "{table}", table), &rows)
+	return rows, err
+}
+
 // LoadRules 拉启用规则行（dispatch_rule_query_active：enabled=1 且未软删）。
 func (s *DBSource) LoadRules() ([]RuleRow, error) {
 	if s.d == nil {
 		return nil, errors.New("dispatch: 数据访问层未就绪")
 	}
-	var rows []RuleRow
-	err := s.d.GetMany("dispatch_rule_query_active", &rows)
-	return rows, err
+	rows, err := s.loadRows("dispatch_rule_query_active.sql", "dispatch_rule")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RuleRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, RuleRow{
+			ID:         dbRowInt64(r["id"]),
+			MatchOrder: int(dbRowInt64(r["match_order"])),
+			Domain:     dbRowString(r["domain"]),
+			PathType:   int(dbRowInt64(r["path_type"])),
+			PathValue:  dbRowString(r["path_value"]),
+			Title:      dbRowString(r["title"]),
+			UpstreamID: dbRowInt64(r["upstream_id"]),
+			Enabled:    true, // query_active 仅返回启用行
+		})
+	}
+	return out, nil
 }
 
 // LoadUpstreams 拉全量有效均衡器行（dispatch_upstream_query_all_active：未软删，含停用）。
@@ -58,9 +89,22 @@ func (s *DBSource) LoadUpstreams() ([]UpstreamRow, error) {
 	if s.d == nil {
 		return nil, errors.New("dispatch: 数据访问层未就绪")
 	}
-	var rows []UpstreamRow
-	err := s.d.GetMany("dispatch_upstream_query_all_active", &rows)
-	return rows, err
+	rows, err := s.loadRows("dispatch_upstream_query_all_active.sql", "dispatch_upstream")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UpstreamRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, UpstreamRow{
+			ID:            dbRowInt64(r["id"]),
+			Name:          dbRowString(r["name"]),
+			Algo:          int(dbRowInt64(r["algo"])),
+			StickyEnabled: dbRowInt64(r["sticky_enabled"]) == 1,
+			StickyCookie:  dbRowString(r["sticky_cookie"]),
+			Enabled:       dbRowInt64(r["enabled"]) == 1,
+		})
+	}
+	return out, nil
 }
 
 // LoadNodes 拉全量有效节点行（dispatch_node_query_all_active：未软删，含停用）。
@@ -68,9 +112,23 @@ func (s *DBSource) LoadNodes() ([]NodeRow, error) {
 	if s.d == nil {
 		return nil, errors.New("dispatch: 数据访问层未就绪")
 	}
-	var rows []NodeRow
-	err := s.d.GetMany("dispatch_node_query_all_active", &rows)
-	return rows, err
+	rows, err := s.loadRows("dispatch_node_query_all_active.sql", "dispatch_node")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]NodeRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, NodeRow{
+			ID:           dbRowInt64(r["id"]),
+			Name:         dbRowString(r["name"]),
+			URL:          dbRowString(r["url"]),
+			HCIntervalMS: int(dbRowInt64(r["hc_interval_ms"])),
+			HCTimeoutMS:  int(dbRowInt64(r["hc_timeout_ms"])),
+			HCPath:       dbRowString(r["hc_path"]),
+			Enabled:      dbRowInt64(r["enabled"]) == 1,
+		})
+	}
+	return out, nil
 }
 
 // LoadRelations 拉全量有效关系行（dispatch_upstream_node_query_all_active：未软删）。
@@ -80,14 +138,56 @@ func (s *DBSource) LoadRelations() ([]UpstreamNodeRow, error) {
 	if s.d == nil {
 		return nil, errors.New("dispatch: 数据访问层未就绪")
 	}
-	var rows []UpstreamNodeRow
-	if err := s.d.GetMany("dispatch_upstream_node_query_all_active", &rows); err != nil {
+	rows, err := s.loadRows("dispatch_upstream_node_query_all_active.sql", "dispatch_upstream_node")
+	if err != nil {
 		return nil, err
 	}
-	for i := range rows {
-		rows[i].Enabled = true
+	out := make([]UpstreamNodeRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, UpstreamNodeRow{
+			ID:         dbRowInt64(r["id"]),
+			UpstreamID: dbRowInt64(r["upstream_id"]),
+			NodeID:     dbRowInt64(r["node_id"]),
+			Weight:     int(dbRowInt64(r["weight"])),
+			Priority:   int(dbRowInt64(r["priority"])),
+			Enabled:    true, // 有效行即启用行（见函数注释）
+		})
 	}
-	return rows, nil
+	return out, nil
+}
+
+// dbRowInt64/dbRowString 行值归一（各驱动扫描类型不一；与 admin.go 展示层同款口径）。
+func dbRowInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	case []byte:
+		if i, err := strconv.ParseInt(strings.TrimSpace(string(n)), 10, 64); err == nil {
+			return i
+		}
+	case string:
+		if i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
+func dbRowString(v any) string {
+	switch s := v.(type) {
+	case string:
+		return s
+	case []byte:
+		return string(s)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", s)
+	}
 }
 
 // 编译期断言：DBSource 实现四表行来源接口。

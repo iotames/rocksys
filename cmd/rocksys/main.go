@@ -315,8 +315,9 @@ func buildServer(args []string) (*Server, error) {
 	// （Tail：转发完成后在途 -1，Start/Stop 为 no-op，生命周期由主件统一驱动）；
 	// DISPATCH_ENABLED 经 autoEnableMap 两名同键联动启停（装配注册顺序固定保证链序确定）。
 	dispatchReg := dispatch.NewRegistry()
-	mgr.RegisterMiddleware(dispatch.New(cfgMgr, dispatch.NewDBSource(dataDB), dispatchReg)) // 主件 → chain.Middle
-	mgr.RegisterMiddleware(dispatch.NewTailFin(dispatchReg))                                // 收尾件 → chain.Tail
+	dispatchMain := dispatch.New(cfgMgr, dispatch.NewDBSource(dataDB), dispatchReg)
+	mgr.RegisterMiddleware(dispatchMain)                     // 主件 → chain.Middle
+	mgr.RegisterMiddleware(dispatch.NewTailFin(dispatchReg)) // 收尾件 → chain.Tail
 
 	mgr.RegisterMiddleware(rewrite.New(cfgMgr)) // L2 转发前改写 → chain.Middle
 
@@ -664,6 +665,39 @@ func buildServer(args []string) (*Server, error) {
 	} {
 		if err := adminSrv.RegisterPlugin(ep.path, ep.h); err != nil {
 			return nil, fmt.Errorf("register proxy %s: %w", ep.path, err)
+		}
+	}
+
+	// 路由分发管理端点（ROUTE_DISPATCH STEP6；仿 shield admin 模式）：规则/均衡器/节点/
+	// 标签四组 CRUD + 命中测试 + 枚举字典 + 全局重载 + 健康快照，共 19 个。
+	// DB 未配置时端点统一 503 降级（handler 内部自检）。
+	dispatchAdmin := dispatch.NewAdminHandler(dispatchMain, dataDB)
+	for _, ep := range []struct {
+		path string
+		h    http.HandlerFunc
+	}{
+		{dispatch.PathDispatchRules, dispatchAdmin.Rules},
+		{dispatch.PathDispatchRulesUpdate, dispatchAdmin.RulesUpdate()},
+		{dispatch.PathDispatchRulesDelete, dispatchAdmin.RulesDelete()},
+		{dispatch.PathDispatchRulesRestore, dispatchAdmin.RulesRestore()},
+		{dispatch.PathDispatchMatchTest, dispatchAdmin.RulesMatchTest()},
+		{dispatch.PathDispatchRulesMeta, dispatchAdmin.RulesMeta},
+		{dispatch.PathDispatchReload, dispatchAdmin.Reload()},
+		{dispatch.PathDispatchUpstreams, dispatchAdmin.Upstreams},
+		{dispatch.PathDispatchUpstreamsUpdate, dispatchAdmin.UpstreamsUpdate()},
+		{dispatch.PathDispatchUpstreamsDelete, dispatchAdmin.UpstreamsDelete()},
+		{dispatch.PathDispatchUpstreamsRestore, dispatchAdmin.UpstreamsRestore()},
+		{dispatch.PathDispatchNodes, dispatchAdmin.Nodes},
+		{dispatch.PathDispatchNodesUpdate, dispatchAdmin.NodesUpdate()},
+		{dispatch.PathDispatchNodesDelete, dispatchAdmin.NodesDelete()},
+		{dispatch.PathDispatchNodesRestore, dispatchAdmin.NodesRestore()},
+		{dispatch.PathDispatchTags, dispatchAdmin.Tags},
+		{dispatch.PathDispatchTagsUpdate, dispatchAdmin.TagsUpdate()},
+		{dispatch.PathDispatchTagsDelete, dispatchAdmin.TagsDelete()},
+		{dispatch.PathDispatchHealth, dispatchAdmin.Health},
+	} {
+		if err := adminSrv.RegisterPlugin(ep.path, ep.h); err != nil {
+			return nil, fmt.Errorf("register dispatch %s: %w", ep.path, err)
 		}
 	}
 
