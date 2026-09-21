@@ -135,7 +135,8 @@ func (c *Context) WriteFinal(code int, header http.Header, body []byte) error {
 	return nil
 }
 
-// copyHeader 将 src 响应头复制到 dst（覆盖同名 key）。
+// copyHeader 将 src 响应头逐值 Add 合并到 dst：同名 key 追加不覆盖（如上游与
+// 中间件各自 Set-Cookie 共存）；调用方需整键替换时须先自行 Del。
 func copyHeader(dst, src http.Header) {
 	for k, vs := range src {
 		for _, v := range vs {
