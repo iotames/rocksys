@@ -7,6 +7,7 @@
 .codegraph/
 .tmp-sqltest/
 .kun-*
+.zcodeignore
 
 # 配置测试副作用
 .env
