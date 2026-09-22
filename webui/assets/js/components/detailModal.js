@@ -19,8 +19,8 @@
 
   // 复制按钮点击（弹层内事件委托，data-copy-value 存原文）
   function copyText(text) {
-    const done = () => Rock.ui.toast('已复制', 'success', 1600);
-    const fail = () => Rock.ui.toast('复制失败', 'error', 1600);
+    const done = () => notify.success('已复制');
+    const fail = () => notify.error('复制失败');
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(done, fail);
     } else {

@@ -17,6 +17,7 @@ import (
 //   - i%3==0：前缀 /api<i>
 //   - i%3==1：精确 /exact<i>
 //   - i%3==2：模式 /mode<i>/:id
+//
 // 每 5 条（i%5==0）附加域名 d<i>.example.com；其余无域名（任意 Host）。
 func benchSnapshot(b *testing.B, n int) *RouteSnapshot {
 	b.Helper()

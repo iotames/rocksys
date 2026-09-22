@@ -25,7 +25,7 @@
   const COMPONENT_PREFIX = Rock.state.COMPONENT_PREFIX;
   const normalizeSwitches = Rock.state.normalizeSwitches;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
@@ -47,7 +47,7 @@
       }
     } catch (e) {
       store.componentsFailed = !store.switchesLoaded;
-      if (!opts.silent && e.status !== 0) toast('组件数据加载失败：' + e.message, 'error');
+      if (!opts.silent && e.status !== 0) notify.error('组件数据加载失败：' + e.message);
     }
     render(opts);
   }
@@ -245,14 +245,14 @@
     try {
       const res = await api.post('/admin/switch/' + (enabling ? 'on' : 'off'))({ name: name });
       if (res && res.ok === false) {
-        toast((enabling ? '开启失败：' : '关闭失败：') + (res.error || '未知错误'), 'error');
+        notify.error((enabling ? '开启失败：' : '关闭失败：') + (res.error || '未知错误'));
         return false;
       }
-      toast((enabling ? '已启用 ' : '已关闭 ') + meta.title + '（已即时生效，无需重启）', 'success');
+      notify.success((enabling ? '已启用 ' : '已关闭 ') + meta.title + '（已即时生效，无需重启）');
       load({ type: opts.type, name: name, tab: opts.tab, silent: true, force: true });
       return true;
     } catch (e) {
-      toast((enabling ? '开启失败：' : '关闭失败：') + e.message, 'error');
+      notify.error((enabling ? '开启失败：' : '关闭失败：') + e.message);
       return false;
     }
   }

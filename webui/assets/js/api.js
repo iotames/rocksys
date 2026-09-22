@@ -25,7 +25,7 @@
     if (uiBridge && uiBridge.onUnauthorized) uiBridge.onUnauthorized();
   }
 
-  // ---- 统一加载指示条（中性态，非 toast：成功/失败提示仍由调用方经 Rock.ui.toast 触发）----
+  // ---- 统一加载指示条（中性态，非 toast：成功/失败提示仍由调用方经 Rock.ui.notify 触发）----
   // 顶部固定细进度条 + 文案。并行请求计数：全部结束才隐藏；文案显示最近一次请求的覆写值。
   let loadingCount = 0;
   let loadingHost = null;

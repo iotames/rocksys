@@ -13,6 +13,7 @@
   const $ = Rock.util.$;
   const api = Rock.api;
   const ui = Rock.ui;
+  const notify = Rock.ui.notify;
 
   // 切换显示指定认证面板
   function showPanel(name) {
@@ -104,15 +105,15 @@
           // 后端 pruneWarnings：清理机制未开启的持久化膨胀提醒（全局常驻置顶横幅 + 登录即时 toast）
           const ws = (r && Array.isArray(r.warnings)) ? r.warnings.filter(function (w) { return !!w; }) : [];
           Rock.state.store.loginWarnings = ws.length ? ws : null;
-          ws.forEach(function (w) { ui.toast(w, 'warning', 6000); });
+          ws.forEach(function (w) { notify.warn(w); });
           if (Rock.main && Rock.main.renderPruneBanner) Rock.main.renderPruneBanner();
-          ui.toast('登录成功', 'success');
+          notify.success('登录成功');
           enterConsole();
         } else {
           setError((r && r.error) || '登录失败');
         }
       })
-      .catch(function (e) { const m = e.message || '登录失败'; setError(m); ui.toast(m, 'error'); });
+      .catch(function (e) { const m = e.message || '登录失败'; setError(m); notify.error(m); });
   }
 
   // 首次注册（初始化管理员）
@@ -126,13 +127,13 @@
     api.post('/admin/auth/register')({ username: user, password: pass })
       .then(function (r) {
         if (r && r.ok) {
-          ui.toast('初始化成功，请登录', 'success');
+          notify.success('初始化成功，请登录');
           showPanel('login');
         } else {
           setError((r && r.error) || '注册失败');
         }
       })
-      .catch(function (e) { const m = e.message || '注册失败'; setError(m); ui.toast(m, 'error'); });
+      .catch(function (e) { const m = e.message || '注册失败'; setError(m); notify.error(m); });
   }
 
   // 重置凭证（忘记密码）
@@ -146,13 +147,13 @@
     api.post('/admin/auth/reset')({ username: user, password: pass })
       .then(function (r) {
         if (r && r.ok) {
-          ui.toast('重置成功，请登录', 'success');
+          notify.success('重置成功，请登录');
           showPanel('login');
         } else {
           setError((r && r.error) || '重置失败');
         }
       })
-      .catch(function (e) { const m = e.message || '重置失败'; setError(m); ui.toast(m, 'error'); });
+      .catch(function (e) { const m = e.message || '重置失败'; setError(m); notify.error(m); });
   }
 
   // 绑定事件

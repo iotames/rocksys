@@ -29,8 +29,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -192,8 +192,11 @@ const (
 	maxLimit     = 10000
 )
 
-// sqlText 读脚本并替换 {table} 表名占位符（表名为编译期常量，非用户输入）；
-// order 非空时同步替换 {order} 排序占位符（调用方经白名单映射注入，杜绝注入面）。
+// sqlText 读脚本并替换表名占位符（表名为编译期常量，非用户输入）：
+// {table}=按脚本名前缀映射的主表；{rule_tag}/{tags}=规则-标签关系表/标签表
+// （底层 ScriptDir 仅支持单 {table} 占位符，跨表子查询的表名由 Go 侧以常量拼接，
+// 值全部来自代码常量而非用户输入，无注入面）；order 非空时同步替换 {order}
+// 排序占位符（调用方经白名单映射注入，杜绝注入面）。
 // 脚本名缺省补 .sql 后缀（脚本源按 <表>_<动作>.sql 组织）。
 func (h *AdminHandler) sqlText(name string, order ...string) (string, error) {
 	if !strings.HasSuffix(name, ".sql") {
@@ -217,6 +220,9 @@ func (h *AdminHandler) sqlText(name string, order ...string) (string, error) {
 		table = tblTag
 	}
 	txt = strings.ReplaceAll(txt, "{table}", table)
+	// 跨表子查询占位符（仅规则列表/计数脚本使用；表名常量拼接，见函数注释）
+	txt = strings.ReplaceAll(txt, "{rule_tag}", tblRuleTag)
+	txt = strings.ReplaceAll(txt, "{tags}", tblTag)
 	if len(order) > 0 {
 		txt = strings.ReplaceAll(txt, "{order}", order[0])
 	}
@@ -368,7 +374,7 @@ func (h *AdminHandler) Rules(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listRules 规则列表：关键词（domain/path_value/title 模糊）+ path_type + enabled + include_deleted 筛选，分页。
+// listRules 规则列表：tag（标签名，”=不限）+ 关键词（domain/path_value/title 模糊）+ path_type + enabled + include_deleted 筛选，分页。
 func (h *AdminHandler) listRules(w http.ResponseWriter, r *http.Request) {
 	limit, offset, ok := listPage(r)
 	if !ok {
@@ -404,15 +410,20 @@ func (h *AdminHandler) listRules(w http.ResponseWriter, r *http.Request) {
 		}
 		incDel = n
 	}
-	// 关键词占位符个数随方言：sqlite/mysql 脚本重复 ? 四次，PG 脚本复用 $2（仅需两个）。
-	kwN := 4
+	// 占位符个数随方言：PG 编号复用（$2=tag、$3=关键词各出现 2 次但只各传 1 参），
+	// sqlite/mysql 用 ? 逐个绑定（tag 占位 2 次、关键词占位 4 次，各按出现次数传参）。
+	tagN, kwN := 2, 4
 	if h.data.Driver() == "postgres" {
-		kwN = 2
+		tagN, kwN = 1, 1
 	}
-	// include_deleted 为首参（谓词位于 WHERE 首行）；关键词占位符个数随方言：
-	// sqlite/mysql 脚本重复 ? 四次，PG 脚本复用 $2（仅需两个）。
-	args := make([]any, 0, kwN+7)
+	// tag 筛选参数：TrimSpace + 转小写归一（与标签写入侧归一口径一致），''=不限。
+	tag := strings.ToLower(strings.TrimSpace(q.Get("tag")))
+	// include_deleted 为首参（谓词位于 WHERE 首行）；tag 占位符位于关键词之前（全局统一顺序）。
+	args := make([]any, 0, tagN+kwN+7)
 	args = append(args, incDel)
+	for i := 0; i < tagN; i++ {
+		args = append(args, tag)
+	}
 	for i := 0; i < kwN; i++ {
 		args = append(args, keyword)
 	}

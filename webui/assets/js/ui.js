@@ -13,14 +13,16 @@
   const esc = Rock.util.esc;
   const fmtDateTime = Rock.util.fmtDateTime;
 
-  // 右上角消息提示（唯一提示组件，全站统一走这里，禁止再造轮子）：
-  // - success / info：操作正常反馈，显示完自动消失（默认 3.2s，点击也可关闭）；
-  // - error / warning：异常信息，不自动消失——需点右上角 ✕ 或「知道了」按钮关闭；
-  //   传显式 duration 时仍自动消失（如登录页警告 6s）。
+  // 底层提示原语（唯一提示组件的执行层，全站统一走这里，禁止再造轮子）。
+  // 设计原则：底层允许灵活传参，封装层收敛参数——业务代码一律用 Rock.ui.notify，
+  // toastRaw 仅作特殊场景逃生口（评审后使用）。
+  // - success / info：显示完自动消失（缺省 3.2s，duration 仅对这两类生效，点击也可关闭）；
+  // - error / warning：一律常驻（需点 ✕ 或「知道了」关闭）——常驻语义在底层焊死，
+  //   传 duration 也被忽略，封装层无从泄漏口子；
   // 切换页面经 clearToasts() 清空（刷新页面天然清空），不让过期提示跨页残留。
-  function toast(message, type, duration) {
+  function toastRaw(message, type, duration) {
     type = type || 'success';
-    const sticky = (type === 'error' || type === 'warning') && duration == null;
+    const sticky = type === 'error' || type === 'warning';
     const root = $('#toast-root');
     if (!root) return;
     const el = document.createElement('div');
@@ -46,6 +48,19 @@
     });
     if (!sticky) setTimeout(close, duration == null ? 3200 : duration);
   }
+
+  // 语义化通知封装层（业务代码唯一入口）：参数只收 message（info 收可选 duration）。
+  // 为什么收敛：旧单层 toast(message, type, duration) 把 warning/error 的常驻语义
+  // 交给"调用方不传 duration"的自觉，类型字符串手写易错、口子随时泄漏（error 传了
+  // duration 就自动消失丢信息）。收敛后：
+  // - success / info：正常反馈，自动消失（info 可自定义 duration，缺省 3200）；
+  // - warn / error：异常信息，常驻必须人工关闭，不给 duration 口子。
+  const notify = {
+    success: function (msg) { toastRaw(msg, 'success'); },
+    info: function (msg, duration) { toastRaw(msg, 'info', duration); },
+    warn: function (msg) { toastRaw(msg, 'warning'); },
+    error: function (msg) { toastRaw(msg, 'error'); },
+  };
 
   // 清空全部提示（路由切换时调用；刷新页面天然清空）
   function clearToasts() {
@@ -238,7 +253,8 @@
   }
 
   window.Rock.ui = {
-    toast,
+    notify,
+    toastRaw,
     pollTask,
     findRunningTask,
     fmtTaskCost,

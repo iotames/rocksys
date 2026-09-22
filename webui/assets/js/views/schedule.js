@@ -14,7 +14,7 @@
 
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const api = Rock.api;
 
   let rows = [];
@@ -108,7 +108,7 @@
       errText = (e && e.message) || '未知错误';
       // 非程序化静默刷新的失败必须弹统一 error toast（不自动消失）；行内错误态同时保留
       if (!o.silent) {
-        toast('定时任务清单加载失败：' + errText + '，请确认服务可达后点击「刷新」重试', 'error');
+        notify.error('定时任务清单加载失败：' + errText + '，请确认服务可达后点击「刷新」重试');
       }
     } finally {
       loading = false;

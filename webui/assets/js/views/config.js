@@ -22,7 +22,7 @@
   const groupOf = Rock.state.groupOf;
   const normalizeConfigList = Rock.state.normalizeConfigList;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
   const ce = Rock.views.configEditor;
@@ -51,7 +51,7 @@
         store.configListLoaded = true;
         store.configUnavailable = true;
       } else if (!opts.silent && e.status !== 0) {
-        toast('配置加载失败：' + e.message, 'error');
+        notify.error('配置加载失败：' + e.message);
       }
     }
     render();
@@ -267,7 +267,7 @@
         configActiveGroup = e.group;
         render(); // 重建页签与面板后再定位
       }
-      if (!ce.locateAndEdit(key)) toast('未找到配置项 ' + key + '，请刷新页面后重试', 'warn');
+      if (!ce.locateAndEdit(key)) notify.warn('未找到配置项 ' + key + '，请刷新页面后重试');
     } else {
       store.pendingCfgLocate = key; // detail.js 渲染配置页签后消费
       window.location.hash = '#/' + e.route;

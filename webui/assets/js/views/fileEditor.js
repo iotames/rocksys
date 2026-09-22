@@ -32,7 +32,7 @@
       const esc = Rock.util.esc;
       const fmtDateTime = Rock.util.fmtDateTime;
       const api = Rock.api;
-      const toast = Rock.ui.toast;
+      const notify = Rock.ui.notify;
       const confirmDialog = Rock.ui.confirmDialog;
       const codeEditor = Rock.comp.codeEditor;
 
@@ -61,7 +61,7 @@
           st.error = '';
         } catch (e) {
           st.error = e.message || '加载失败';
-          if (!opts.silent && e.status !== 0) toast('文件列表加载失败：' + e.message, 'error');
+          if (!opts.silent && e.status !== 0) notify.error('文件列表加载失败：' + e.message);
         }
         render(viewHost);
       }
@@ -87,7 +87,7 @@
           st.file = f;
           render(viewHost);
         } catch (e) {
-          toast('读取失败：' + e.message, 'error');
+          notify.error('读取失败：' + e.message);
         }
       }
 
@@ -98,11 +98,11 @@
         try {
           await cfg.save(st.name, content);
           codeEditor.setValue(EDITOR_ID, content);
-          toast(cfg.saveToast, 'success');
+          notify.success(cfg.saveToast);
           await loadFiles({ silent: true }); // 保存已成功，列表刷新失败不再叠加报错
           await openFileReload();
         } catch (e) {
-          toast('保存失败：' + e.message, 'error');
+          notify.error('保存失败：' + e.message);
         } finally {
           st.saving = false;
         }

@@ -20,7 +20,7 @@
 
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const api = Rock.api;
   const confirmDialog = Rock.ui.confirmDialog;
   const fmtTaskCost = Rock.ui.fmtTaskCost;
@@ -225,7 +225,7 @@
       errText = (e && e.message) || '未知错误';
       // 程序化静默轮询失败不弹 toast（防刷屏，保留旧数据）；手动刷新失败必须弹统一 error toast
       if (!o.silent) {
-        toast('后台任务列表加载失败：' + errText + '，请确认服务可达后点击「重试」', 'error');
+        notify.error('后台任务列表加载失败：' + errText + '，请确认服务可达后点击「重试」');
       }
     } finally {
       loading = false;
@@ -245,9 +245,9 @@
     if (!ok) return;
     try {
       const res = await api.post('/admin/tasks/' + encodeURIComponent(id) + '/cancel')({});
-      toast((res && res.message) ? res.message : '取消请求已送达', 'success');
+      notify.success((res && res.message) ? res.message : '取消请求已送达');
     } catch (e) {
-      toast('取消失败：' + ((e && e.message) || '未知错误') + '。任务可能已完成或记录已淘汰，请刷新列表确认', 'error');
+      notify.error('取消失败：' + ((e && e.message) || '未知错误') + '。任务可能已完成或记录已淘汰，请刷新列表确认');
     }
     load({ silent: true });
   }
@@ -257,7 +257,7 @@
   async function showDetail(el) {
     const id = el.getAttribute('data-id');
     let t = rows.find(function (x) { return x.id === id; });
-    if (!t) { toast('任务记录不存在（可能已被终态限量淘汰），请刷新列表', 'warning'); return; }
+    if (!t) { notify.warn('任务记录不存在（可能已被终态限量淘汰），请刷新列表'); return; }
     try {
       const full = await api.get('/admin/tasks/' + encodeURIComponent(id));
       if (full && full.id) t = full;

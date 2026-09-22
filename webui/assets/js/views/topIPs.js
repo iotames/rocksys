@@ -19,7 +19,7 @@
   const esc = Rock.util.esc;
   const fmtInt = Rock.util.fmtInt;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
 
   const TOP_N_OPTIONS = [['10', '10'], ['20', '20'], ['30', '30'], ['50', '50'], ['100', '100']];
@@ -30,7 +30,7 @@
     if (!geoMissing(rows)) return;
     if (sessionStorage.getItem('rock-geo-warned')) return;
     sessionStorage.setItem('rock-geo-warned', '1');
-    toast('地理位置数据未加载：未找到 mmdb 文件，地区列将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效', 'error');
+    notify.error('地理位置数据未加载：未找到 mmdb 文件，地区列将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效');
   }
 
   // 模块状态：统计数据 / Top N / 宿主 hooks
@@ -45,7 +45,7 @@
   // 重复/已在黑名单的 IP 由后端计入 skipped 不报错；成功后经 hooks.refresh 刷新标注
   async function addCheckedToBlacklist() {
     const ips = [...document.querySelectorAll('.waf-topip-check:checked')].map(cb => cb.getAttribute('data-ip'));
-    if (!ips.length) { toast('请先勾选要加黑的 IP', 'warn'); return; }
+    if (!ips.length) { notify.warn('请先勾选要加黑的 IP'); return; }
     const ok = await confirmDialog({
       title: '批量加入黑名单',
       message: '将把 ' + ips.length + ' 个 IP 加入黑名单（永久生效，立即拦截）：<br><span class="mono">' + esc(ips.join('、')) + '</span>',
@@ -56,9 +56,9 @@
     // 照抄 blacklist.js import 调用方式：api.post 对字符串 body 走 JSON 字符串编码，后端已双向兼容
     try {
       const r = await api.post('/admin/shield/blacklist/import?title=' + encodeURIComponent('攻击源TOP批量加黑') + '&block_type=11')(ips.join('\n'));
-      toast('已导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条', 'success');
+      notify.success('已导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条');
     } catch (e) {
-      toast('批量加黑失败：' + (e.message || '未知错误') + '。请稍后重试或逐个手工加入', 'error');
+      notify.error('批量加黑失败：' + (e.message || '未知错误') + '。请稍后重试或逐个手工加入');
     }
     hooks.refresh();
   }

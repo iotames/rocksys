@@ -16,7 +16,7 @@
   const fmtBytes = Rock.util.fmtBytes;
   const store = Rock.state.store;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const noteUpdated = Rock.ui.noteUpdated;
 
   // 级别 → 展示样式 / 中文名
@@ -48,7 +48,7 @@
     onAuth: function () { Rock.ui.onUnauthorized(); },
     onError: function () {
       if (store.syslogPageVisible) {
-        toast('实时流已断开，将自动重连', 'warning');
+        notify.warn('实时流已断开，将自动重连');
       }
     },
     onStateChange: function () { setStreamState(); },
@@ -135,7 +135,7 @@
     } catch (e) {
       store.syslogInfo = null;
       store.syslogInfoError = e.message;
-      if (e.status !== 0) toast('日志状态加载失败：' + e.message, 'error');
+      if (e.status !== 0) notify.error('日志状态加载失败：' + e.message);
     }
     renderInfo();
   }
@@ -187,7 +187,7 @@
       if (res && res.reset && depth < 3) return loadHistory(n, depth + 1);
       return res;
     } catch (e) {
-      if (e.status !== 0) toast('历史日志加载失败：' + e.message, 'error');
+      if (e.status !== 0) notify.error('历史日志加载失败：' + e.message);
       return null;
     }
   }
@@ -196,20 +196,20 @@
   async function setLevel(level) {
     try {
       await api.post('/admin/log/level')({ level: level });
-      toast('日志级别已切换为 ' + level.toUpperCase(), 'success');
+      notify.success('日志级别已切换为 ' + level.toUpperCase());
       await loadInfo();
     } catch (e) {
-      toast('级别切换失败：' + e.message, 'error');
+      notify.error('级别切换失败：' + e.message);
     }
   }
 
   async function setFile(on) {
     try {
       await api.post('/admin/log/output')({ file: on });
-      toast(on ? '文件存档已开启' : '文件存档已关闭', 'success');
+      notify.success(on ? '文件存档已开启' : '文件存档已关闭');
       await loadInfo();
     } catch (e) {
-      toast('文件存档切换失败：' + e.message, 'error');
+      notify.error('文件存档切换失败：' + e.message);
       if (!$('#syslog-file').checked) $('#syslog-file').checked = !on;
     }
   }

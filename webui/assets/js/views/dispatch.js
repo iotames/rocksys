@@ -4,7 +4,7 @@
  * 命中测试器（规则视图右侧常驻卡）+ 三组表单弹层 + 节点健康三态（绿红灰）+
  * DISPATCH_ENABLED 未开启引导卡（豁免 toast）；DB 未就绪 503 按普通错误弹 error toast。
  * 挂载方式：可嵌入视图，经 mount(container) 挂入宿主容器（当前宿主 = 组件详情页
- * 「路由管理」页签，views/detail.js 调用）；提示全走 Rock.ui.toast（§4.10），
+ * 「路由管理」页签，views/detail.js 调用）；提示全走 Rock.ui.notify（§4.10），
  * 错误不自动消失，文案三要素。
  * 挂载到全局命名空间 window.Rock.views.dispatch。
  * ========================================================================== */
@@ -18,7 +18,7 @@
   const esc = Rock.util.esc;
   const fmtInt = Rock.util.fmtInt;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
   const openModal = Rock.ui.openModal;
   const skeletonHTML = Rock.ui.skeletonHTML;
@@ -161,7 +161,7 @@
       st.meta = await api.get(BASE + '/rules/meta');
     } catch (e) {
       if (!silent && e.status !== 0 && e.status !== 503) {
-        toast('枚举字典加载失败：' + (e.message || '未知错误') + '。表单下拉将使用内置兜底枚举，不影响功能', 'error');
+        notify.error('枚举字典加载失败：' + (e.message || '未知错误') + '。表单下拉将使用内置兜底枚举，不影响功能');
       }
     }
   }
@@ -245,6 +245,11 @@
       live: true,
       onQuery: function () { queryRules(); },
       fields: [
+        { type: 'select', key: 'tag', width: '130px', options: function () {
+          // 标签筛选：微服务场景 URI 多，标签即轻量分组手段（数据源随 st.tags 缓存）
+          return [['', '标签：全部']].concat(
+            st.tags.map(function (t) { return [t.name, t.name]; }));
+        } },
         { type: 'select', key: 'pathType', width: '120px', options: [['', '类型：全部']].concat(
           metaOf().path_types.map(function (t) { return [String(t.value), t.name]; })) },
         { type: 'text', key: 'domain', placeholder: '域名', width: '140px' },
@@ -298,6 +303,7 @@
     L.loaded = true;
     try {
       const r = await api.get(qs(BASE + '/rules', Object.assign({
+        tag: s.tag || '',
         path_type: s.pathType || '',
         domain: s.domain || '',
         keyword: s.keyword || '',
@@ -311,7 +317,7 @@
       // DB 未就绪 503 属普通错误（设计红线：路由分发页不按"功能未开启"降级——开关在组件页已单独透出），
       // 与其他失败一致弹统一 error toast；仅程序化静默刷新（silent）失败不弹，行内错误必更新。
       if (!silent && e.status !== 0) {
-        toast('路由规则加载失败：' + L.error + '。请确认数据库已配置且服务正常，稍后重试', 'error');
+        notify.error('路由规则加载失败：' + L.error + '。请确认数据库已配置且服务正常，稍后重试');
       }
     }
     render();
@@ -400,7 +406,7 @@
     } catch (e) {
       L.error = (e.message || '加载失败');
       if (!silent && e.status !== 0) {
-        toast('负载均衡器加载失败：' + L.error + '。请确认数据库已配置且服务正常，稍后重试', 'error');
+        notify.error('负载均衡器加载失败：' + L.error + '。请确认数据库已配置且服务正常，稍后重试');
       }
     }
     render();
@@ -485,7 +491,7 @@
     } catch (e) {
       L.error = (e.message || '加载失败');
       if (!silent && e.status !== 0) {
-        toast('上游节点加载失败：' + L.error + '。请确认数据库已配置且服务正常，稍后重试', 'error');
+        notify.error('上游节点加载失败：' + L.error + '。请确认数据库已配置且服务正常，稍后重试');
       }
     }
     render();
@@ -645,9 +651,9 @@
   async function reloadAll() {
     try {
       await api.post(BASE + '/reload')({});
-      toast('快照已重载（四表全量重建）', 'success');
+      notify.success('快照已重载（四表全量重建）');
     } catch (e) {
-      toast('快照重载失败：' + (e.message || '未知错误'), 'error');
+      notify.error('快照重载失败：' + (e.message || '未知错误'));
     }
     st.loadedOnce = false;
     await load({ silent: false });
@@ -667,7 +673,7 @@
       out.innerHTML = testResultHTML(r);
     } catch (e) {
       if (out) out.innerHTML = '<span class="muted">测试失败：' + esc(e.message || '未知错误') + '</span>';
-      if (e.status !== 0) toast('命中测试失败：' + (e.message || '未知错误') + '。请稍后重试', 'error');
+      if (e.status !== 0) notify.error('命中测试失败：' + (e.message || '未知错误') + '。请稍后重试');
     }
   }
 
@@ -716,10 +722,10 @@
     }).then(function (ok) {
       if (!ok) return;
       api.post(urls[kind])({ id: Number(id) }).then(function () {
-        toast('已删除（可从列表恢复）', 'success');
+        notify.success('已删除（可从列表恢复）');
         afterWriteRefresh(kind);
       }).catch(function (e) {
-        toast((e.message || '删除失败') + '。请按提示处理后重试', 'error');
+        notify.error((e.message || '删除失败') + '。请按提示处理后重试');
       });
     });
   }
@@ -731,10 +737,10 @@
       node: BASE + '/nodes/restore',
     };
     api.post(urls[kind])({ id: Number(id) }).then(function () {
-      toast('已恢复', 'success');
+      notify.success('已恢复');
       afterWriteRefresh(kind);
     }).catch(function (e) {
-      toast((e.message || '恢复失败') + '。请按提示处理（常见原因：同名/同地址活跃条目冲突，或规则引用的均衡器已删除）后重试', 'error');
+      notify.error((e.message || '恢复失败') + '。请按提示处理（常见原因：同名/同地址活跃条目冲突，或规则引用的均衡器已删除）后重试');
     });
   }
 
@@ -865,7 +871,7 @@
     const orderEl = overlay.querySelector('#dr-order');
     if (orderEl) orderEl.addEventListener('change', function () {
       const v = Math.floor(Number(orderEl.value) || 0);
-      if (v > 999) { orderEl.value = '999'; toast('序号已钳制到上界 999（匹配序号范围 1-999）', 'warning'); }
+      if (v > 999) { orderEl.value = '999'; notify.warn('序号已钳制到上界 999（匹配序号范围 1-999）'); }
       else if (v < 1 && orderEl.value !== '') { orderEl.value = '1'; }
     });
 
@@ -873,7 +879,7 @@
     function addTag(name) {
       name = String(name || '').trim().toLowerCase();
       if (!name) return;
-      if (selTags.indexOf(name) >= 0) { toast('标签「' + name + '」已在列表中', 'info', 2500); return; }
+      if (selTags.indexOf(name) >= 0) { notify.info('标签「' + name + '」已在列表中', 2500); return; }
       selTags.push(name);
       overlay.querySelector('#dr-tags-box').innerHTML = tagChipsHTML(selTags);
       renderTagSelect(); // 下拉重新渲染：过滤掉已选中项
@@ -917,19 +923,19 @@
       };
       // 前端先行校验（文案三要素；服务端仍全量校验兜底）
       if (!body.match_order || body.match_order < 1 || body.match_order > 999) {
-        toast('保存失败：匹配序号应为 1-999 的整数（升序匹配、命中即停）。请修正序号后重试', 'error');
+        notify.error('保存失败：匹配序号应为 1-999 的整数（升序匹配、命中即停）。请修正序号后重试');
         markInvalid(overlay.querySelector('#dr-order')); return;
       }
       if (!validDomain(body.domain)) {
-        toast('保存失败：域名仅支持精确域名（不带端口、不支持通配符）；端口维度无需填写（匹配时自动剥端口），泛域名请拆为多条精确域名规则。请修正后重试', 'error');
+        notify.error('保存失败：域名仅支持精确域名（不带端口、不支持通配符）；端口维度无需填写（匹配时自动剥端口），泛域名请拆为多条精确域名规则。请修正后重试');
         markInvalid(overlay.querySelector('#dr-domain')); return;
       }
       if (!body.path_value || body.path_value.charAt(0) !== '/') {
-        toast('保存失败：路径值必须以 / 开头（如 /api）。请修正路径值后重试', 'error');
+        notify.error('保存失败：路径值必须以 / 开头（如 /api）。请修正路径值后重试');
         markInvalid(overlay.querySelector('#dr-path-value')); return;
       }
       if (!body.upstream_id) {
-        toast('保存失败：请选择均衡器——命中规则后转发到该均衡器选出的节点。请从下拉选择后重试', 'error');
+        notify.error('保存失败：请选择均衡器——命中规则后转发到该均衡器选出的节点。请从下拉选择后重试');
         markInvalid(overlay.querySelector('#dr-upstream')); return;
       }
       try {
@@ -937,7 +943,7 @@
           ? await api.post(BASE + '/rules/update')(body)
           : await api.post(BASE + '/rules')(body);
         overlay.remove();
-        toast(isEdit ? '规则已更新（快照已热更）' : '规则已新增（快照已热更）', 'success');
+        notify.success(isEdit ? '规则已更新（快照已热更）' : '规则已新增（快照已热更）');
         if (r && Array.isArray(r.warnings) && r.warnings.length) {
           // 同序号非阻断提示：列出同序号的其他规则（先建者先匹配），防全局兜底静默吞掉域名专属规则
           openModal({
@@ -951,7 +957,7 @@
         await refreshCaches(true);
         await afterWriteRefresh('rule');
       } catch (err) {
-        toast('规则保存失败：' + (err.message || '未知错误') + '。请按提示修正后重试；数据未保存', 'error');
+        notify.error('规则保存失败：' + (err.message || '未知错误') + '。请按提示修正后重试；数据未保存');
       }
     });
   }
@@ -1033,7 +1039,7 @@
     function syncSticky() {
       if (cookieWrap) cookieWrap.style.display = stickyEl.checked ? '' : 'none';
       if (stickyEl.checked) {
-        toast('会话保持对普通 HTTP 请求完全生效；浏览器 WebSocket 首次连接的握手响应拿不到粘性 Cookie（隧道直写、不经响应头），需先有过一次普通 HTTP 请求完成种值，否则 WS 连接不保证粘住原节点。', 'warning');
+        notify.warn('会话保持对普通 HTTP 请求完全生效；浏览器 WebSocket 首次连接的握手响应拿不到粘性 Cookie（隧道直写、不经响应头），需先有过一次普通 HTTP 请求完成种值，否则 WS 连接不保证粘住原节点。');
       }
     }
     stickyEl.addEventListener('change', syncSticky);
@@ -1043,7 +1049,7 @@
     const algoEl = overlay.querySelector('#du-algo');
     algoEl.addEventListener('change', function () {
       if (Number(algoEl.value) === 2) {
-        toast('least_conn 的在途递减依赖 Tail 收尾件：dispatch 启用期命中流量走缓冲路径（该代价与策略选择无关，round_robin 亦然）；已知边界——dispatch 之后的中间件中断链的请求不经过收尾回调，存在在途计数泄漏（低频统计偏差，不影响转发正确性）。可继续保存。', 'warning');
+        notify.warn('least_conn 的在途递减依赖 Tail 收尾件：dispatch 启用期命中流量走缓冲路径（该代价与策略选择无关，round_robin 亦然）；已知边界——dispatch 之后的中间件中断链的请求不经过收尾回调，存在在途计数泄漏（低频统计偏差，不影响转发正确性）。可继续保存。');
       }
     });
 
@@ -1060,7 +1066,7 @@
         nodes: [],
       };
       if (!body.name) {
-        toast('保存失败：名称必填（活跃行唯一，如「订单服务-会话保持池」）。请填写名称后重试', 'error');
+        notify.error('保存失败：名称必填（活跃行唯一，如「订单服务-会话保持池」）。请填写名称后重试');
         markInvalid(overlay.querySelector('#du-name')); return;
       }
       // 关系组从 DOM 收集（整组保存语义）
@@ -1069,7 +1075,7 @@
         const r = relRows[i];
         const nodeID = Number((r.querySelector('[data-field="node-id"]') || {}).value || 0);
         if (!nodeID) {
-          toast('保存失败：第 ' + (i + 1) + ' 行节点关系未选择节点。请从下拉选择或移除该行后重试', 'error');
+          notify.error('保存失败：第 ' + (i + 1) + ' 行节点关系未选择节点。请从下拉选择或移除该行后重试');
           return;
         }
         body.nodes.push({
@@ -1082,11 +1088,11 @@
         if (isEdit) await api.post(BASE + '/upstreams/update')(body);
         else await api.post(BASE + '/upstreams')(body);
         overlay.remove();
-        toast(isEdit ? '均衡器已更新（快照已热更）' : '均衡器已新增（快照已热更）', 'success');
+        notify.success(isEdit ? '均衡器已更新（快照已热更）' : '均衡器已新增（快照已热更）');
         await refreshCaches(true);
         await afterWriteRefresh('up');
       } catch (err) {
-        toast('均衡器保存失败：' + (err.message || '未知错误') + '。请按提示修正后重试；数据未保存', 'error');
+        notify.error('均衡器保存失败：' + (err.message || '未知错误') + '。请按提示修正后重试；数据未保存');
       }
     });
   }
@@ -1146,22 +1152,22 @@
         remark: ((overlay.querySelector('#dn-remark') || {}).value || ''),
       };
       if (!/^https?:\/\//.test(body.url) || /\s/.test(body.url)) {
-        toast('保存失败：地址必须为合法的 http(s)://host[:port] 地址（如 http://10.0.0.1:9001）。请修正后重试', 'error');
+        notify.error('保存失败：地址必须为合法的 http(s)://host[:port] 地址（如 http://10.0.0.1:9001）。请修正后重试');
         markInvalid(overlay.querySelector('#dn-url')); return;
       }
       if (body.hc_path && body.hc_path.charAt(0) !== '/') {
-        toast('保存失败：探活路径必须以 / 开头（如 /healthz）；留空 = 不探活、始终视为健康。请修正后重试', 'error');
+        notify.error('保存失败：探活路径必须以 / 开头（如 /healthz）；留空 = 不探活、始终视为健康。请修正后重试');
         markInvalid(overlay.querySelector('#dn-hc-path')); return;
       }
       try {
         if (isEdit) await api.post(BASE + '/nodes/update')(body);
         else await api.post(BASE + '/nodes')(body);
         overlay.remove();
-        toast(isEdit ? '节点已更新（快照已热更）' : '节点已登记（快照已热更）', 'success');
+        notify.success(isEdit ? '节点已更新（快照已热更）' : '节点已登记（快照已热更）');
         await refreshCaches(true);
         await afterWriteRefresh('node');
       } catch (err) {
-        toast('节点保存失败：' + (err.message || '未知错误') + '。请按提示修正后重试；数据未保存', 'error');
+        notify.error('节点保存失败：' + (err.message || '未知错误') + '。请按提示修正后重试；数据未保存');
       }
     });
   }

@@ -18,7 +18,7 @@
   const store = Rock.state.store;
   const api = Rock.api;
   const dateRange = Rock.comp.dateRange;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
 
@@ -151,7 +151,7 @@
         store.logsError = 'bad-params';
       } else {
         store.logsError = e.message;
-        if (e.status !== 0) toast('日志加载失败：' + e.message, 'error');
+        if (e.status !== 0) notify.error('日志加载失败：' + e.message);
       }
     }
     render();
@@ -167,7 +167,7 @@
       store.logsStorage = null;
       store.storageError = e.obsDisabled ? 'obs' : e.message;
       // obs 未开启属降级引导态（页内有引导卡片），不弹 toast
-      if (!e.obsDisabled && e.status !== 0) toast('日志存储信息加载失败：' + e.message, 'error');
+      if (!e.obsDisabled && e.status !== 0) notify.error('日志存储信息加载失败：' + e.message);
     }
     renderStorage();
   }
@@ -314,7 +314,7 @@
   async function query() {
     const q = queryBar.state();
     if (dateRange.from(q) > dateRange.to(q)) {
-      toast('开始时间不能晚于结束时间', 'error');
+      notify.error('开始时间不能晚于结束时间');
       return;
     }
     store.logsLoaded = false;
@@ -326,7 +326,7 @@
   async function exportLogs() {
     const q = queryBar.state();
     if (dateRange.from(q) > dateRange.to(q)) {
-      toast('开始时间不能晚于结束时间', 'error');
+      notify.error('开始时间不能晚于结束时间');
       return;
     }
     const params = buildLogParams();
@@ -337,10 +337,10 @@
       const r = await api.textMeta('/admin/logs?' + params.toString(), 0, '日志数据加载中…');
       rows = Rock.util.parseNdjson(r.text, normalizeLogRow);
     } catch (e) {
-      toast('导出失败：' + e.message, 'error');
+      notify.error('导出失败：' + e.message);
       return;
     }
-    if (!rows.length) { toast('没有可导出的日志', 'warning'); return; }
+    if (!rows.length) { notify.warn('没有可导出的日志'); return; }
     const lines = rows.map(r => JSON.stringify(r.extras));
     const blob = new Blob([lines.join('\n')], { type: 'application/x-ndjson;charset=utf-8' });
     const a = document.createElement('a');
@@ -350,7 +350,7 @@
     a.click();
     a.remove();
     URL.revokeObjectURL(a.href);
-    toast('已导出 ' + rows.length + ' 条日志', 'success');
+    notify.success('已导出 ' + rows.length + ' 条日志');
   }
 
   // 重置筛选与查询条件（回默认值：时间当天全天）并重新查询

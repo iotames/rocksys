@@ -8,7 +8,8 @@
  *     - onQuery(state)：live 触发与 reset 时的查询回调（视图前置校验在回调内做）；
  *     - fields：字段声明，四类：
  *         { type: 'dateRange', key: 'from' }              → 状态键 fromDate/fromTime/toDate/toTime
- *         { type: 'select', key, options: [[v,label]] }    → options 复用 Rock.comp.select.options
+ *         { type: 'select', key, options: [[v,label]] }    → options 复用 Rock.comp.select.options；
+ *                                                            options 传函数（返回 [[v,label]]）= 延迟求值（异步数据源）
  *         { type: 'text', key, placeholder?, width? }
  *         { type: 'check', key, label }
  * 实例接口：html() / bind(host) / collect() / state() / reset()。
@@ -61,8 +62,11 @@
           '<input type="time" class="input input-sm" data-fb="' + f.key + 'toTime" value="' + v('toTime') + '"></div>';
       }
       if (f.type === 'select') {
+        // options 支持函数形式（延迟求值）：数据源异步加载（如标签缓存）后，
+        // 每次渲染都取最新选项，避免实例创建过早导致下拉永远为空
+        const opts = typeof f.options === 'function' ? f.options() : f.options;
         return '<select class="select select-sm" data-fb="' + f.key + '"' + widthStyle(f) + '>' +
-          Rock.comp.select.options(f.options, state[f.key]) + '</select>';
+          Rock.comp.select.options(opts, state[f.key]) + '</select>';
       }
       if (f.type === 'check') {
         return '<label class="chk"><input type="checkbox" data-fb="' + f.key + '"' +

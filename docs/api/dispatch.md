@@ -16,7 +16,7 @@
 
 ### 1.1 `GET /admin/dispatch/rules` — 规则列表
 
-查询参数：`limit`（1-10000，默认 50）、`offset`（≥0）、`keyword`（domain/path_value/title 模糊）、`path_type`（0=不限 / 1=前缀 / 2=精确 / 3=模式）、`enabled`（0=不限 / 1=仅启用）、`domain`（精确筛选）、`include_deleted`（0=仅活跃 / 1=仅已删除）。
+查询参数：`limit`（1-10000，默认 50）、`offset`（≥0）、`tag`（标签名筛选，''=不限；TrimSpace + 转小写归一后精确匹配，仅命中打有该标签的规则）、`keyword`（domain/path_value/title 模糊）、`path_type`（0=不限 / 1=前缀 / 2=精确 / 3=模式）、`enabled`（0=不限 / 1=仅启用）、`domain`（精确筛选）、`include_deleted`（0=仅活跃 / 1=仅已删除）。
 
 行字段：`id, match_order, domain, path_type, path_value, title, upstream_id, enabled, remark, created_at, updated_at[, deleted_at], tags`；`tags` 为该规则的活跃标签名数组（按名升序；软删规则行同样附其关系，供恢复/编辑回显）。
 

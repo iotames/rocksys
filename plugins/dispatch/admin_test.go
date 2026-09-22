@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -432,6 +433,58 @@ func TestAdminRuleTagsDedupAndList(t *testing.T) {
 	tags, _ = listRows(t, rec)[0]["tags"].([]any)
 	if len(tags) != 2 || tags[0] != "aa" || tags[1] != "zz" {
 		t.Errorf("tags 应按名升序 [aa zz]: %v", tags)
+	}
+}
+
+// TestAdminRuleListTagFilter 规则列表 tag 筛选：tag=名 仅命中打有该标签的规则
+// （大小写/空白归一）；tag=不存在名 结果为空；tag 缺省不过滤；
+// include_deleted=1 组合下软删行同样参与筛选。
+func TestAdminRuleListTagFilter(t *testing.T) {
+	_, h := newAdminFixture(t)
+	n1 := addNodeViaAdmin(t, h, "n1", "http://10.0.0.1:9001")
+	upID := addUpstreamViaAdmin(t, h, "up-a", n1)
+
+	mkRule := func(path, tagsJSON string) int64 {
+		rec := adminDo(t, h.Rules, http.MethodPost, "/admin/dispatch/rules",
+			`{"match_order":10,"path_type":1,"path_value":"`+path+`","upstream_id":`+i64s(upID)+`,"tags":`+tagsJSON+`}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("新增规则 %s: %d %s", path, rec.Code, rec.Body.String())
+		}
+		return int64(adminJSON(t, rec)["id"].(float64))
+	}
+	prodID := mkRule("/api", `["prod"]`)
+	mkRule("/web", `["dev"]`)
+
+	// tag=prod 命中、tag=PROD 归一后同样命中；tag=dev 命中另一条。
+	for _, tag := range []string{"prod", "PROD", " prod "} {
+		rec := adminDo(t, h.Rules, http.MethodGet, "/admin/dispatch/rules?tag="+url.QueryEscape(tag), "")
+		rows := listRows(t, rec)
+		if len(rows) != 1 || int64(rows[0]["id"].(float64)) != prodID {
+			t.Errorf("tag=%q 应仅命中 prod 规则: %v", tag, rows)
+		}
+	}
+	if rows := listRows(t, adminDo(t, h.Rules, http.MethodGet, "/admin/dispatch/rules?tag=dev", "")); len(rows) != 1 {
+		t.Errorf("tag=dev 应命中 1 行: %v", rows)
+	}
+	// tag=不存在名 结果为空。
+	if rows := listRows(t, adminDo(t, h.Rules, http.MethodGet, "/admin/dispatch/rules?tag=nosuch", "")); len(rows) != 0 {
+		t.Errorf("tag=nosuch 应为空: %v", rows)
+	}
+	// tag 缺省不过滤：两条全部返回。
+	if rows := listRows(t, adminDo(t, h.Rules, http.MethodGet, "/admin/dispatch/rules", "")); len(rows) != 2 {
+		t.Errorf("tag 缺省应返回全部 2 行: %v", rows)
+	}
+	// 软删 + tag 组合：默认（仅活跃行）软删的 prod 规则不再命中；
+	// include_deleted=1（仅已删除行）时按 tag 命中软删行。
+	if rec := adminDo(t, h.RulesDelete(), http.MethodPost, "/admin/dispatch/rules/delete", `{"id":`+i64s(prodID)+`}`); rec.Code != http.StatusOK {
+		t.Fatalf("软删规则: %d %s", rec.Code, rec.Body.String())
+	}
+	if rows := listRows(t, adminDo(t, h.Rules, http.MethodGet, "/admin/dispatch/rules?tag=prod", "")); len(rows) != 0 {
+		t.Errorf("软删后 tag=prod 应为空: %v", rows)
+	}
+	rows := listRows(t, adminDo(t, h.Rules, http.MethodGet, "/admin/dispatch/rules?tag=prod&include_deleted=1", ""))
+	if len(rows) != 1 || int64(rows[0]["id"].(float64)) != prodID {
+		t.Errorf("include_deleted=1 且 tag=prod 应命中软删行: %v", rows)
 	}
 }
 
