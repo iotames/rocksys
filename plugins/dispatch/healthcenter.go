@@ -146,8 +146,11 @@ func (h *HealthCenter) Rebuild(in *GraphInput) {
 		}
 		h.members[id] = key
 		if key.path == "" {
-			// 免探活登记集：hc_path 为空的被引用节点不启任务，登记健康态显绿。
-			h.reg.Ensure(id, HealthOK)
+			// 免探活登记集：hc_path 为空的被引用节点不启任务，健康态显式覆写为健康。
+			// 必须 SetHealth 而非 Ensure（CAS 仅对未知态生效）：探活→免探活转换时
+			// 记录保留着上一轮探活的 HealthBad 结论，且此后再无任务会写该节点，
+			// 若不覆写将永久判定不健康，违反「hc_path 空 = 视为健康」语义。
+			h.reg.SetHealth(id, HealthOK)
 			continue
 		}
 		h.reg.Ensure(id, HealthUnknown) // 探活任务节点：先登记灰态，首探出结论

@@ -508,8 +508,8 @@ func TestAdminMatchTestReadOnly(t *testing.T) {
 	if m["hit"] != false || m["position"] != "default_upstream" {
 		t.Errorf("未命中判定错误: %v", m)
 	}
-	// 命中 → node；连续多次游标不推进：双节点零态游标下 pickRR 序列恒为 n1,n2,n1,n2…，
-	// 若 match-test 推进了游标，序列将被打乱；在途计数应恒为 0。
+	// 命中 → node；只读选点零态游标不推进：多次调用结果恒定（同一起点快照试算），
+	// 若实现推进了游标序列将交替变化；在途计数应恒为 0。
 	nodeURL := func() string {
 		rec = adminDo(t, h.RulesMatchTest(), http.MethodPost, "/admin/dispatch/rules/match-test",
 			`{"host":"A.COM:8443","path":"/api/x"}`)
@@ -524,7 +524,7 @@ func TestAdminMatchTestReadOnly(t *testing.T) {
 		return node["url"].(string)
 	}
 	got := []string{nodeURL(), nodeURL(), nodeURL(), nodeURL()}
-	want := []string{"http://10.0.0.1:9001", "http://10.0.0.2:9001", "http://10.0.0.1:9001", "http://10.0.0.2:9001"}
+	want := []string{"http://10.0.0.1:9001", "http://10.0.0.1:9001", "http://10.0.0.1:9001", "http://10.0.0.1:9001"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("match-test 序列[%d]=%s, want %s（游标被推进或分布异常）", i, got[i], want[i])

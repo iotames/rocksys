@@ -45,12 +45,7 @@ func count(reg NodeRegistry, n *NodeRT) *NodeRT {
 
 // pickHealthy 在指定优先级的健康节点集中按算法选点；空集返回 nil。
 func pickHealthy(u *UpstreamRT, reg NodeRegistry, p Priority) *NodeRT {
-	cands := make([]*NodeRT, 0, len(u.Nodes))
-	for _, n := range u.Nodes {
-		if n.Priority == p && reg.Health(n.ID) == HealthOK {
-			cands = append(cands, n)
-		}
-	}
+	cands := collectCands(u, reg, p)
 	if len(cands) == 0 {
 		return nil
 	}
@@ -60,38 +55,36 @@ func pickHealthy(u *UpstreamRT, reg NodeRegistry, p Priority) *NodeRT {
 	return u.pickRR(cands)
 }
 
-// pickRR 平滑加权轮询选点（balancer.go rrState 同款算法，作用于新对象图：
-// current 按节点在 UpstreamRT.Nodes 中的下标索引，候选子集共享同一游标——
-// 与旧实现高优/备份子集共享游标的口径一致）。
-func (u *UpstreamRT) pickRR(cands []*NodeRT) *NodeRT {
-	if len(cands) == 1 {
-		return cands[0]
+// pickHealthyRO pickHealthy 的只读变体（match-test 用）：least_conn 读在途计数
+// 本身无副作用；轮询游标走快照试算不落盘——命中测试不得推进共享游标扰动线上分流。
+func pickHealthyRO(u *UpstreamRT, reg NodeRegistry, p Priority) *NodeRT {
+	cands := collectCands(u, reg, p)
+	if len(cands) == 0 {
+		return nil
 	}
-	u.rr.mu.Lock()
-	defer u.rr.mu.Unlock()
-
-	total := 0
-	best := cands[0]
-	bestCur := 0
-	for _, n := range cands {
-		w := n.Weight
-		if w <= 0 {
-			w = 1
+	if u.Algo == AlgoLeastConn {
+		minCands := leastConnSet(reg, cands)
+		if len(minCands) == 1 {
+			return minCands[0]
 		}
-		cur := u.rr.current[u.indexOf(n)] + w
-		u.rr.current[u.indexOf(n)] = cur
-		total += w
-		if cur > bestCur {
-			best, bestCur = n, cur
-		}
+		return u.peekRR(minCands)
 	}
-	u.rr.current[u.indexOf(best)] -= total
-	return best
+	return u.peekRR(cands)
 }
 
-// pickLeastConn 最小连接优先：候选中取在途最少者；平局集合回落轮询游标
-// （平滑加权在平局集内推进，保持权重语义与分布稳定性）。
-func (u *UpstreamRT) pickLeastConn(reg NodeRegistry, cands []*NodeRT) *NodeRT {
+// collectCands 指定优先级内的健康候选集。
+func collectCands(u *UpstreamRT, reg NodeRegistry, p Priority) []*NodeRT {
+	cands := make([]*NodeRT, 0, len(u.Nodes))
+	for _, n := range u.Nodes {
+		if n.Priority == p && reg.Health(n.ID) == HealthOK {
+			cands = append(cands, n)
+		}
+	}
+	return cands
+}
+
+// leastConnSet 在候选中取在途最少集合（可能多个平局）。
+func leastConnSet(reg NodeRegistry, cands []*NodeRT) []*NodeRT {
 	minCands := make([]*NodeRT, 0, len(cands))
 	minInflight := int64(-1)
 	for _, n := range cands {
@@ -106,6 +99,59 @@ func (u *UpstreamRT) pickLeastConn(reg NodeRegistry, cands []*NodeRT) *NodeRT {
 			minCands = append(minCands, n)
 		}
 	}
+	return minCands
+}
+
+// pickRR 平滑加权轮询选点（balancer.go rrState 同款算法，作用于新对象图：
+// current 按节点在 UpstreamRT.Nodes 中的下标索引，候选子集共享同一游标——
+// 与旧实现高优/备份子集共享游标的口径一致）。
+func (u *UpstreamRT) pickRR(cands []*NodeRT) *NodeRT {
+	if len(cands) == 1 {
+		return cands[0]
+	}
+	u.rr.mu.Lock()
+	defer u.rr.mu.Unlock()
+	return u.wrrStep(u.rr.current, cands)
+}
+
+// peekRR 平滑加权轮询只读试算：在游标副本上模拟一次 wrrStep，不改共享游标。
+func (u *UpstreamRT) peekRR(cands []*NodeRT) *NodeRT {
+	if len(cands) == 1 {
+		return cands[0]
+	}
+	u.rr.mu.Lock()
+	defer u.rr.mu.Unlock()
+	cur := make([]int, len(u.rr.current))
+	copy(cur, u.rr.current)
+	return u.wrrStep(cur, cands)
+}
+
+// wrrStep 平滑加权轮询单步推进：在 cursor 上按权重加总选最优并回减 total，
+// 返回选中节点。pickRR 传共享游标（真实推进），peekRR 传副本（试算不落盘）。
+func (u *UpstreamRT) wrrStep(cursor []int, cands []*NodeRT) *NodeRT {
+	total := 0
+	best := cands[0]
+	bestCur := 0
+	for _, n := range cands {
+		w := n.Weight
+		if w <= 0 {
+			w = 1
+		}
+		cur := cursor[u.indexOf(n)] + w
+		cursor[u.indexOf(n)] = cur
+		total += w
+		if cur > bestCur {
+			best, bestCur = n, cur
+		}
+	}
+	cursor[u.indexOf(best)] -= total
+	return best
+}
+
+// pickLeastConn 最小连接优先：候选中取在途最少者；平局集合回落轮询游标
+// （平滑加权在平局集内推进，保持权重语义与分布稳定性）。
+func (u *UpstreamRT) pickLeastConn(reg NodeRegistry, cands []*NodeRT) *NodeRT {
+	minCands := leastConnSet(reg, cands)
 	if len(minCands) == 1 {
 		return minCands[0]
 	}

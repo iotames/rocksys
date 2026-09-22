@@ -834,8 +834,9 @@ func (h *AdminHandler) RulesMeta(w http.ResponseWriter, r *http.Request) {
 // ── match-test 命中测试（只读无副作用） ───────────────────────────────
 
 // RulesMatchTest POST {host, path} → 命中结果（规则摘要/均衡器/所选节点或兜底链位置）。
-// 只读实现：匹配走只读快照（Match 本身无副作用）；选点复用 pickHealthy 但**不**经
-// count() 收口——轮询游标不推进、在途计数 +0（对照 Handle 的 AcquireNode 有副作用路径）。
+// 只读实现：匹配走只读快照（Match 本身无副作用）；选点走 pickHealthyRO——不经
+// count() 收口（在途 +0）、轮询游标快照试算不落盘（不推进共享游标，防命中测试
+// 扰动线上分流分布；对照 Handle 的 AcquireNode 有副作用路径）。
 // 所选节点为动态参考值（随健康态/在途/游标变化），不要求与实请求一致。
 func (h *AdminHandler) RulesMatchTest() http.HandlerFunc {
 	return postOnly(h.matchTest)
@@ -879,8 +880,8 @@ func (h *AdminHandler) matchTest(w http.ResponseWriter, r *http.Request) {
 		resp["position"] = "upstream_disabled"
 		resp["message"] = "命中规则，但其引用的均衡器已停用（fail-closed）：实请求将返回 503 中断链"
 	default:
-		// 只读选点：直接调 pickHealthy（不经 count() 收口），游标不推进、在途不计数。
-		n := pickHealthy(u, h.d.reg, PriorityPrimary)
+		// 只读选点：pickHealthyRO（不经 count() 收口、游标快照试算不落盘）。
+		n := pickHealthyRO(u, h.d.reg, PriorityPrimary)
 		if n == nil {
 			n = pickHealthy(u, h.d.reg, PriorityBackup)
 		}

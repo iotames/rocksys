@@ -222,3 +222,26 @@ func TestHealthCenterNoGoroutineLeak(t *testing.T) {
 	}
 	t.Fatalf("goroutine 泄漏：基线 %d，%d 轮重建排空后仍为 %d", base, rounds, runtime.NumGoroutine())
 }
+
+// TestHealthCenterProbeToNoProbeRecovers 探活→免探活转换（hc_path 清空）时，
+// 上一轮探活的 HealthBad 结论必须被显式覆写为健康（免探活节点视为健康显绿），
+// 不得因 Ensure 的 CAS 语义永久冻结在不健康态。
+func TestHealthCenterProbeToNoProbeRecovers(t *testing.T) {
+	badSrv, _ := hcStatusServer(t, 404)
+	reg := NewRegistry()
+	hc := NewHealthCenter(reg)
+	defer hc.Stop()
+
+	// 初始：节点 7 探活 404 → 判死。
+	hc.Rebuild(hcInput(1, []int64{1}, []NodeRow{hcNode(7, badSrv.URL, "/healthz", 30)}, [][2]int64{{1, 7}}))
+	waitFor(t, "节点7 判死", func() bool { return reg.Health(7) == HealthBad })
+
+	// 转换：hc_path 清空 → 免探活，应立即显绿且不再有任务。
+	hc.Rebuild(hcInput(1, []int64{1}, []NodeRow{hcNode(7, badSrv.URL, "", 30)}, [][2]int64{{1, 7}}))
+	if got := hc.taskCount(); got != 0 {
+		t.Fatalf("免探活后任务数应为 0，got %d", got)
+	}
+	if got := reg.Health(7); got != HealthOK {
+		t.Fatalf("探活→免探活转换后应覆写为健康，got %v", got)
+	}
+}

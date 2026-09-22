@@ -72,7 +72,7 @@
 |---|---|---|---|
 | `id` | 主键 | 自增主键 | INTEGER PK AUTOINCREMENT / BIGSERIAL / BIGINT AUTO_INCREMENT PK |
 | `name` | 节点名称 | 人类可读名称，空允许 | TEXT / TEXT / VARCHAR(255) |
-| `url` | 节点地址 | `http(s)://host[:port]`，唯一（软删行除外） | TEXT NOT NULL（三方言统一） |
+| `url` | 节点地址 | `http(s)://host[:port]`，唯一（软删行除外） | TEXT / TEXT / VARCHAR(512)（MySQL TEXT 不能设默认值与索引前缀，按惯例适配） |
 | `hc_interval_ms` | 探活周期 | 毫秒，默认 20000；`hc_path` 为空时不参与探活 | INTEGER NOT NULL DEFAULT 20000 |
 | `hc_timeout_ms` | 探活超时 | 毫秒，默认 5000 | INTEGER NOT NULL DEFAULT 5000 |
 | `hc_path` | 探活路径 | 以 `/` 开头；**空 = 不主动探活，视为健康**（现状语义） | TEXT NOT NULL DEFAULT '' |
@@ -144,7 +144,7 @@
 
 索引：`dispatch_rule (enabled, deleted_at, match_order)`；`dispatch_upstream_node (upstream_id)`、`(node_id)`、唯一 `(upstream_id, node_id)`（软删行除外）；`dispatch_rule_tag (rule_id)`、`(tag_id)`；唯一索引 `dispatch_node (url)`、`dispatch_upstream (name)`、`dispatch_tag (name)`（均软删行除外）。**「软删行除外」三方言实现口径**：MySQL/SQLite 经复合唯一键 `(列, deleted_at)` 借 NULL 不判重实现（活跃行重复由 adminapi 保存查重兜底，与引用完整性应用层校验惯例一致）；PG 经部分唯一索引 `WHERE deleted_at IS NULL`。
 
-SQL 文件组（每表）：`create_table` / `create_index` / `query_list`（分页+筛选）/ `count`（分页总数，`X-Total-Count`）/ `insert_returning_id` / `update` / `soft_delete` / `restore`；规则表另加 `query_active`（快照构建拉启用行）、均衡器/节点/关系表另加 `query_all_active`（Rebuild 全量拉取）；标签表加 `query_all`（下拉全量）；关系表无单行 `update`（整组替换语义）。
+SQL 文件组（每表）：`create_table` / `create_index` / `query_list`（分页+筛选）/ `count`（分页总数，`X-Total-Count`）/ `insert_returning_id` / `update` / `soft_delete` / `restore`；规则表另加 `query_active`（快照构建拉启用行）、均衡器/节点/关系表另加 `query_all_active`（Rebuild 全量拉取）；标签表加 `query_all`（下拉全量）。实施口径豁免：关系表无单行 `update`（整组替换语义）、关系/标签表无 `restore`/`count`/`query_list` 单独脚本（关系表恢复由代码内联可移植 SQL 级联实现；标签不做恢复是上文明确决策）。
 
 **数据关系**：`dispatch_rule.upstream_id → dispatch_upstream`（多对一）；`dispatch_upstream ←→ dispatch_node` 经 `dispatch_upstream_node`（多对多，关系表带属性 weight/priority）；`dispatch_rule ←→ dispatch_tag` 经 `dispatch_rule_tag`（多对多，纯关联无属性）。删除约束：均衡器存在未软删规则引用时拒绝删除（含停用规则，理由见 D11；前端文案三要素提示）；节点存在未软删关系引用时同理；标签删除时同步软删其关系行（标签是纯管理辅助，无运行态影响）。引用完整性由应用层（adminapi）校验，不建数据库外键（项目惯例）。
 
@@ -272,6 +272,14 @@ SQL 文件组（每表）：`create_table` / `create_index` / `query_list`（分
 6. 「明确不做」清单未越界。
 
 **实施期偏差与临时决策**：无 DECISIONS 文件（无超出设计范围的重大决策）。实施层偏差均已按宪法落各 STEP 回填区并随码修复，要点：① registry↔DISPATCH_RULES 联动拆除（设计已列，实施落地）；② 六表注册 buildTableSpecs（表结构检查闭环必需）；③ DBSource 脚本名/占位符缺陷修复；④ 软删行列表不可见致恢复不可达（query_list 增 include_deleted 谓词）；⑤ 匹配性能优化（预分段+归并候选序，IMPL §5 预案，语义保持有反例论证）。
+
+**验收反馈轮回写（2026-09-22，人类验收提出 3 轮意见全部修复并实看/实测验证通过）**：
+1. 弹层拖拽误关（ui.js 统一组件 mousedown+click 双落点判定，全站受益）；弹层统一口径写入 pages.md。
+2. 节点 url 校验收紧为仅基准地址（拒绝路径/查询/锚点，尾斜杠静默归一）。
+3. 通知组件 API 分层重构：底层 toastRaw（error/warning 焊死常驻、忽略 duration）+ 语义层 notify（success/info/warn/error 只收 message），移除 Rock.ui.toast 导出，全站 193 处调用迁移——收敛参数口子，常驻语义不再依赖调用方自觉。
+4. 规则标签链路补全：列表下发 tags、保存去重、编辑态回显/选中即添加/可移除、列表标签列、标签筛选（三方言脚本 tag 参数 + 筛选栏下拉，修复 PG 复用占位符传参个数缺陷）。
+5. 菜单整合：路由分发独立页拍平为「组件 → 分发」详情页管理页签（状态/路由规则/负载均衡器/上游节点/配置，配置统一最后写入 pages.md 规范）；路由数据规模卡迁状态页签（可点击直达）；描述文字整合。
+6. 遗留搁置项：geoip_list 表偶发丢失（用户报告；代码侧取证：全仓运行时代码含地基库均无删表路径与 DROP 语句，暂搁置；复现时建议开 PG DDL 日志取证）。
 
 **已知边界（补充实施期发现，与上文既有边界合并生效）**：
 - 1000 规则档性能达标依赖加载期预分段与归并候选序；规则量继续增大一个量级时线性扫描将重回瓶颈，届时再评估分桶演进。

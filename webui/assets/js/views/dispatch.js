@@ -712,12 +712,25 @@
 
   // ── 删除 / 恢复（三实体共用模式：确认弹层 + 文案三要素）────────────────
 
-  function del(kind, id) {
+  function del(kind, id, row) {
     const titles = {
       rule: ['删除路由规则', '将软删除该规则（可恢复），立即从匹配快照移除（保存即热更）。'],
-      up: ['删除负载均衡器', '将软删除该均衡器（可恢复）；若仍被路由规则引用，服务端将拒绝删除。'],
-      node: ['删除上游节点', '将软删除该节点（可恢复）；若仍被均衡器节点关系引用，服务端将拒绝删除。'],
+      up: ['删除负载均衡器', '将软删除该均衡器（可恢复）。'],
+      node: ['删除上游节点', '将软删除该节点（可恢复）。'],
     };
+    // 删除前展示实时引用计数（行数据随列表下发；当前页无该行时退化为基础文案）
+    let refs = '';
+    if (kind === 'up' && row) {
+      const n = Number(row.rule_refs) || 0;
+      refs = n > 0
+        ? '当前被 ' + n + ' 条路由规则引用，删除将被拒绝；请先解除规则引用。'
+        : '当前无路由规则引用。';
+    } else if (kind === 'node' && row) {
+      const n = Number(row.rel_refs) || 0;
+      refs = n > 0
+        ? '当前被 ' + n + ' 个均衡器节点关系引用，删除将被拒绝；请先在均衡器中移除该节点。'
+        : '当前未被任何均衡器引用。';
+    }
     const urls = {
       rule: BASE + '/rules/delete',
       up: BASE + '/upstreams/delete',
@@ -725,7 +738,7 @@
     };
     confirmDialog({
       title: titles[kind][0],
-      message: titles[kind][1] + '确认？',
+      message: titles[kind][1] + (refs ? ' ' + refs : '') + '确认？',
       confirmText: '删除',
       danger: true,
     }).then(function (ok) {
@@ -1210,14 +1223,20 @@
         const row = lists.upstreams.rows.find(function (r) { return String(r.id) === el.getAttribute('data-id'); });
         if (row) ensureCaches(true).then(function () { openUpstreamForm(row); });
       },
-      'dispatch-up-del': function (el) { del('up', el.getAttribute('data-id')); },
+      'dispatch-up-del': function (el) {
+        const row = lists.upstreams.rows.find(function (r) { return String(r.id) === el.getAttribute('data-id'); });
+        del('up', el.getAttribute('data-id'), row);
+      },
       'dispatch-up-restore': function (el) { restore('up', el.getAttribute('data-id')); },
       'dispatch-node-new': function () { openNodeForm(null); },
       'dispatch-node-edit': function (el) {
         const row = lists.nodes.rows.find(function (r) { return String(r.id) === el.getAttribute('data-id'); });
         if (row) openNodeForm(row);
       },
-      'dispatch-node-del': function (el) { del('node', el.getAttribute('data-id')); },
+      'dispatch-node-del': function (el) {
+        const row = lists.nodes.rows.find(function (r) { return String(r.id) === el.getAttribute('data-id'); });
+        del('node', el.getAttribute('data-id'), row);
+      },
       'dispatch-node-restore': function (el) { restore('node', el.getAttribute('data-id')); },
     },
   };

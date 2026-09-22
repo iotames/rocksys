@@ -186,3 +186,39 @@ func TestSelectUnavailableNoSideEffect(t *testing.T) {
 		}
 	}
 }
+
+// TestPickHealthyReadonlyNoSideEffect 只读选点（match-test 路径）：多次调用
+// 不得推进共享轮询游标、不得产生在途计数。
+func TestPickHealthyReadonlyNoSideEffect(t *testing.T) {
+	u, reg := newTestUpstream(t, AlgoRoundRobin, []int{1, 2}, nil)
+	before := append([]int(nil), u.rr.current...)
+	for i := 0; i < 6; i++ {
+		if n := pickHealthyRO(u, reg, PriorityPrimary); n == nil {
+			t.Fatalf("第 %d 次只读选点失败", i+1)
+		}
+	}
+	if !reflect.DeepEqual(before, u.rr.current) {
+		t.Fatalf("只读选点不得推进游标\n before: %v\n after: %v", before, u.rr.current)
+	}
+	for _, n := range u.Nodes {
+		if got := reg.Inflight(n.ID); got != 0 {
+			t.Fatalf("只读选点不应计数, 节点 %d 在途 %d", n.ID, got)
+		}
+	}
+}
+
+// TestPickHealthyReadonlyLeastConnTie least_conn 平局回落也走只读试算：
+// 屏蔽 +1 反馈后多次调用游标零推进（平局序列恒为首候选，不交替）。
+func TestPickHealthyReadonlyLeastConnTie(t *testing.T) {
+	u, reg := newTestUpstream(t, AlgoLeastConn, []int{1, 1}, nil)
+	before := append([]int(nil), u.rr.current...)
+	for i := 0; i < 4; i++ {
+		n := pickHealthyRO(u, reg, PriorityPrimary)
+		if n == nil || n.ID != 101 {
+			t.Fatalf("零态平局只读试算应恒选首候选 101, got %+v", n)
+		}
+	}
+	if !reflect.DeepEqual(before, u.rr.current) {
+		t.Fatalf("least_conn 平局只读回落不得推进游标\n before: %v\n after: %v", before, u.rr.current)
+	}
+}
