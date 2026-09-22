@@ -269,32 +269,12 @@ func buildServer(args []string) (*Server, error) {
 	mgr := hotswap.NewManager(ch, cfgMgr)
 	mgr.SetScriptHub(scriptHub) // 外挂文件监控循环随管理器生命周期启停（Shutdown 统一停止）
 
-	// 5. 注册挂件（链中间件用 RegisterMiddleware，独立组件用 RegisterComponent；见 §6.1）
-	// 链中间件执行顺序：Head/Middle 槽位按注册顺序；Tail 槽位逆序（§4.4）——
-	// 故 Tail 上 obs 先注册、result 后注册 → result 先改写响应、obs 后记录最终状态。
-	shieldMw, err := shield.New(cfgMgr, scriptHub) // hub 注入：rules/ 子目录注册 + 订阅热更（≤3s 自动重建 WAF 快照）
-	if err != nil {
-		return nil, fmt.Errorf("shield.New: %w", err)
-	}
-	mgr.RegisterMiddleware(shieldMw)             // L1 防护 → chain.Head
-	mgr.RegisterMiddleware(trace.New(&cfgMgr))   // trace 透传 → chain.Head
-	mgr.RegisterMiddleware(auth.New(&cfgMgr))    // JWT 认证 → chain.Head
-	mgr.RegisterMiddleware(dispatch.New(cfgMgr)) // L2 路由 → chain.Middle
-	mgr.RegisterMiddleware(rewrite.New(cfgMgr))  // L2 转发前改写 → chain.Middle
-
-	// Lua 策略执行超时经配置中心注册（默认 100ms，可经 SCRIPT_TIMEOUT 覆盖）。
-	// 装配期生效：script.New 拷贝超时值，热更改值需重启进程才生效。
-	var scriptTimeoutMS int
-	if err := cfgMgr.Register(&scriptTimeoutMS, "SCRIPT_TIMEOUT", "100", "Lua 脚本执行超时(毫秒)", "修改后需重启服务生效"); err != nil {
-		return nil, fmt.Errorf("register SCRIPT_TIMEOUT: %w", err)
-	}
-	mgr.RegisterMiddleware(script.New(time.Duration(scriptTimeoutMS)*time.Millisecond, cfgMgr)) // Lua 策略 → chain.Middle
-
-	// 统一数据访问层（§? 数据访问层）：为可插拔组件（obs/mq 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
+	// 统一数据访问层（§? 数据访问层）：为可插拔组件（obs/mq/dispatch 等）提供 easydb 数据操作 + SQL 脚本逐级加载。
 	// 配置：DB_DRIVER（默认 sqlite，零配置）/ DB_DSN（默认 rocksys.db）。
 	// SQL 脚本外挂覆写目录统一为 HOT_SCRIPTS_DIR/sql（默认 hotscripts/sql，内嵌 sql/ 兜底；不再有独立 SQL_DIR 配置）。
-	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；obs 的默认 db 存储与 mq 等依赖方因此不可用。
+	// 打开失败不阻断底座启动（底座仅反向代理），仅记录警告；obs 的默认 db 存储与 mq/dispatch 等依赖方因此不可用。
 	// ★ 必须先于 obs 创建：obs 复用本数据访问层写 access_log 表；未就绪时 obs 降级丢弃日志并告警。
+	// ★ 必须先于 dispatch 主件装配：dispatch 注入本数据访问层拉路由四表（未就绪时 dispatch 走降级重试）。
 	var dataDB *db.DB
 	var dbDriver, dbDSN string
 	if err := cfgMgr.Register(&dbDriver, "DB_DRIVER", "sqlite", "数据库驱动名（sqlite/mysql/postgres）"); err != nil {
@@ -318,6 +298,36 @@ func buildServer(args []string) (*Server, error) {
 		dataDB = d
 		log.Info("db: 数据访问层已就绪", "driver", dataDB.Driver())
 	}
+
+	// 5. 注册挂件（链中间件用 RegisterMiddleware，独立组件用 RegisterComponent；见 §6.1）
+	// 链中间件执行顺序：Head/Middle 槽位按注册顺序；Tail 槽位逆序（§4.4）——
+	// 故 Tail 上 obs 先注册、result 后注册 → result 先改写响应、obs 后记录最终状态。
+	shieldMw, err := shield.New(cfgMgr, scriptHub) // hub 注入：rules/ 子目录注册 + 订阅热更（≤3s 自动重建 WAF 快照）
+	if err != nil {
+		return nil, fmt.Errorf("shield.New: %w", err)
+	}
+	mgr.RegisterMiddleware(shieldMw)           // L1 防护 → chain.Head
+	mgr.RegisterMiddleware(trace.New(&cfgMgr)) // trace 透传 → chain.Head
+	mgr.RegisterMiddleware(auth.New(&cfgMgr))  // JWT 认证 → chain.Head
+
+	// L2 路由分发：双中间件共用同一 registry 运行态——
+	// 主件（Middle：匹配 + 选点 + 在途 +1 + sticky 种值 + 写 Target）与收尾件
+	// （Tail：转发完成后在途 -1，Start/Stop 为 no-op，生命周期由主件统一驱动）；
+	// DISPATCH_ENABLED 经 autoEnableMap 两名同键联动启停（装配注册顺序固定保证链序确定）。
+	dispatchReg := dispatch.NewRegistry()
+	dispatchMain := dispatch.New(cfgMgr, dispatch.NewDBSource(dataDB), dispatchReg)
+	mgr.RegisterMiddleware(dispatchMain)                     // 主件 → chain.Middle
+	mgr.RegisterMiddleware(dispatch.NewTailFin(dispatchReg)) // 收尾件 → chain.Tail
+
+	mgr.RegisterMiddleware(rewrite.New(cfgMgr)) // L2 转发前改写 → chain.Middle
+
+	// Lua 策略执行超时经配置中心注册（默认 100ms，可经 SCRIPT_TIMEOUT 覆盖）。
+	// 装配期生效：script.New 拷贝超时值，热更改值需重启进程才生效。
+	var scriptTimeoutMS int
+	if err := cfgMgr.Register(&scriptTimeoutMS, "SCRIPT_TIMEOUT", "100", "Lua 脚本执行超时(毫秒)", "修改后需重启服务生效"); err != nil {
+		return nil, fmt.Errorf("register SCRIPT_TIMEOUT: %w", err)
+	}
+	mgr.RegisterMiddleware(script.New(time.Duration(scriptTimeoutMS)*time.Millisecond, cfgMgr)) // Lua 策略 → chain.Middle
 
 	// ── GeoIP 功能总开关（默认开启；关闭后解析/自动同步/统计全部停用）────────
 	// 开关语义内聚在 geoip.Resolver 单点裁决（Enabled/Ready/Lookup），消费方不各自读配置：
@@ -534,7 +544,7 @@ func buildServer(args []string) (*Server, error) {
 			})
 		})
 
-		// 启动缺列检测（TRAFFIC_ANALYSIS D16）：访问/拦截两表缺列只告警不自动迁移
+		// 启动缺列检测：访问/拦截两表缺列只告警不自动迁移
 		// （结构同步始终人工确认），提示管理员经 WebUI 补齐。
 		for table, cols := range missingLogColumns(dataDB, buildTableSpecs(db.TableShieldEvent)) {
 			log.Warn("db: 访问/拦截日志表缺列，统计与落库将受影响",
@@ -658,6 +668,39 @@ func buildServer(args []string) (*Server, error) {
 		}
 	}
 
+	// 路由分发管理端点（仿 shield admin 模式）：规则/均衡器/节点/
+	// 标签四组 CRUD + 命中测试 + 枚举字典 + 全局重载 + 健康快照，共 19 个。
+	// DB 未配置时端点统一 503 降级（handler 内部自检）。
+	dispatchAdmin := dispatch.NewAdminHandler(dispatchMain, dataDB)
+	for _, ep := range []struct {
+		path string
+		h    http.HandlerFunc
+	}{
+		{dispatch.PathDispatchRules, dispatchAdmin.Rules},
+		{dispatch.PathDispatchRulesUpdate, dispatchAdmin.RulesUpdate()},
+		{dispatch.PathDispatchRulesDelete, dispatchAdmin.RulesDelete()},
+		{dispatch.PathDispatchRulesRestore, dispatchAdmin.RulesRestore()},
+		{dispatch.PathDispatchMatchTest, dispatchAdmin.RulesMatchTest()},
+		{dispatch.PathDispatchRulesMeta, dispatchAdmin.RulesMeta},
+		{dispatch.PathDispatchReload, dispatchAdmin.Reload()},
+		{dispatch.PathDispatchUpstreams, dispatchAdmin.Upstreams},
+		{dispatch.PathDispatchUpstreamsUpdate, dispatchAdmin.UpstreamsUpdate()},
+		{dispatch.PathDispatchUpstreamsDelete, dispatchAdmin.UpstreamsDelete()},
+		{dispatch.PathDispatchUpstreamsRestore, dispatchAdmin.UpstreamsRestore()},
+		{dispatch.PathDispatchNodes, dispatchAdmin.Nodes},
+		{dispatch.PathDispatchNodesUpdate, dispatchAdmin.NodesUpdate()},
+		{dispatch.PathDispatchNodesDelete, dispatchAdmin.NodesDelete()},
+		{dispatch.PathDispatchNodesRestore, dispatchAdmin.NodesRestore()},
+		{dispatch.PathDispatchTags, dispatchAdmin.Tags},
+		{dispatch.PathDispatchTagsUpdate, dispatchAdmin.TagsUpdate()},
+		{dispatch.PathDispatchTagsDelete, dispatchAdmin.TagsDelete()},
+		{dispatch.PathDispatchHealth, dispatchAdmin.Health},
+	} {
+		if err := adminSrv.RegisterPlugin(ep.path, ep.h); err != nil {
+			return nil, fmt.Errorf("register dispatch %s: %w", ep.path, err)
+		}
+	}
+
 	// 5b. WebUI 管理控制台静态资源（内嵌单页，根路径 / 打开）。
 	if err := adminSrv.RegisterWebUI(webui.FS); err != nil {
 		return nil, fmt.Errorf("register webui static: %w", err)
@@ -671,15 +714,16 @@ func buildServer(args []string) (*Server, error) {
 	// ★ 独立组件（config/registry/object）无"HTTP 流动/观测"行为、无 ENABLED 概念，不纳入；
 	//   mq 已由 MQ_ENABLED 条件装配控制，维持现状。
 	autoEnableMap := map[string]string{
-		"shield":   "SHIELD_ENABLED",
-		"trace":    "TRACE_ENABLED",
-		"auth":     "AUTH_ENABLED",
-		"dispatch": "DISPATCH_ENABLED",
-		"rewrite":  "REWRITE_ENABLED",
-		"script":   "SCRIPT_ENABLED",
-		"obs":      "OBS_ENABLED",
-		"copy":     "COPY_ENABLED",
-		"result":   "RESULT_ENABLED",
+		"shield":        "SHIELD_ENABLED",
+		"trace":         "TRACE_ENABLED",
+		"auth":          "AUTH_ENABLED",
+		"dispatch":      "DISPATCH_ENABLED", // 主件（Middle）
+		"dispatch-tail": "DISPATCH_ENABLED", // 收尾件（Tail）：与主件同键联动启停
+		"rewrite":       "REWRITE_ENABLED",
+		"script":        "SCRIPT_ENABLED",
+		"obs":           "OBS_ENABLED",
+		"copy":          "COPY_ENABLED",
+		"result":        "RESULT_ENABLED",
 	}
 	mgr.SetAutoEnableMap(autoEnableMap)
 	adminSrv.SetAutoEnableMap(autoEnableMap) // switch on/off 持久化到 .env（重启后按配置恢复）
@@ -705,7 +749,7 @@ func buildServer(args []string) (*Server, error) {
 	// GeoIP 自动同步定时器：服务就绪（功能开启且 mmdb 已加载）才启动（生效前置）；
 	// 手动端点与定时触发收敛 geoSyncAll 唯一入口，同步成功后清流量统计缓存。
 	// 运行期热更关闭（GEOIP_ENABLED=false 或间隔改 0）后每轮就绪复查自动停摆，
-	// 恢复后自动续跑；启动时即禁用的定时器不会创建（动态拉起需重启，见 D6 已知边界）。
+	// 恢复后自动续跑；启动时即禁用的定时器不会创建（动态拉起需重启，已知边界）。
 	var geoSyncStop chan struct{}
 	if dataDB != nil {
 		// 定时同步与手动同步同为任务中心实例（工厂到点生产实例），受分组互斥统一管控：
@@ -782,7 +826,7 @@ func genDefaultEnv(args []string) error {
 	return nil
 }
 
-// missingLogColumns 启动缺列检测（TRAFFIC_ANALYSIS D16）：返回 访问/拦截两表 → 缺失列名列表
+// missingLogColumns 启动缺列检测：返回 访问/拦截两表 → 缺失列名列表
 // （表名取 specs 实值；只看 create 脚本为两表者）。DiffTable 对不存在表返回 A 级缺表项，
 // 本检测只关心缺列（Actual == "列不存在"），缺表交给既有建表流程。
 func missingLogColumns(d *db.DB, specs []db.TableSpec) map[string][]string {
@@ -839,6 +883,13 @@ func buildTableSpecs(shieldEventTable string) []db.TableSpec {
 		{Table: "outbox", CreateScript: "mq_create_table.sql", IndexScript: "mq_create_index.sql"},
 		{Table: db.TableGeoipList, CreateScript: "geoip_list_create_table.sql", IndexScript: "geoip_list_create_index.sql"},
 		{Table: db.TableScheduleList, CreateScript: "schedule_list_create_table.sql"},
+		// 路由分发六表（dispatch 插件，docs/DATA_DICT.md 同源）
+		{Table: "dispatch_rule", CreateScript: "dispatch_rule_create_table.sql", IndexScript: "dispatch_rule_create_index.sql"},
+		{Table: "dispatch_upstream", CreateScript: "dispatch_upstream_create_table.sql", IndexScript: "dispatch_upstream_create_index.sql"},
+		{Table: "dispatch_node", CreateScript: "dispatch_node_create_table.sql", IndexScript: "dispatch_node_create_index.sql"},
+		{Table: "dispatch_upstream_node", CreateScript: "dispatch_upstream_node_create_table.sql", IndexScript: "dispatch_upstream_node_create_index.sql"},
+		{Table: "dispatch_tag", CreateScript: "dispatch_tag_create_table.sql", IndexScript: "dispatch_tag_create_index.sql"},
+		{Table: "dispatch_rule_tag", CreateScript: "dispatch_rule_tag_create_table.sql", IndexScript: "dispatch_rule_tag_create_index.sql"},
 	}
 }
 

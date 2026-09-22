@@ -30,7 +30,7 @@ flowchart LR
 
         subgraph L2["4 L2 · 决策（MIDDLE）"]
             direction LR
-            S4["④ dispatch<br/>Radix Tree 路由 → Target"]
+            S4["④ dispatch<br/>路由规则匹配 → 均衡选点 → Target"]
             S5["⑤ rewrite<br/>改写 URI / Header"]
             S6["⑥ script<br/>Lua 策略 · 可 respond"]
             S4 --> S5
@@ -94,7 +94,7 @@ flowchart LR
 | ① | **shield**（L1 防护） | Head | 顺序执行：IP 黑白名单 → WAF 检测 → 路径/UA 规则 → 令牌桶限流 | 黑名单/规则/WAF 命中或限流超限 → 写 **403/429** 并中断链 | 只读请求（IP/Path/UA/Body 长度） |
 | ② | **trace**（透传） | Head | 读取 DataFlow.TraceID 写入响应头 `X-Trace-Id` | 放行 | **写响应头**（在 WriteHeader 前设置） |
 | ③ | **auth**（JWT 认证） | Head | 校验 `Authorization: Bearer <token>` → 验签（HS256/issuer/过期） | 无 token 或验签失败 → 写 **401** 并中断链 | 通过时 **写入 DataFlow.TenantID** |
-| ④ | **dispatch**（L2 路由） | Middle | Radix Tree 前缀匹配（支持 `:param`/`*`）→ 节点组选择（平滑加权轮询/一致性哈希 + 主动健康检查） | 未命中 → 不写 Target（回退默认 upstream）；命中但无健康节点 → 写 **503** 并中断链 | **写入 DataFlow.Target**；`:param` 捕获写入 DataFlow 并注入请求头 `X-Route-Param-*` |
+| ④ | **dispatch**（L2 路由） | Middle | 数据库路由四表快照：规则按序匹配（域名 × 路径前缀/精确/模式，命中即停）→ 均衡器选点（round_robin 平滑加权轮询 / least_conn 最小连接，sticky Cookie 粘性直路由，健康节点优先、主备两级） | 未命中 → 不写 Target（回退默认 upstream）；命中但均衡器停用或无健康节点 → 写 **503** 并中断链 | **写入 DataFlow.Target**；`:param` 捕获写入 DataFlow 并注入请求头 `X-Route-Param-*` |
 | ⑤ | **rewrite**（改写） | Middle | 前缀命中 → 改写 URI 前缀 + 注入请求头 | 放行 | **改写请求**（`URL.Path`、Header） |
 | ⑥ | **script**（Lua 策略） | Middle | 逐脚本执行（沙箱 VM 池，超时 100ms）；API 可读请求、写 Target、respond | 脚本 `respond` → 写响应并中断链 | 可**改写 Target / 请求 / 响应**（限网关策略，禁止业务语义） |
 | ⑦ | **result**（L3 结果） | Tail（ResponseHook，逆序第一） | JSON 响应 → 可选脱敏（掩码规则）→ 可选 Envelope 封装 → `WriteFinal` 写回 | 改写响应后置 done，后续 hook 与 Adapter 不再写回 | **改写响应体/头**；非 JSON 原样透传 |

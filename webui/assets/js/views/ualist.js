@@ -17,7 +17,7 @@
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
 
   // 子页签 → 规则文件（与后端 ruleFileMetas 同名）
@@ -61,7 +61,7 @@
       state.error = '';
     } catch (e) {
       state.error = e.message || '加载失败';
-      if (e.status !== 0 && e.status !== 503) toast(meta().label + '加载失败：' + state.error + '，可稍后重试或前往「文件编辑」页签查看', 'error');
+      if (e.status !== 0 && e.status !== 503) notify.error(meta().label + '加载失败：' + state.error + '，可稍后重试或前往「文件编辑」页签查看');
     }
     render($('#page-waf'));
   }
@@ -83,7 +83,7 @@
     setInputsDisabled(true);
     try {
       await api.post('/admin/shield/rules/save')({ name: meta().name, content: next });
-      toast(okMsg, 'success');
+      notify.success(okMsg);
       // 乐观更新：ScriptHub 缓存有 ≤3s 热更窗口，先按本次保存内容渲染；
       // 窗口过后（3.5s）再重拉对账（提前拉会读到热更前的旧缓存，把界面打回旧状态）
       state.saving = false;
@@ -95,7 +95,7 @@
     } catch (e) {
       state.saving = false;
       setInputsDisabled(false);
-      toast((state.kind === 'uawhite' ? '保存白名单失败' : '保存黑名单失败') + '：' + (e.message || '未知错误') + '。内容未写入，请稍后重试；仍失败可前往「文件编辑」页签手动编辑', 'error');
+      notify.error((state.kind === 'uawhite' ? '保存白名单失败' : '保存黑名单失败') + '：' + (e.message || '未知错误') + '。内容未写入，请稍后重试；仍失败可前往「文件编辑」页签手动编辑');
     }
   }
 
@@ -121,10 +121,10 @@
     const input = $('#ualist-append-input');
     const val = (input || {}).value || '';
     const pattern = val.trim().toLowerCase();
-    if (!pattern) { toast('请输入要追加的 UA 模式（子串匹配，非空）', 'error'); return; }
-    if (pattern.charAt(0) === '#') { toast('模式不能以 # 开头（会被当作注释而不生效）；注释说明请前往「文件编辑」页签编辑', 'error'); return; }
+    if (!pattern) { notify.error('请输入要追加的 UA 模式（子串匹配，非空）'); return; }
+    if (pattern.charAt(0) === '#') { notify.error('模式不能以 # 开头（会被当作注释而不生效）；注释说明请前往「文件编辑」页签编辑'); return; }
     if (state.patterns.indexOf(pattern) >= 0) {
-      toast('模式已存在，未重复追加：' + pattern, 'warn');
+      notify.warn('模式已存在，未重复追加：' + pattern);
       (input || {}).value = '';
       return;
     }

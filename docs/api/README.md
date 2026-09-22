@@ -90,6 +90,25 @@
 | 48 | GET | `/admin/obs/traffic/summary` | 流量统计指标标量 + 率（概览页流量统计区数据源） | `obs.md` |
 | 49 | GET | `/admin/obs/traffic/series` | 流量统计访问/拦截时间桶趋势（hour/day，缺省自适应） | `obs.md` |
 | 50 | GET | `/admin/obs/traffic/geo` | 流量统计地区分布（access/blocked × country/province 切换，含 geo_ready） | `obs.md` |
+| 58 | GET / POST | `/admin/dispatch/rules` | 路由规则列表（分页+筛选）/ 新增（含标签） | `dispatch.md` |
+| 59 | POST | `/admin/dispatch/rules/update` | 规则整行更新（含启停、标签整组替换） | `dispatch.md` |
+| 60 | POST | `/admin/dispatch/rules/delete` | 软删路由规则（可恢复） | `dispatch.md` |
+| 61 | POST | `/admin/dispatch/rules/restore` | 恢复软删规则（校验均衡器引用未悬空） | `dispatch.md` |
+| 62 | POST | `/admin/dispatch/rules/match-test` | 命中测试（只读无副作用：不动游标不计在途） | `dispatch.md` |
+| 63 | GET | `/admin/dispatch/rules/meta` | 枚举元数据（路径类型/策略/优先级/序号建议/域名规则） | `dispatch.md` |
+| 64 | POST | `/admin/dispatch/reload` | 手动重载路由快照（多实例/外部改库出口） | `dispatch.md` |
+| 65 | GET / POST | `/admin/dispatch/upstreams` | 均衡器列表（含节点关系/被引用数）/ 新增（含关系组） | `dispatch.md` |
+| 66 | POST | `/admin/dispatch/upstreams/update` | 更新均衡器（关系组整组替换） | `dispatch.md` |
+| 67 | POST | `/admin/dispatch/upstreams/delete` | 软删均衡器（有规则引用 409 拒绝） | `dispatch.md` |
+| 68 | POST | `/admin/dispatch/upstreams/restore` | 恢复均衡器（查重 name，关系组随行恢复） | `dispatch.md` |
+| 69 | GET / POST | `/admin/dispatch/nodes` | 上游节点列表（含被引用数）/ 新增（含探活参数） | `dispatch.md` |
+| 70 | POST | `/admin/dispatch/nodes/update` | 更新节点（探活参数即时生效） | `dispatch.md` |
+| 71 | POST | `/admin/dispatch/nodes/delete` | 软删节点（有关系引用 409 拒绝） | `dispatch.md` |
+| 72 | POST | `/admin/dispatch/nodes/restore` | 恢复节点（查重 url） | `dispatch.md` |
+| 73 | GET / POST | `/admin/dispatch/tags` | 规则标签全量列表 / 新建（归一小写、活跃唯一） | `dispatch.md` |
+| 74 | POST | `/admin/dispatch/tags/update` | 标签重命名（一次对所有引用生效） | `dispatch.md` |
+| 75 | POST | `/admin/dispatch/tags/delete` | 删除标签（同步软删关系行；不触发快照重建） | `dispatch.md` |
+| 76 | GET | `/admin/dispatch/health` | 节点实时健康快照 + 在途计数 + 快照就绪状态（读内存） | `dispatch.md` |
 
 > 端点详解按域拆分到本目录各文件。**按端点定位**：上表行号 → 下表文件 → 文件内按原章节号检索：
 
@@ -103,6 +122,7 @@
 | [shield.md](shield.md) | WAF 统计 + 动态黑白名单 + 小黑屋（总览 20-35、43-44、47 行） | 实时窗口口径、黑白名单 CRUD/导入/封禁/从文件同步、Top IP geo |
 | [database.md](database.md) | 表结构同步/SQL 执行/执行历史/空间占用/外部数据源/数据迁移/任务中心（总览 41-45a、55-57 行） | A-F 分级语义、danger 执行语义与审计、DSN 校验、迁移与后台任务 |
 | [obs.md](obs.md) | 流量统计 summary/series/geo/清缓存（总览 48-50 行） | 指标闭合口径、UTC 时间与取整、缓存语义、降级分支 |
+| [dispatch.md](dispatch.md) | 路由分发三层管理：规则/均衡器/节点/标签 CRUD + 命中测试 + 重载 + 健康快照（总览 58-76 行） | 路由四表管理契约、软删恢复、引用保护、match-test 语义、健康三态 |
 
 ### 数据字典定位（§4）
 

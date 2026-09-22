@@ -22,7 +22,7 @@
   const normalizeSwitches = Rock.state.normalizeSwitches;
   const normalizeMetrics = Rock.state.normalizeMetrics;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
 
@@ -90,7 +90,7 @@
     } catch (e) {
       store.overviewFailed = !store.baseLoaded && !store.switchesLoaded;
       if (!opts.silent && e.status !== 0 && !e.obsDisabled) {
-        toast('概览加载失败：' + e.message, 'error');
+        notify.error('概览加载失败：' + e.message);
       }
     }
     // 系统资源信息（运行时长/CPU/内存）：与指标并行拉取；失败行内降级，且非静默加载时
@@ -101,7 +101,7 @@
       function (e) {
         store.system = null;
         if (baseOk && !opts.silent && e.status !== 0) {
-          toast('系统资源信息加载失败：' + e.message + '，可点页内「刷新」重试', 'error');
+          notify.error('系统资源信息加载失败：' + e.message + '，可点页内「刷新」重试');
         }
       }
     );
@@ -125,7 +125,7 @@
         noteUpdated();
       } catch (e) {
         if (e.obsDisabled) { store.metricsError = 'obs'; }
-        else if (!opts.silent && e.status !== 0) { toast('指标加载失败：' + e.message, 'error'); }
+        else if (!opts.silent && e.status !== 0) { notify.error('指标加载失败：' + e.message); }
       }
     }
     ensureSampler(); // 实时区 5s 静默采样（METRICS_WINDOW：让窗口曲线有连续样本）
@@ -296,7 +296,7 @@
 
   // 请求锁提示：任一流量统计接口在途时再触发操作，统一提示等待（防 0.5 秒连点发出多条慢 SQL）
   function busyHint() {
-    toast('请求进行中，请耐心等待当前查询完成后再操作', 'info');
+    notify.info('请求进行中，请耐心等待当前查询完成后再操作');
   }
   // 流量统计任一接口在途（指标卡/趋势图/地理位置；30 秒超时也算在途）
   function trafficBusy() {
@@ -328,7 +328,7 @@
     if (obsOffErr(e)) { trafficOff = true; renderTrafficBody(); return; }
     state.err = e.message || '加载失败';
     if (!opts.silent && e.status !== 0) {
-      toast(label + '加载失败：' + state.err + '，可点「重试」或页内「刷新」重试', 'error');
+      notify.error(label + '加载失败：' + state.err + '，可点「重试」或页内「刷新」重试');
     }
   }
 
@@ -424,7 +424,7 @@
       if (stale()) { staleDone = true; return; }
       geoErr = e.message || '加载失败';
       if (!opts.silent && e.status !== 0 && !obsOffErr(e)) {
-        toast('地理位置分布加载失败：' + geoErr + '，可点「重试」再试', 'error');
+        notify.error('地理位置分布加载失败：' + geoErr + '，可点「重试」再试');
       }
     } finally {
       geoLoading = false;
@@ -443,7 +443,7 @@
     if (geo.geo_enabled === false) return; // 功能未开启：页内已有常驻引导卡，按降级引导态豁免（不弹 toast 防刷屏）
     if (sessionStorage.getItem('rock-geo-warned')) return;
     sessionStorage.setItem('rock-geo-warned', '1');
-    toast('地理位置数据未加载：未找到 mmdb 文件，统计中地区将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效。下载直链见页内引导卡', 'error');
+    notify.error('地理位置数据未加载：未找到 mmdb 文件，统计中地区将显示为「未知」。请下载 GeoLite2 mmdb 放置到 GEOIP_MMDB_DIR 目录（缺省 geoip/）后重启服务生效。下载直链见页内引导卡');
   }
 
   function trafficTilesHTML(sm) {
@@ -799,7 +799,7 @@
       jailErr = null;
       jailFetched = true;
     } catch (e) {
-      if (!opts.silent && e.status !== 0) toast('小黑屋加载失败：' + e.message + '，可稍后重试或检查 DB 配置', 'error');
+      if (!opts.silent && e.status !== 0) notify.error('小黑屋加载失败：' + e.message + '，可稍后重试或检查 DB 配置');
       if (!jailFetched) jailErr = e.message || '加载失败';
     }
     renderJailBody();
@@ -881,7 +881,7 @@
         }).catch(function (e) {
           // 用户主动切换窗口：失败必须提示（保留旧数据不阻断页面；网络不可达由全局横幅承载）
           if (e.status !== 0) {
-            toast('指标加载失败：' + (e.message || '未知错误') + '，可稍后重试或切回上一窗口', 'error');
+            notify.error('指标加载失败：' + (e.message || '未知错误') + '，可稍后重试或切回上一窗口');
           }
         });
       },
@@ -923,15 +923,15 @@
             onRunning: function () {},
             onDone: function (task) {
               const text = (task.progress && task.progress.text) || task.result || '';
-              toast('GeoIP 同步完成：' + text, 'success');
+              notify.success('GeoIP 同步完成：' + text);
               geo = null; geoErr = null;
               loadGeo({ manual: true });
               geoSyncing = false;
               renderGeoCard();
             },
             onFailed: function (task) {
-              toast('GeoIP 同步失败：' + (task.result || '未知错误') +
-                '。同步分趟执行，已完成部分已写入，稍候再次点击即从断点继续', 'error');
+              notify.error('GeoIP 同步失败：' + (task.result || '未知错误') +
+                '。同步分趟执行，已完成部分已写入，稍候再次点击即从断点继续');
               geoSyncing = false;
               renderGeoCard();
             },
@@ -939,7 +939,7 @@
         } catch (e) {
           const hint = (e && e.status === 503) ? '。若提示 mmdb 未加载，请先放置数据文件并重启服务'
             : (e && e.status === 409 ? '。已有长任务进行中，请待其结束或到「数据库 → 表数据」页取消后再试' : '');
-          toast('GeoIP 同步提交失败：' + (e.message || '未知错误') + hint, 'error');
+          notify.error('GeoIP 同步提交失败：' + (e.message || '未知错误') + hint);
           geoSyncing = false;
           renderGeoCard();
         }
@@ -951,14 +951,14 @@
         try {
           const r = await api.post('/admin/obs/traffic/cache_clear', trafficTimeoutMs)();
           if (r && r.ok === false) throw new Error(r.err || '清空失败');
-          toast(r && r.text || '缓存已清空', 'success');
+          notify.success(r && r.text || '缓存已清空');
           smState = { data: null, err: null, loading: false }; // 旧结果作废，强制重拉
           seState = { data: null, bucket: 'hour', err: null, loading: false };
           geo = null; geoErr = null;
           renderTrafficBody();
           loadTraffic({ manual: true, silent: true });
         } catch (e) {
-          toast('清空缓存失败：' + (e.message || '未知错误') + '，可稍后重试', 'error');
+          notify.error('清空缓存失败：' + (e.message || '未知错误') + '，可稍后重试');
           el.disabled = false;
           renderTrafficBody();
         }

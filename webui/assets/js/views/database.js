@@ -17,7 +17,7 @@
   const $ = Rock.util.$;
   const esc = Rock.util.esc;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const codeEditor = Rock.comp.codeEditor;
@@ -271,7 +271,7 @@
       state.loaded = true;
     } catch (e) {
       if (e.status !== 0) {
-        toast('表结构检查失败：' + e.message + '。请确认服务可达后点击「表结构检查」重试', 'error');
+        notify.error('表结构检查失败：' + e.message + '。请确认服务可达后点击「表结构检查」重试');
       }
     }
     render();
@@ -401,7 +401,7 @@
     } catch (e) {
       state.size.failed = true;
       if (force || e.status !== 0) {
-        toast('空间统计查询失败：' + e.message + '。请确认数据连接正常后点「重试」', 'error');
+        notify.error('空间统计查询失败：' + e.message + '。请确认数据连接正常后点「重试」');
       }
     }
     state.size.loading = false;
@@ -426,10 +426,10 @@
         }
       });
       if (!hit) loadSize(true); // 表清单已变化，重拉一次保证一致
-      toast(table + ' 占用空间：数据 ' + fmtBytes(data) + ' + 索引 ' + fmtBytes(idx) + ' = ' + fmtBytes(bytes) +
-        (res && res.cached ? '（服务端缓存）' : ''), 'success');
+      notify.success(table + ' 占用空间：数据 ' + fmtBytes(data) + ' + 索引 ' + fmtBytes(idx) + ' = ' + fmtBytes(bytes) +
+        (res && res.cached ? '（服务端缓存）' : ''));
     } catch (e) {
-      toast('「' + table + '」占用空间计算失败：' + e.message + '。可稍后点「计算」重试', 'error');
+      notify.error('「' + table + '」占用空间计算失败：' + e.message + '。可稍后点「计算」重试');
     }
     state.size.calcTable = '';
     render();
@@ -558,7 +558,7 @@
       state.geo.error = e.message || '同步失败';
       // 503 提示仅在服务端真返回 503（mmdb 未加载）时附带，避免误导
       const hint = (e && e.status === 503) ? '。请放置 GeoLite2 mmdb 数据文件（GEOIP_MMDB_DIR 目录，缺省 geoip/）并重启服务' : '';
-      toast(state.geo.error + hint, 'error');
+      notify.error(state.geo.error + hint);
       render();
     }
   }
@@ -571,12 +571,12 @@
     if (task.status === 'done') {
       const text = (task.progress && task.progress.text) || task.result || '完成';
       g.result = { text: text };
-      toast('GeoIP 数据同步完成（' + fmtTaskCost(task) + '）', 'success');
+      notify.success('GeoIP 数据同步完成（' + fmtTaskCost(task) + '）');
       loadGeoSyncMeta(); // 上次同步时间随本次执行刷新
       loadSize(true);    // 同步不改两表行数但刷新概览无妨
     } else {
       g.error = task.result || '同步失败';
-      toast('GeoIP 数据同步失败：' + g.error + '。同步分趟执行，已完成部分已写入，稍候再次点击即从断点继续', 'error');
+      notify.error('GeoIP 数据同步失败：' + g.error + '。同步分趟执行，已完成部分已写入，稍候再次点击即从断点继续');
     }
     render();
   }
@@ -642,7 +642,7 @@
       if (!state.data.mig.target && d.items.length) state.data.mig.target = d.items[0].code;
     } catch (e) {
       d.failed = true;
-      if (e.status !== 0) toast('数据源列表加载失败：' + e.message + '。请确认服务可达后重试', 'error');
+      if (e.status !== 0) notify.error('数据源列表加载失败：' + e.message + '。请确认服务可达后重试');
     }
     d.loading = false;
     render();
@@ -723,34 +723,34 @@
   async function addDsn() {
     const f = dsnFormValues();
     if (!f.name.trim() || !f.dsn) {
-      toast('连接名与 DSN 均不能为空：请补全后重试', 'warning');
+      notify.warn('连接名与 DSN 均不能为空：请补全后重试');
       return;
     }
     try {
       await api.post('/admin/db/dsn')({ name: f.name, driver: f.driver, dsn: f.dsn });
-      toast('数据源「' + f.name + '」已添加并持久化（重启保留）', 'success');
+      notify.success('数据源「' + f.name + '」已添加并持久化（重启保留）');
       // 添加成功后仅清空名称与 DSN，驱动保留（便于连续添加同类数据源）
       state.data.dsn.form.name = '';
       state.data.dsn.form.dsn = '';
       loadDsn(true);
     } catch (e) {
-      toast('添加数据源失败：' + e.message + '。请核对驱动/连接名/连接串后重试', 'error');
+      notify.error('添加数据源失败：' + e.message + '。请核对驱动/连接名/连接串后重试');
     }
   }
 
   async function testDsn() {
     const f = dsnFormValues();
-    if (!f.dsn) { toast('请先填写连接串 DSN 再测试连通性', 'warning'); return; }
+    if (!f.dsn) { notify.warn('请先填写连接串 DSN 再测试连通性'); return; }
     const d = state.data.dsn;
     d.testing = true; d.testMsg = '';
     render();
     try {
       const r = await api.post('/admin/db/dsn/test')({ driver: f.driver, dsn: f.dsn });
       d.testMsg = '连通成功：' + (r.version || '未知版本');
-      toast('连通测试成功：' + (r.version || ''), 'success');
+      notify.success('连通测试成功：' + (r.version || ''));
     } catch (e) {
       d.testMsg = '连通失败：' + e.message;
-      toast('连通测试失败：' + e.message, 'error');
+      notify.error('连通测试失败：' + e.message);
     }
     d.testing = false;
     render();
@@ -767,10 +767,10 @@
     if (!ok) return;
     try {
       await api.post('/admin/db/dsn/delete')({ code: code });
-      toast('数据源「' + name + '」已删除', 'success');
+      notify.success('数据源「' + name + '」已删除');
       loadDsn(true);
     } catch (e) {
-      toast('删除失败：' + e.message, 'error');
+      notify.error('删除失败：' + e.message);
     }
   }
 
@@ -812,7 +812,7 @@
   async function alignCheck() {
     const a = state.data.align;
     a.code = (document.getElementById('db-align-target') || {}).value || a.code;
-    if (!a.code) { toast('请先在数据源卡添加目标库', 'warning'); return; }
+    if (!a.code) { notify.warn('请先在数据源卡添加目标库'); return; }
     a.checking = true;
     render();
     try {
@@ -820,11 +820,11 @@
       a.items = Array.isArray(r.items) ? r.items : [];
       a.sql = String(r.sql || '');
       a.checked = true;
-      toast(!a.items.length ? '差异检查完成：目标库结构与期望一致，无需对齐'
+      notify.info(!a.items.length ? '差异检查完成：目标库结构与期望一致，无需对齐'
         : (a.sql ? '差异检查完成：发现 ' + a.items.length + ' 处差异，请确认 DDL 后执行对齐'
-                 : '差异检查完成：发现 ' + a.items.length + ' 处差异，均为需人工处理项，请查看差异明细'), 'info');
+                 : '差异检查完成：发现 ' + a.items.length + ' 处差异，均为需人工处理项，请查看差异明细'));
     } catch (e) {
-      toast('差异检查失败：' + e.message + '。请确认目标库连接正常后重试', 'error');
+      notify.error('差异检查失败：' + e.message + '。请确认目标库连接正常后重试');
     }
     a.checking = false;
     render();
@@ -847,19 +847,19 @@
         onRunning: function () {},
         onDone: function () {
           a.applying = false;
-          toast('表结构对齐完成。建议点「检查差异」复核已无差异', 'success');
+          notify.success('表结构对齐完成。建议点「检查差异」复核已无差异');
           alignCheck();
         },
         onFailed: function (task) {
           a.applying = false;
-          toast('表结构对齐失败：' + (task.result || '未知错误') + '。已执行部分生效且不可回滚；可修正后重新检查并对齐剩余差异', 'error');
+          notify.error('表结构对齐失败：' + (task.result || '未知错误') + '。已执行部分生效且不可回滚；可修正后重新检查并对齐剩余差异');
           render();
         },
       });
       return; // applying 由轮询回调复位
     } catch (e) {
       a.applying = false;
-      toast('提交对齐任务失败：' + e.message, 'error');
+      notify.error('提交对齐任务失败：' + e.message);
       render();
     }
   }
@@ -939,12 +939,14 @@
     applyMigrateProgress(task);
     if (task.status === 'done' || task.status === 'cancelled') {
       m.errText = '';
-      toast(task.status === 'done'
-        ? '数据迁移完成（' + fmtTaskCost(task) + '）。可在目标库侧核验数据'
-        : '数据迁移已取消：已写入数据保留，重跑即幂等续接', task.status === 'done' ? 'success' : 'info');
+      if (task.status === 'done') {
+        notify.success('数据迁移完成（' + fmtTaskCost(task) + '）。可在目标库侧核验数据');
+      } else {
+        notify.info('数据迁移已取消：已写入数据保留，重跑即幂等续接');
+      }
     } else {
       m.errText = '存在失败表';
-      toast('数据迁移结束但有失败表：' + (task.result || '') + '。详见进度区各行失败原因', 'error');
+      notify.error('数据迁移结束但有失败表：' + (task.result || '') + '。详见进度区各行失败原因');
     }
     render();
   }
@@ -957,8 +959,8 @@
     m.mode = (document.getElementById('db-mig-mode') || {}).value || 'replace';
     m.batch = Number((document.getElementById('db-mig-batch') || {}).value) || 1000;
     const tables = migrateTables().filter(name => m.selected[name]);
-    if (!tables.length) { toast('请至少勾选一张要迁移的表', 'warning'); return; }
-    if (!m.target) { toast('请先在数据源卡添加目标库', 'warning'); return; }
+    if (!tables.length) { notify.warn('请至少勾选一张要迁移的表'); return; }
+    if (!m.target) { notify.warn('请先在数据源卡添加目标库'); return; }
     const ok = await confirmDialog({
       title: '启动数据迁移',
       message: '将把 <b>' + tables.length + '</b> 张表从 ' + (m.source === 'self' ? '本机运行库' : '所选数据源') +
@@ -984,7 +986,7 @@
     } catch (e) {
       m.running = false;
       // 互斥拒绝（有任务进行中）与参数错误在此统一报出
-      toast('启动迁移失败：' + e.message, 'error');
+      notify.error('启动迁移失败：' + e.message);
       render();
     }
   }
@@ -993,15 +995,15 @@
     const m = state.data.mig;
     if (!m.taskId) return;
     api.post('/admin/tasks/' + encodeURIComponent(m.taskId) + '/cancel')({})
-      .then(function (r) { toast(r.message || '取消请求已送达：当前批次完成后停止', 'info'); })
-      .catch(function (e) { toast('取消失败：' + e.message, 'error'); });
+      .then(function (r) { notify.info(r.message || '取消请求已送达：当前批次完成后停止'); })
+      .catch(function (e) { notify.error('取消失败：' + e.message); });
   }
 
   function cancelMigrateTable(el) {
     const table = el.getAttribute('data-table') || '';
     api.post('/admin/db/migrate/cancel')({ table: table })
-      .then(function (r) { toast(r.message || ('表 ' + table + ' 已移除'), 'info'); render(); })
-      .catch(function (e) { toast('移除失败：' + e.message, 'error'); });
+      .then(function (r) { notify.info(r.message || ('表 ' + table + ' 已移除')); render(); })
+      .catch(function (e) { notify.error('移除失败：' + e.message); });
   }
 
   // ── 执行历史页签：sql_exec_log 审计记录分页展示 ────────────────────────┘
@@ -1024,7 +1026,7 @@
       state.hist.failed = true;
       state.hist.err = e.message || '未知错误';
       if (e.status !== 0) {
-        toast('执行历史查询失败：' + state.hist.err + '。请确认数据连接正常后点「⟳ 刷新」重试', 'error');
+        notify.error('执行历史查询失败：' + state.hist.err + '。请确认数据连接正常后点「⟳ 刷新」重试');
       }
     }
     state.hist.loading = false;
@@ -1077,14 +1079,14 @@
       state.sql = String(res.sql || '');
       state.loaded = true;
       if (!state.items.length) {
-        toast('表结构检查完成：无差异，数据库结构与当前 SQL 源一致', 'success');
+        notify.success('表结构检查完成：无差异，数据库结构与当前 SQL 源一致');
       } else {
         const autoCnt = state.items.filter(i => i.auto).length;
-        toast('表结构检查完成：发现 ' + state.items.length + ' 处差异（可自动处理 ' + autoCnt +
-          ' 处，已生成 SQL 供确认；其余请人工处理）', 'info');
+        notify.info('表结构检查完成：发现 ' + state.items.length + ' 处差异（可自动处理 ' + autoCnt +
+          ' 处，已生成 SQL 供确认；其余请人工处理）');
       }
     } catch (e) {
-      toast('表结构检查失败：' + e.message + '。请确认服务可达后重试', 'error');
+      notify.error('表结构检查失败：' + e.message + '。请确认服务可达后重试');
     }
     state.checking = false;
     render();
@@ -1100,7 +1102,7 @@
   async function execSQL() {
     if (state.executing) return; // 防抖：上一批 DDL 未返回前拒绝重复下发（不可回滚，二次下发是事故）
     const sql = codeEditor.value(EDITOR_ID).trim();
-    if (!sql) { toast('编辑器内容为空：请先执行「表结构检查」生成 SQL，或手工输入要执行的语句', 'warning'); return; }
+    if (!sql) { notify.warn('编辑器内容为空：请先执行「表结构检查」生成 SQL，或手工输入要执行的语句'); return; }
     const n = countStatements(sql);
     const ok = await confirmDialog({
       title: '执行 SQL 确认',
@@ -1131,9 +1133,9 @@
               failed: detail.filter(x => !x.ok).length,
             };
             if (state.exec.failed > 0) {
-              toast('后台 SQL 执行部分失败：' + (task.result || '') + '。详见下方结果', 'error');
+              notify.error('后台 SQL 执行部分失败：' + (task.result || '') + '。详见下方结果');
             } else {
-              toast('后台 SQL 执行完成（' + fmtTaskCost(task) + '）：全部 ' + state.exec.executed + ' 条成功', 'success');
+              notify.success('后台 SQL 执行完成（' + fmtTaskCost(task) + '）：全部 ' + state.exec.executed + ' 条成功');
             }
             state.hist.loaded = false;
             state.size.loaded = false;
@@ -1141,13 +1143,13 @@
           },
           onFailed: function (task) {
             state.executing = false;
-            toast('后台 SQL 执行失败：' + (task.result || '未知错误'), 'error');
+            notify.error('后台 SQL 执行失败：' + (task.result || '未知错误'));
             render();
           },
         });
       } catch (e) {
         state.executing = false;
-        toast('提交后台执行任务失败：' + e.message + '。若提示任务进行中，请稍候再试', 'error');
+        notify.error('提交后台执行任务失败：' + e.message + '。若提示任务进行中，请稍候再试');
         render();
       }
       return;
@@ -1167,13 +1169,13 @@
       };
       if (state.exec.failed > 0) {
         // 失败常驻 toast：发生了什么 + 为什么 + 下一步（后端 message 已含三要素）
-        toast('SQL 执行部分失败：' + (res.message || ('有 ' + state.exec.failed + ' 条语句执行失败，已遇错即停；成功 ' +
-          state.exec.executed + ' 条已生效')) + '。请根据下方结果修正编辑器内容后重发，完成后再次「表结构检查」复核', 'error');
+        notify.error('SQL 执行部分失败：' + (res.message || ('有 ' + state.exec.failed + ' 条语句执行失败，已遇错即停；成功 ' +
+          state.exec.executed + ' 条已生效')) + '。请根据下方结果修正编辑器内容后重发，完成后再次「表结构检查」复核');
       } else {
-        toast('全部 ' + state.exec.executed + ' 条语句执行成功。建议再次点击「表结构检查」复核差异已消除', 'success');
+        notify.success('全部 ' + state.exec.executed + ' 条语句执行成功。建议再次点击「表结构检查」复核差异已消除');
       }
     } catch (e) {
-      toast('SQL 执行请求失败：' + e.message + '。请确认服务可达后重试', 'error');
+      notify.error('SQL 执行请求失败：' + e.message + '。请确认服务可达后重试');
       state.executing = false;
       render();
       return;
@@ -1193,12 +1195,12 @@
 
   // 复制编辑器 SQL 到剪贴板
   async function copySQL() {    const sql = codeEditor.value(EDITOR_ID);
-    if (!sql.trim()) { toast('编辑器内容为空，无可复制内容', 'warning'); return; }
+    if (!sql.trim()) { notify.warn('编辑器内容为空，无可复制内容'); return; }
     try {
       await navigator.clipboard.writeText(sql);
-      toast('已复制 SQL 到剪贴板', 'success');
+      notify.success('已复制 SQL 到剪贴板');
     } catch (e) {
-      toast('复制失败：' + e.message + '。请手动选中编辑器内容复制', 'error');
+      notify.error('复制失败：' + e.message + '。请手动选中编辑器内容复制');
     }
   }
 

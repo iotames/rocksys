@@ -27,7 +27,7 @@
   const truncate = Rock.util.truncate;
   const store = Rock.state.store;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
@@ -125,7 +125,7 @@
     } catch (e) {
       store.wafMetrics = store.wafMetrics || null;
       store.wafMetricsError = e.message || '加载失败';
-      if (!opts.silent && e.status !== 0) toast('拦截统计加载失败：' + e.message, 'error');
+      if (!opts.silent && e.status !== 0) notify.error('拦截统计加载失败：' + e.message);
     }
   }
 
@@ -137,7 +137,7 @@
     } catch (e) {
       writtenTotal = null;
       if (!opts.silent && e.status !== 0 && e.status !== 503) {
-        toast('落库总数查询失败：' + (e.message || '未知错误') + '，瓦片将显示为—', 'error');
+        notify.error('落库总数查询失败：' + (e.message || '未知错误') + '，瓦片将显示为—');
       }
     }
   }
@@ -154,7 +154,7 @@
       Rock.views.topIPs.setData(null);
       store.wafStatsError = e.message || '加载失败';
       // 503 = 防护/DB 未启用，属降级引导态（页内有引导卡片），不弹 toast
-      if (!opts.silent && e.status !== 0 && e.status !== 503) toast('攻击拦截统计加载失败：' + e.message, 'error');
+      if (!opts.silent && e.status !== 0 && e.status !== 503) notify.error('攻击拦截统计加载失败：' + e.message);
     }
   }
 
@@ -179,7 +179,7 @@
       store.wafEvents = [];
       store.wafEventsTotal = 0;
       store.wafEventsError = e.message || '加载失败';
-      if (!opts.silent && e.status !== 0 && e.status !== 503) toast('攻击拦截明细加载失败：' + e.message, 'error');
+      if (!opts.silent && e.status !== 0 && e.status !== 503) notify.error('攻击拦截明细加载失败：' + e.message);
     }
   }
 
@@ -324,7 +324,7 @@
       };
     } catch (e) {
       // 查询失败不阻断封禁（弹窗内提示状态未知），但服务端报错仍须弹统一 error toast
-      if (e.status !== 0) toast('封禁状态查询失败：' + (e.message || '未知错误') + '，弹窗内将按状态未知处理', 'error');
+      if (e.status !== 0) notify.error('封禁状态查询失败：' + (e.message || '未知错误') + '，弹窗内将按状态未知处理');
       return null;
     }
   }
@@ -335,7 +335,7 @@
     const ip = String((row && row.client_ip) || '');
     if (!ip) return;
     if (row && row.in_blacklist) {
-      toast('该 IP 已在黑名单，无需重复封禁。可到「黑白名单」页签查看/管理该条目', 'warn');
+      notify.warn('该 IP 已在黑名单，无需重复封禁。可到「黑白名单」页签查看/管理该条目');
       return;
     }
     const btName = typeName(row && row.block_type);
@@ -388,15 +388,15 @@
         const r = await api.post('/admin/shield/blacklist/ban')({ ip: ip, title: title, block_type: bt, duration: duration });
         overlay.remove();
         if (r && r.to_permanent) {
-          toast('已封禁 ' + ip + '（累计封禁满 5 次，已自动转为永久封禁）', 'success');
+          notify.success('已封禁 ' + ip + '（累计封禁满 5 次，已自动转为永久封禁）');
         } else {
-          toast(duration === 'permanent' ? '已永久封禁 ' + ip : '已封禁 ' + ip + '（24 小时后自动解封）', 'success');
+          notify.success(duration === 'permanent' ? '已永久封禁 ' + ip : '已封禁 ' + ip + '（24 小时后自动解封）');
         }
         queryEvents(); // 刷新明细（重新拉取后 in_blacklist 标记与按钮置灰同步更新）
       } catch (err) {
         // 失败统一走 error toast（常驻不自动消失，后端文案已含三要素）；弹窗保持打开，行内提示同步兜底
         const m = '封禁失败：' + (err.message || '未知错误');
-        toast(m, 'error');
+        notify.error(m);
         errEl.textContent = m;
         errEl.style.display = 'block';
       }
@@ -514,7 +514,7 @@
   async function queryEvents() {
     const state = eventsBar.collect();
     if (qFrom(state) > qTo(state)) {
-      toast('开始时间不能晚于结束时间', 'error');
+      notify.error('开始时间不能晚于结束时间');
       return;
     }
     await loadEvents();
@@ -537,9 +537,9 @@
     if (!ok) return;
     try {
       const r = await api.post('/admin/shield/prune')({});
-      toast('已清理 ' + (fmtInt(Number(r && r.deleted) || 0)) + ' 条拦截明细', 'success');
+      notify.success('已清理 ' + (fmtInt(Number(r && r.deleted) || 0)) + ' 条拦截明细');
     } catch (e) {
-      toast('清理失败：' + e.message, 'error');
+      notify.error('清理失败：' + e.message);
     }
   }
 
@@ -553,9 +553,9 @@
     if (!ok) return;
     try {
       const r = await api.post('/admin/logs/prune')({});
-      toast('已清理 ' + (fmtInt(Number(r && r.deleted) || 0)) + ' 条访问日志', 'success');
+      notify.success('已清理 ' + (fmtInt(Number(r && r.deleted) || 0)) + ' 条访问日志');
     } catch (e) {
-      toast('清理失败：' + e.message, 'error');
+      notify.error('清理失败：' + e.message);
     }
   }
 

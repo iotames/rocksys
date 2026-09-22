@@ -1,6 +1,7 @@
 // Package registry 见 doc.go。本文件实现 RockRegistry：服务注册与发现。
 // 实现 StaticTable/Server/Watcher + hotswap.Component。
-// 与 dispatch 的联动经 conf 配置热更通道完成（写 DISPATCH_RULES），不直接依赖 dispatch。
+// 实例变更经 Watcher 回调广播（与 dispatch 的旧规则配置联动已随路由
+// DSL 移除——dispatch 规则源已迁至数据库路由四表）。
 package registry
 
 import (
@@ -31,8 +32,6 @@ const (
 	DefaultTTL = 30 * time.Second
 	// DefaultAddr 内置注册服务默认监听地址。
 	DefaultAddr = ":9800"
-	// rulesKey 联动 dispatch 的配置项注册名（与 plugins/dispatch 保持一致）。
-	rulesKey = "DISPATCH_RULES"
 )
 
 // Instance 注册表中的一个服务实例。
@@ -150,39 +149,12 @@ func parseInstancesFile(path string) ([]Instance, bool) {
 	return list, true
 }
 
-// buildRules 将实例列表转为 DISPATCH_RULES 格式字符串：<Prefix>=<Upstream>，逗号分隔。
-// 每个服务名保留心跳最新的健康实例；Prefix 约定 /api/<name>/（第 17 章）。
-func buildRules(instances []Instance) string {
-	best := make(map[string]*Instance)
-	for i := range instances {
-		inst := &instances[i]
-		if !inst.Healthy {
-			continue
-		}
-		if cur := best[inst.Name]; cur == nil || inst.LastHeartbeat.After(cur.LastHeartbeat) {
-			best[inst.Name] = inst
-		}
-	}
-	names := make([]string, 0, len(best))
-	for n := range best {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	parts := make([]string, 0, len(names))
-	for _, n := range names {
-		parts = append(parts, "/api/"+n+"/="+best[n].Addr)
-	}
-	return strings.Join(parts, ",")
-}
-
 // Server 内置轻量注册服务（标准库 http，第 17 章）。
 // 提供 POST /register 注册实例、PUT /heartbeat 心跳续约；
 // 心跳超时（默认 30s）未续约自动摘除（后台 goroutine 扫描）。
 type Server struct {
 	addr      string
 	ttl       time.Duration
-	rulesKey  string
-	cfgMgr    conf.Manager // 可空；实例变更时经 conf.Set 联动 dispatch
 	watcher   *Watcher
 	mu        sync.RWMutex
 	instances map[string]*Instance
@@ -198,7 +170,6 @@ func NewServer(addr string) *Server {
 	return &Server{
 		addr:      addr,
 		ttl:       DefaultTTL,
-		rulesKey:  rulesKey,
 		watcher:   NewWatcher(),
 		instances: make(map[string]*Instance),
 	}
@@ -212,23 +183,6 @@ func (s *Server) SetTTL(d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ttl = d
-}
-
-// SetConfMgr 绑定 conf.Manager：实例变更时经 conf.Set(rulesKey) 联动 dispatch（第 17 章）。
-// 可为 nil（纯注册，不联动）。
-func (s *Server) SetConfMgr(m conf.Manager) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cfgMgr = m
-}
-
-// SetRulesKey 设置联动配置项名（默认 DISPATCH_RULES）。
-func (s *Server) SetRulesKey(key string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if key != "" {
-		s.rulesKey = key
-	}
 }
 
 // Watch 注册实例变更回调。
@@ -447,18 +401,11 @@ func (s *Server) Remove(name, addr string) bool {
 	return exists
 }
 
-// publish 发布实例变更：通知 Watcher 回调 + 联动 conf.Manager（写 DISPATCH_RULES）。
+// publish 发布实例变更：通知 Watcher 回调（同步广播实例快照）。
 // 调用方不得持有实例表锁。
 func (s *Server) publish() {
 	list := s.Instances()
 	s.watcher.notify(list)
-	s.mu.RLock()
-	mgr := s.cfgMgr
-	key := s.rulesKey
-	s.mu.RUnlock()
-	if mgr != nil {
-		_ = mgr.Set(key, buildRules(list))
-	}
 }
 
 // decodeNameAddr 解析注册/心跳请求体，返回 name/addr；缺失或非法返回 error。
@@ -494,8 +441,8 @@ func writeAPI(w http.ResponseWriter, code int, msg string, data any) {
 	_ = json.NewEncoder(w).Encode(apiResp{Code: code, Msg: msg, Data: data})
 }
 
-// Registry hotswap 独立组件（第 17 章）。启动内置注册服务，并把最新实例列表
-// 持续写入 conf.DISPATCH_RULES 联动 dispatch。不挂 chain。
+// Registry hotswap 独立组件（第 17 章）。启动内置注册服务与心跳扫描；
+// 实例变更经 Watcher 回调对外广播。不挂 chain。
 type Registry struct {
 	cfgMgr     conf.Manager
 	addr       string
@@ -577,7 +524,6 @@ func (r *Registry) Start(_ any) error {
 	table := NewStaticTable(r.staticPath)
 	srv := NewServer(r.addr)
 	srv.SetTTL(r.ttl)
-	srv.SetConfMgr(r.cfgMgr)
 	for _, inst := range table.Instances() {
 		srv.register(Instance{
 			Name: inst.Name, Addr: inst.Addr,

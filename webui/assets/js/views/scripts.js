@@ -13,7 +13,7 @@
   const esc = Rock.util.esc;
   const fmtDateTime = Rock.util.fmtDateTime;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
   const openModal = Rock.ui.openModal;
   const skeletonHTML = Rock.ui.skeletonHTML;
@@ -55,7 +55,7 @@
     } catch (e) {
       scriptsState.error = e.message;
       scriptsState.loaded = true;
-      if (!opts.silent && e.status !== 0) toast('脚本列表加载失败：' + e.message, 'error');
+      if (!opts.silent && e.status !== 0) notify.error('脚本列表加载失败：' + e.message);
     }
     render();
   }
@@ -140,7 +140,7 @@
   // "语法校验"按钮：对当前编辑区内容执行近似校验
   function checkCurrent() {
     const src = scriptsState.source;
-    if (!src) { toast('脚本内容为空，请先编写', 'warning'); return; }
+    if (!src) { notify.warn('脚本内容为空，请先编写'); return; }
     const errs = Rock.comp.luaEditor.check(src);
     if (errs.length) {
       openModal({
@@ -151,14 +151,14 @@
         footer: '<button class="btn btn-primary" data-modal-act="cancel">知道了</button>',
       });
     } else {
-      toast('语法校验通过（近似）', 'success');
+      notify.success('语法校验通过（近似）');
     }
   }
 
   async function publish() {
-    if (!scriptsState.selected) { toast('请先选择脚本', 'warning'); return; }
+    if (!scriptsState.selected) { notify.warn('请先选择脚本'); return; }
     const src = scriptsState.source.trim();
-    if (!src) { toast('脚本内容不能为空', 'warning'); return; }
+    if (!src) { notify.warn('脚本内容不能为空'); return; }
     const errs = Rock.comp.luaEditor.check(src);
     if (errs.length) {
       const overlay = openModal({
@@ -170,7 +170,7 @@
       });
       return;
     }
-    toast('语法校验通过', 'info', 1500);
+    notify.info('语法校验通过', 1500);
     const ok = await confirmDialog({
       title: '发布脚本',
       message: '确定发布脚本 <code>' + esc(scriptsState.selected) + '</code> 吗？发布后策略立即生效。',
@@ -180,14 +180,14 @@
     try {
       const res = await api.post('/admin/script/publish')({ name: scriptsState.selected, source: src });
       if (res && res.ok === false) {
-        toast('发布失败：' + (res.error || '未知错误'), 'error');
+        notify.error('发布失败：' + (res.error || '未知错误'));
         return;
       }
       const ver = res && res.version != null ? res.version : '?';
-      toast('已发布 v' + ver, 'success');
+      notify.success('已发布 v' + ver);
       load({ silent: true });
     } catch (e) {
-      toast('发布失败：' + e.message, 'error');
+      notify.error('发布失败：' + e.message);
     }
   }
 
@@ -228,10 +228,10 @@
           const res = await api.post('/admin/script/rollback')({ name: sel.name, version: ver });
           if (res && res.ok === false) throw new Error(res.error || '未知错误');
           overlay.remove();
-          toast('已回滚到 v' + ver, 'success');
+          notify.success('已回滚到 v' + ver);
           load({ silent: true });
         } catch (err) {
-          toast('回滚失败：' + err.message, 'error');
+          notify.error('回滚失败：' + err.message);
         }
         return;
       }
@@ -248,10 +248,10 @@
           const res = await api.post('/admin/script/rollback')({ name: sel.name, version: 0 });
           if (res && res.ok === false) throw new Error(res.error || '未知错误');
           overlay.remove();
-          toast('已移除脚本 ' + sel.name, 'success');
+          notify.success('已移除脚本 ' + sel.name);
           load({ silent: true });
         } catch (err) {
-          toast('移除失败：' + err.message, 'error');
+          notify.error('移除失败：' + err.message);
         }
       }
     });
@@ -270,15 +270,15 @@
     input.focus();
     const doCreate = () => {
       const name = input.value.trim();
-      if (!name) { toast('请输入脚本名称', 'warning'); return; }
-      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) { toast('名称仅支持字母、数字、下划线、连字符（≤64 字符）', 'warning'); return; }
-      if (scriptsState.list.some(s => s.name === name)) { toast('已存在同名脚本：' + name, 'warning'); return; }
+      if (!name) { notify.warn('请输入脚本名称'); return; }
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) { notify.warn('名称仅支持字母、数字、下划线、连字符（≤64 字符）'); return; }
+      if (scriptsState.list.some(s => s.name === name)) { notify.warn('已存在同名脚本：' + name); return; }
       scriptsState.list.push({ name: name, current_version: 0, versions: [], local: true });
       scriptsState.selected = name;
       scriptsState.source = '';
       overlay.remove();
       render();
-      toast('已创建脚本 ' + name + '（未发布），编写内容后点击发布', 'info');
+      notify.info('已创建脚本 ' + name + '（未发布），编写内容后点击发布');
     };
     $('#new-script-ok').addEventListener('click', doCreate);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') doCreate(); });

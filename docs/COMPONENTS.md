@@ -129,56 +129,26 @@ SHIELD_WAF_SQL_INJECTION=true SHIELD_WAF_XSS=true rocksys --upstream http://127.
 
 **拦截事件与 GeoIP / 实时窗口**：拦截事件落 `shield_event` 表（装配注入共享 `internal/geoip` 解析器，见 §2.7；geo 经 `geoip_list` 关联 + 未命中回退解析（GEOIP_LIST 方案）；Top IP 统计行为查询时逐行解析）。实时计数内存窗口固定 **1 小时 = 60×1 分钟桶**，`GET /admin/shield/metrics?window=1m|5m|15m|1h` 按所选窗口整桶聚合（缺省 1m）；`GET /admin/shield/total` 返回落库总数（查库口径，受保留期影响）。契约见 `docs/api/shield.md`。
 
-### 3.2 dispatch — L2 路由分发（转发链中间件，Middle）
+### 3.2 dispatch — L2 路由分发（转发链中间件，Middle + Tail 双件）
 
-**作用**：按 URL 规则**选择**目标后端并写入转发信息，实际转发由转发引擎执行；未命中路由规则则进入 `ROCKSYS_UPSTREAM` 默认后端，命中但节点不可用返回 503。
+**作用**：基于数据库路由四表的三层路由体系——**路由规则 → 负载均衡器 → 上游节点**。请求经规则匹配（域名 × 路径，`match_order` 升序命中即停）选定均衡器，再由均衡策略选出健康节点写入转发目标（`ctx.DF.SetTarget`），实际转发由转发引擎执行；未命中规则走 `ROCKSYS_UPSTREAM` 默认后端。
 
-**配置项**：`DISPATCH_ENABLED`（父开关，默认 false）、`DISPATCH_RULES`
+**配置项**：仅 `DISPATCH_ENABLED`（父开关，默认 false；false=不挂载）。路由数据不进配置项，统一存数据库四表（`dispatch_rule` / `dispatch_upstream` / `dispatch_node` / `dispatch_upstream_node`，标签经 `dispatch_tag` / `dispatch_rule_tag` 关联），经管理接口 `/admin/dispatch/*` 或 WebUI「路由分发」页维护，保存后自动重建内存快照热更（免重启）。
 
-```
-格式：<prefix>=<spec>[;<spec>...]，逗号分隔
-  prefix  匹配 pattern（见下）
-  spec    节点组：<node>[;<node>...]；节点 <url>[|w=权重][|p=0高优/1备份]
-          可选尾缀：[@interval@timeout@path]（健康检查）[|alg=roundrobin|chash][|key=$remote_addr|$http_<h>|$cookie_<c>]
-```
+**规则匹配**（域名条件 × 路径条件均满足即命中）：
 
-**匹配 pattern 支持三种**（Radix Tree 前缀树引擎，最长匹配优先）：
+- 域名：留空 = 匹配任意域名；非空 = 精确匹配（保存时归一转小写，匹配时剥端口），不支持通配；
+- 路径三类型：`前缀`（段对齐且命中自身，`/api` 命中 `/api` 与 `/api/x` 不匹配 `/apix`；`/` = 全路径兜底）、`精确`（全等）、`模式`（`:param` 捕获单段注入 `X-Route-Param-*` 请求头 / `*` 通配剩余路径）。
 
-| pattern | 说明 | 示例 |
-|---------|------|------|
-| 纯前缀 | 匹配以该前缀开头的任意路径 | `/api/order/` |
-| 参数 | 匹配单段并捕获 `:param` | `/api/order/:id` |
-| 通配 | 匹配剩余所有路径 | `/api/*` |
-| 兜底 | 根路径匹配所有 | `/` |
+**负载均衡**：`round_robin`（平滑加权轮询，权重取关系表，默认 1）/ `least_conn`（在途最少优先，平局回落轮询游标）。**会话保持（sticky）**：均衡器可开启，网关自种 Cookie（默认名 `rocksys_node`，值为节点 id）实现粘性直路由。**节点优先级**：高优（默认）/ 备份（NGINX backup 同款语义，高优健康集全不健康时才启用）。
 
-**参数捕获**：命中 `:id` 规则时，参数存入 DataFlow（`rocksys:path_params`）并注入请求头 `X-Route-Param-<name>`（透传上游）。
+**健康检查中心**：节点登记探活参数（周期/超时/路径，`hc_path` 空 = 不探活视为健康）后由探活任务中心周期探测（2xx/3xx 判健康），健康状态只在内存 registry（单一事实源，不落库），不健康节点自动摘出选点集并经 `/admin/dispatch/health` 透出。
 
-**负载均衡**：`roundrobin`（默认，平滑加权轮询）/ `chash`（一致性哈希，按 key 稳定选点，会话保持/缓存亲和）。
+**降级语义**：DB 不可用时保持空表快照（全部请求走默认 upstream，无 5xx），后台按固定间隔重试直至首次构建成功即停，无需人工重载；快照整体不可变、热更经原子替换（请求热路径零 DB 查询、零锁）。
 
-**示例**：
+**双中间件**：主件 `dispatch`（Middle 槽，匹配与选点、在途计数 +1）与收尾件 `dispatch-tail`（Tail 槽，请求收口在途计数 -1，两者经 `DISPATCH_ENABLED` 同键联动启停）；least_conn 的在途统计依赖收尾件。已知边界：后继中间件中断链的请求不经过收尾回调，存在低频在途计数偏差（不影响转发）。
 
-```bash
-# 前缀 + 节点组 + 健康检查 + 权重
-DISPATCH_RULES="/api/order/=http://o1:9001;http://o2:9001|w=2@10s@2s@/healthz"
-
-# 参数路由（捕获 id）
-DISPATCH_RULES="/api/order/:id=http://order-svc:9001"
-
-# 通配 + 一致性哈希（按用户头稳定选点）
-DISPATCH_RULES="/api/*=http://api1:9001;http://api2:9001|alg=chash|key=$http_x-user-id"
-
-# 兜底
-DISPATCH_RULES="/=http://default-svc"
-```
-
-**内部子组件**：
-
-| 子组件 | 文件 | 作用 |
-|--------|------|------|
-| Radix Tree 路由引擎 | `router.go` | 前缀树匹配（参数/通配/最长匹配），dispatch 内部实现 |
-| 平滑加权轮询 | `balancer.go` | 默认负载均衡算法 |
-| 一致性哈希 | `chash.go` | 按 key 稳定选点（会话保持） |
-| 主动健康检查 | `healthcheck.go` | 周期探测节点，2xx/3xx 判健康 |
+**管理接口**：19 端点（`/admin/dispatch/*`：规则 CRUD + 命中测试 + 枚举元数据、均衡器 CRUD（引用保护 409）、节点 CRUD（引用保护 409）、标签管理、手动重载快照、健康快照），契约见 `docs/api/dispatch.md`。
 
 ### 3.3 rewrite — 转发前改写（转发链中间件，Middle）
 

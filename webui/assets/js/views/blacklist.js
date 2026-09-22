@@ -16,7 +16,7 @@
   const esc = Rock.util.esc;
   const fmtInt = Rock.util.fmtInt;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
   const BLOCK_TYPES = Rock.state.BLOCK_TYPES;
   const typeName = Rock.state.blockTypeName;
@@ -143,7 +143,7 @@
     } catch (e) {
       // 503 = DB 未配置，属降级引导态（页内有引导文案），不弹 toast；其余失败统一弹 error toast
       ipListState.error = e.status === 503 ? '黑白名单未启用（DB 未配置）' : (e.message || '加载失败');
-      if (e.status !== 0 && e.status !== 503) toast('黑白名单加载失败：' + (e.message || '加载失败') + '，可稍后重试', 'error');
+      if (e.status !== 0 && e.status !== 503) notify.error('黑白名单加载失败：' + (e.message || '加载失败') + '，可稍后重试');
     }
     render($('#page-waf'));
   }
@@ -254,9 +254,9 @@
   async function add() {
     const ipEl = $('#iplist-add-ip');
     const ip = (ipEl || {}).value || '';
-    if (!ip) { toast('ip 必填（精确 IP 或 CIDR）', 'error'); markInvalid(ipEl); return; }
+    if (!ip) { notify.error('ip 必填（精确 IP 或 CIDR）'); markInvalid(ipEl); return; }
     if (!Rock.util.validIPOrCIDR(ip.trim())) {
-      toast('IP/CIDR 格式非法：' + ip.trim(), 'error');
+      notify.error('IP/CIDR 格式非法：' + ip.trim());
       markInvalid(ipEl);
       return;
     }
@@ -269,17 +269,17 @@
       const exp = ($('#iplist-add-expires') || {}).value || '';
       if (exp) {
         const d = new Date(exp);
-        if (isNaN(d.getTime())) { toast('过期时间非法', 'error'); markInvalid($('#iplist-add-expires')); return; }
+        if (isNaN(d.getTime())) { notify.error('过期时间非法'); markInvalid($('#iplist-add-expires')); return; }
         body.expires_at = d.toISOString();
       }
     }
     try {
       await api.post(ipListBase())(body);
-      toast('已新增 ' + ip.trim(), 'success');
+      notify.success('已新增 ' + ip.trim());
       ipTable.go(1); // 回第 1 页
       await loadIPList();
     } catch (e) {
-      toast('新增失败：' + e.message, 'error');
+      notify.error('新增失败：' + e.message);
     }
   }
 
@@ -293,27 +293,27 @@
     if (!ok) return;
     try {
       await api.post(ipListBase() + '/delete')({ id: Number(id) });
-      toast('已删除', 'success');
+      notify.success('已删除');
       await loadIPList();
     } catch (e) {
-      toast('删除失败：' + e.message, 'error');
+      notify.error('删除失败：' + e.message);
     }
   }
 
   async function restore(id) {
     try {
       await api.post(ipListBase() + '/restore')({ id: Number(id) });
-      toast('已恢复', 'success');
+      notify.success('已恢复');
       await loadIPList();
     } catch (e) {
-      toast('恢复失败：' + e.message, 'error');
+      notify.error('恢复失败：' + e.message);
     }
   }
 
   async function importRows() {
     const textEl = $('#iplist-import-text');
     const text = (textEl || {}).value || '';
-    if (!text.trim()) { toast('导入内容为空', 'error'); return; }
+    if (!text.trim()) { notify.error('导入内容为空'); return; }
     // 逐行前端校验（# 开头注释与空行忽略）：存在非法行直接整体拦截，避免半成功
     const bad = [];
     text.split('\n').forEach(function (line) {
@@ -322,7 +322,7 @@
       if (!Rock.util.validIPOrCIDR(t)) bad.push(t);
     });
     if (bad.length) {
-      toast('存在 ' + bad.length + ' 行非法 IP/CIDR（如：' + bad.slice(0, 2).join('、') + '），请修正后再导入', 'error');
+      notify.error('存在 ' + bad.length + ' 行非法 IP/CIDR（如：' + bad.slice(0, 2).join('、') + '），请修正后再导入');
       markInvalid(textEl);
       return;
     }
@@ -332,12 +332,12 @@
     const q = isBlack() ? ('?block_type=' + bt) : '';
     try {
       const r = await api.post(ipListBase() + '/import' + q)(text);
-      toast('已导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条', 'success');
+      notify.success('已导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条');
       ($('#iplist-import-text') || {}).value = '';
       ipTable.go(1); // 回第 1 页
       await loadIPList();
     } catch (e) {
-      toast('导入失败：' + e.message, 'error');
+      notify.error('导入失败：' + e.message);
     }
   }
 
@@ -345,12 +345,12 @@
   async function syncFile() {
     try {
       const r = await api.post('/admin/shield/blacklist/sync_file')('');
-      toast('已从文件同步导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条', 'success');
+      notify.success('已从文件同步导入 ' + fmtInt(Number(r && r.imported) || 0) + ' 条，跳过 ' + fmtInt(Number(r && r.skipped) || 0) + ' 条');
       ipTable.go(1); // 回第 1 页
       await loadIPList();
     } catch (e) {
       // 异常常驻提示（文案三要素）：说清发生了什么 + 为什么 + 下一步怎么办
-      toast('从文件同步失败：' + (e.message || '未知错误') + '。请确认外挂文件 rules/ip_blacklist.txt 存在且内容为合法 IP/CIDR（# 注释与空行忽略），修正后重试', 'error');
+      notify.error('从文件同步失败：' + (e.message || '未知错误') + '。请确认外挂文件 rules/ip_blacklist.txt 存在且内容为合法 IP/CIDR（# 注释与空行忽略），修正后重试');
     }
   }
 
@@ -412,17 +412,17 @@
         const exp = (overlay.querySelector('#iplist-edit-expires') || {}).value || '';
         if (exp) {
           const d = new Date(exp);
-          if (isNaN(d.getTime())) { toast('过期时间非法，请重新选择', 'error'); return; }
+          if (isNaN(d.getTime())) { notify.error('过期时间非法，请重新选择'); return; }
           bodyReq.expires_at = d.toISOString();
         }
       }
       try {
         await api.post(ipListBase() + '/update')(bodyReq);
-        toast('已更新 ' + row.ip, 'success');
+        notify.success('已更新 ' + row.ip);
         overlay.remove();
         await loadIPList();
       } catch (err) {
-        toast('更新失败：' + (err.message || '未知错误') + '。请修正后重试，或刷新页面查看条目当前状态', 'error');
+        notify.error('更新失败：' + (err.message || '未知错误') + '。请修正后重试，或刷新页面查看条目当前状态');
       }
     });
   }

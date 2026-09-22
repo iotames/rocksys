@@ -8,8 +8,7 @@
 //   - Watcher：实例变更通知回调 func(instances []Instance)。
 //   - Registry：实现 hotswap.Component（独立组件，不挂 chain）。
 //
-// 与 dispatch 的联动（第 17 章）：registry 不直接依赖 dispatch。实例变更时把最新实例列表
-// 转为 DISPATCH_RULES 格式字符串（<Prefix>=<Upstream>，Prefix 约定 /api/<name>/），
-// 经 conf.Manager.Set("DISPATCH_RULES", ...) 写入配置通道，dispatch 通过
-// conf.Manager.Watch 订阅后走流程 C 重建 RouteTable，实现配置热更通道解耦。
+// 历史：曾把实例列表转为路由规则配置项联动旧 dispatch DSL；该联动已随
+// 路由 DSL 整体移除（dispatch 规则源迁至数据库路由四表，见
+// docs/plan/route_dispatch/STEP5_assembly_hotswap.md），registry 服务发现本体保留。
 package registry

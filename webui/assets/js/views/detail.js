@@ -1,14 +1,18 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/detail.js 组件/服务详情页（通用模板）
- * 一个组件/服务一个页面，统一「状态 / 配置」双页签：
+ * 一个组件/服务一个页面，统一「状态 / 配置」双页签；页签排序规范：配置一律最后。
+ * dispatch 组件额外有「路由规则 / 负载均衡器 / 上游节点」三个管理页签
+ * （路由分发视图经 Rock.views.dispatch.mountTab 按页签懒挂载）：
  *   - 状态页签（默认）：大卡片 = 左上 switch 直接启停 + 中文名/英文名 + 环节标签
- *     + 状态 + 描述 + 运行信息 + 数据流位置示意
+ *     + 状态 + 描述 + 运行信息 + 数据流位置示意；dispatch 组件额外挂路由数据
+ *     规模卡（Rock.views.dispatch.mountScaleCard，计数可点击直达对应管理页签）
+ *   - 管理页签（仅 dispatch）：规则/均衡器/节点各自独立页签，?tab= URL 直达
  *   - 配置页签：该组件/服务独有配置项（复用 Rock.views.configEditor），
  *     顶部局部搜索（Rock.comp.cfgSearch，风格同全局配置页，仅搜本组件配置项，
  *     定位后滚动高亮并自动进入行内编辑）；无配置项显示空态引导；
  *     script 组件附"去脚本页发布策略"链接
  * 启停经二次确认后调用 /admin/switch/on|off，失败透出 error 原文。
- * 页签状态与 URL 联动（#/components/<name>?tab=config，刷新不丢）。
+ * 页签状态与 URL 联动（#/components/<name>?tab=<页签>，刷新不丢）。
  * 挂载到全局命名空间 window.Rock.views.detail。
  * ========================================================================== */
 (function () {
@@ -24,7 +28,7 @@
   const COMPONENT_PREFIX = Rock.state.COMPONENT_PREFIX;
   const normalizeSwitches = Rock.state.normalizeSwitches;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
   const skeletonHTML = Rock.ui.skeletonHTML;
   const noteUpdated = Rock.ui.noteUpdated;
@@ -46,7 +50,7 @@
       }
     } catch (e) {
       store.componentsFailed = !store.switchesLoaded;
-      if (!opts.silent && e.status !== 0) toast('组件数据加载失败：' + e.message, 'error');
+      if (!opts.silent && e.status !== 0) notify.error('组件数据加载失败：' + e.message);
     }
     render(opts);
   }
@@ -141,6 +145,20 @@
     return store.configList.filter(c => c.key.indexOf(prefix) === 0).length;
   }
 
+  // dispatch 组件详情页描述（原组件描述与路由分发页说明合并润色；三个管理页签内不重复）
+  const DISPATCH_DESC = '按 URL 规则从「路由规则 → 负载均衡器 → 上游节点」三层体系中选出目标后端并写入转发信息：规则按序号升序逐条匹配（域名维度可选参与），命中即停，全未命中走默认后端。路由数据在本页对应页签维护，保存即热更；关闭组件即降级，请求直通下一环，转发不中断。';
+
+  function headDesc(name, meta) {
+    return name === 'dispatch' ? DISPATCH_DESC : (meta.desc || '');
+  }
+
+  // dispatch 组件管理页签集合（rules/upstreams/nodes → 路由分发视图对应管理视图）
+  const DISPATCH_TABS = [
+    { name: 'rules', label: '路由规则' },
+    { name: 'upstreams', label: '负载均衡器' },
+    { name: 'nodes', label: '上游节点' },
+  ];
+
   // 渲染入口
   function render(opts) {
     opts = opts || {};
@@ -171,7 +189,7 @@
           : '未找到该组件。' }) + '</div>';
       return;
     }
-    const tab = opts.tab === 'config' ? 'config' : 'state';
+    const tab = resolveTab(opts);
     const cnt = configCount(opts.name);
     const isService = opts.type === 'service';
     const st = Rock.comp.componentState.stateMeta(s.state);
@@ -185,28 +203,57 @@
       '</span>' +
       '<span class="tag tag-blue">' + esc(slotLabel) + '</span>' +
       '</span>';
+    // 页签集合：全部组件有「状态/配置」；页签排序规范——配置一律最后。
+    // dispatch 组件在状态与配置之间插入三个管理页签（原「路由管理」内层三视图拍平）
+    let tabs = [{ name: 'state', label: '状态' }];
+    if (opts.name === 'dispatch') tabs = tabs.concat(DISPATCH_TABS);
+    tabs.push({ name: 'config', label: '配置', count: cnt || 0 });
+    const isDispatch = opts.name === 'dispatch';
     host.innerHTML =
       breadcrumbHTML(opts) +
       Rock.comp.head.headHTML({
         titleHTML: barHTML,
-        desc: esc(meta.desc || ''),
+        desc: esc(headDesc(opts.name, meta)),
         actions: '<button class="btn btn-sm" data-act="detail-reload">⟳ 刷新</button>',
       }) +
       Rock.comp.tabs.tabsHTML(
-        [{ name: 'state', label: '状态' }, { name: 'config', label: '配置', count: cnt || 0 }],
+        tabs,
         tab,
         { act: 'detail-tab', nameAttr: 'data-tab' }
       ) +
-      '<div id="detail-panel-state"' + (tab === 'state' ? '' : ' hidden') + '>' + stateCardHTML(s, opts) + '</div>' +
+      '<div id="detail-panel-state"' + (tab === 'state' ? '' : ' hidden') + '>' + stateCardHTML(s, opts) +
+      (isDispatch ? '<div id="detail-dispatch-scale"></div>' : '') + '</div>' +
+      (isDispatch
+        ? '<div id="detail-panel-rules"' + (tab === 'rules' ? '' : ' hidden') + '></div>' +
+          '<div id="detail-panel-upstreams"' + (tab === 'upstreams' ? '' : ' hidden') + '></div>' +
+          '<div id="detail-panel-nodes"' + (tab === 'nodes' ? '' : ' hidden') + '></div>'
+        : '') +
       '<div id="detail-panel-config"' + (tab === 'config' ? '' : ' hidden') + '></div>';
     // 容器内查询（components/services 两个 page 容器都有同名 panel，避免渲染错位）
     if (tab === 'config') renderConfigPanel(host.querySelector('#detail-panel-config'), opts.name, opts.type);
+    // 状态页签：dispatch 组件额外挂路由数据规模卡（计数可点击直达对应管理页签）
+    if (isDispatch && Rock.views.dispatch && tab === 'state') {
+      Rock.views.dispatch.mountScaleCard(host.querySelector('#detail-dispatch-scale'));
+    }
+    // 管理页签：懒挂载路由分发对应管理视图（首次切入才拉数据；URL 直达 ?tab=rules 等同样生效）
+    if (isDispatch && Rock.views.dispatch && (tab === 'rules' || tab === 'upstreams' || tab === 'nodes')) {
+      Rock.views.dispatch.mountTab(host.querySelector('#detail-panel-' + tab), tab);
+    }
+  }
+
+  // 页签解析：state 缺省；config 通用；dispatch 组件另有 rules / upstreams / nodes
+  // 三个管理页签，均经 ?tab= 指定（非法值回落 state）
+  function resolveTab(opts) {
+    if (opts.tab === 'config') return 'config';
+    if (opts.name === 'dispatch' &&
+        (opts.tab === 'rules' || opts.tab === 'upstreams' || opts.tab === 'nodes')) return opts.tab;
+    return 'state';
   }
 
   // 切换页签（同步 URL hash，刷新不丢）
   function setTab(opts, tab) {
     const base = '#/' + (opts.type === 'service' ? 'services' : 'components') + '/' + opts.name;
-    location.hash = tab === 'config' ? base + '?tab=config' : base;
+    location.hash = tab === 'state' ? base : base + '?tab=' + tab;
   }
 
   // 启停组件/服务（二次确认 → 请求 → Toast → 刷新）
@@ -229,14 +276,14 @@
     try {
       const res = await api.post('/admin/switch/' + (enabling ? 'on' : 'off'))({ name: name });
       if (res && res.ok === false) {
-        toast((enabling ? '开启失败：' : '关闭失败：') + (res.error || '未知错误'), 'error');
+        notify.error((enabling ? '开启失败：' : '关闭失败：') + (res.error || '未知错误'));
         return false;
       }
-      toast((enabling ? '已启用 ' : '已关闭 ') + meta.title + '（已即时生效，无需重启）', 'success');
+      notify.success((enabling ? '已启用 ' : '已关闭 ') + meta.title + '（已即时生效，无需重启）');
       load({ type: opts.type, name: name, tab: opts.tab, silent: true, force: true });
       return true;
     } catch (e) {
-      toast((enabling ? '开启失败：' : '关闭失败：') + e.message, 'error');
+      notify.error((enabling ? '开启失败：' : '关闭失败：') + e.message);
       return false;
     }
   }

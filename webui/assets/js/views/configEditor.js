@@ -3,7 +3,7 @@
  * 渲染配置行（掩码 / 枚举 / 需重启 / 编辑态），行内编辑保存 / 恢复默认 /
  * 掩码切换，并注册容器供全局刷新（配置页 + 组件页展开配置区共用同一状态）。
  * 业务模块定性（持有 API 请求与业务 store），非基础组件：依赖 Rock.api /
- * Rock.ui.toast / Rock.ui.confirmDialog / Rock.state /
+ * Rock.ui.notify / Rock.ui.confirmDialog / Rock.state /
  * Rock.comp.select / Rock.util.esc。挂载到全局命名空间 window.Rock.views.configEditor。
  * ========================================================================== */
 (function () {
@@ -16,7 +16,7 @@
   const store = Rock.state.store;
   const normalizeConfigList = Rock.state.normalizeConfigList;
   const api = Rock.api;
-  const toast = Rock.ui.toast;
+  const notify = Rock.ui.notify;
   const confirmDialog = Rock.ui.confirmDialog;
 
   // 配置编辑/掩码/容器注册（组件页展开配置区与配置页共用同一状态）
@@ -233,7 +233,7 @@
     // 前端校验：类型不符 / 格式非法直接拦截，不打后端
     const err = validateValue(key, val);
     if (err) {
-      toast('保存失败：' + err, 'error');
+      notify.error('保存失败：' + err);
       if (inp && inp.classList) {
         inp.classList.add('is-invalid');
         inp.addEventListener('input', function onInput() { inp.classList.remove('is-invalid'); inp.removeEventListener('input', onInput); });
@@ -243,13 +243,13 @@
     try {
       const res = await api.put('/admin/config')({ [key]: val });
       if (res && res.ok === false) {
-        toast('保存失败：' + (res.error || '未知错误'), 'error');
+        notify.error('保存失败：' + (res.error || '未知错误'));
         return;
       }
       updateConfigCurrent(key, val);
       configEditing.key = null;
       configEditing.value = '';
-      toast('⚡ 已即时生效，无需重启', 'success');
+      notify.success('⚡ 已即时生效，无需重启');
       refresh();
       // 若修改的是底座配置，同步刷新概览信息
       if (key.indexOf('ROCKSYS_') === 0) {
@@ -258,7 +258,7 @@
         }).catch(() => {});
       }
     } catch (e) {
-      toast('保存失败：' + e.message, 'error');
+      notify.error('保存失败：' + e.message);
     }
   }
 
@@ -276,10 +276,10 @@
       const res = await api.put('/admin/config')({ [key]: it.defval });
       if (res && res.ok === false) throw new Error(res.error || '未知错误');
       updateConfigCurrent(key, it.defval);
-      toast('⚡ 已恢复默认值并即时生效', 'success');
+      notify.success('⚡ 已恢复默认值并即时生效');
       refresh();
     } catch (e) {
-      toast('恢复失败：' + e.message, 'error');
+      notify.error('恢复失败：' + e.message);
     }
   }
 
