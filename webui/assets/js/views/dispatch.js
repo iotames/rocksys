@@ -673,11 +673,11 @@
     const hostEl = host && host.querySelector('#dispatch-test-host');
     const pathEl = host && host.querySelector('#dispatch-test-path');
     const out = host && host.querySelector('#dispatch-test-result');
-    const host = ((hostEl || {}).value || '').trim();
+    const hostVal = ((hostEl || {}).value || '').trim();
     const path = ((pathEl || {}).value || '').trim() || '/';
     if (out) out.innerHTML = '<span class="muted">测试中…</span>';
     try {
-      const r = await api.post(BASE + '/rules/match-test')({ host: host, path: path });
+      const r = await api.post(BASE + '/rules/match-test')({ host: hostVal, path: path });
       if (!out) return;
       out.innerHTML = testResultHTML(r);
     } catch (e) {

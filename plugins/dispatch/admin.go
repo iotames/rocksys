@@ -883,7 +883,7 @@ func (h *AdminHandler) matchTest(w http.ResponseWriter, r *http.Request) {
 		// 只读选点：pickHealthyRO（不经 count() 收口、游标快照试算不落盘）。
 		n := pickHealthyRO(u, h.d.reg, PriorityPrimary)
 		if n == nil {
-			n = pickHealthy(u, h.d.reg, PriorityBackup)
+			n = pickHealthyRO(u, h.d.reg, PriorityBackup)
 		}
 		if n == nil {
 			resp["position"] = "no_healthy_node"

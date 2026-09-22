@@ -550,6 +550,51 @@ func TestAdminMatchTestReadOnly(t *testing.T) {
 	}
 }
 
+// TestAdminMatchTestBackupFallbackReadOnly 备份回落路径同样只读：高优全不健康时
+// 回落备份集选点不得推进共享轮询游标（与 pickHealthyRO 注释声明的约束一致）。
+func TestAdminMatchTestBackupFallbackReadOnly(t *testing.T) {
+	d, h := newAdminFixture(t)
+	n1 := addNodeViaAdmin(t, h, "n1", "http://10.0.0.1:9001")
+	n2 := addNodeViaAdmin(t, h, "n2", "http://10.0.0.2:9001")
+	n3 := addNodeViaAdmin(t, h, "n3", "http://10.0.0.3:9001")
+	// 高优 n1 + 备份 n2/n3（关系经端点直建以携带 priority）。
+	rels := `{"node_id":` + i64s(n1) + `,"weight":1,"priority":0},` +
+		`{"node_id":` + i64s(n2) + `,"weight":1,"priority":1},` +
+		`{"node_id":` + i64s(n3) + `,"weight":1,"priority":1}`
+	rec := adminDo(t, h.Upstreams, http.MethodPost, "/admin/dispatch/upstreams",
+		`{"name":"up-backup","algo":1,"nodes":[`+rels+`]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("新增均衡器: %d %s", rec.Code, rec.Body.String())
+	}
+	upID := int64(adminJSON(t, rec)["id"].(float64))
+	rec = adminDo(t, h.Rules, http.MethodPost, "/admin/dispatch/rules",
+		`{"match_order":10,"domain":"a.com","path_type":1,"path_value":"/api","upstream_id":`+i64s(upID)+`}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("新增规则: %d %s", rec.Code, rec.Body.String())
+	}
+	d.reg.SetHealth(n1, HealthBad)
+
+	nodeURL := func() string {
+		rec = adminDo(t, h.RulesMatchTest(), http.MethodPost, "/admin/dispatch/rules/match-test",
+			`{"host":"a.com","path":"/api/x"}`)
+		m := adminJSON(t, rec)
+		if m["hit"] != true || m["position"] != "node" {
+			t.Fatalf("备份回落判定错误: %v", m)
+		}
+		return m["node"].(map[string]any)["url"].(string)
+	}
+	// 备份集两候选起点恒定：若游标被推进，序列将在 n2/n3 间交替。
+	got := []string{nodeURL(), nodeURL(), nodeURL(), nodeURL()}
+	for i := range got {
+		if got[i] != got[0] {
+			t.Errorf("match-test 备份回落序列[%d]=%s, want 恒 %s（游标被推进）", i, got[i], got[0])
+		}
+	}
+	if infl := d.reg.Inflight(n1) + d.reg.Inflight(n2) + d.reg.Inflight(n3); infl != 0 {
+		t.Errorf("match-test 备份回落不应计在途，got %d", infl)
+	}
+}
+
 // TestAdminTags 标签端点：新建（归一小写）/ 重名 409 / 重命名 / 删除同步软删关系行 /
 // 标签写端点不触发 Rebuild。
 func TestAdminTags(t *testing.T) {
