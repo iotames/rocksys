@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sort"
 	"strings"
 	"time"
 
@@ -431,6 +432,22 @@ func (h *AdminHandler) listRules(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		normalizeRow(row, []string{"id", "match_order", "path_type", "upstream_id", "enabled"})
 	}
+	// 附每行标签（按名升序；软删规则行同样附其关系，供恢复/编辑展示）。
+	tagNames, err := h.tagNamesByID()
+	if err != nil {
+		log.Error("dispatch: 标签映射查询失败", "err", err.Error())
+		writeJSONErr(w, http.StatusInternalServerError, "路由规则标签查询失败（数据库异常），请稍后重试")
+		return
+	}
+	for _, row := range rows {
+		tags, err := h.ruleTagNames(rowInt64(row["id"]), tagNames)
+		if err != nil {
+			log.Error("dispatch: 规则标签关系查询失败", "rule_id", rowInt64(row["id"]), "err", err.Error())
+			writeJSONErr(w, http.StatusInternalServerError, "路由规则标签查询失败（数据库异常），请稍后重试")
+			return
+		}
+		row["tags"] = tags
+	}
 	total := int64(0)
 	if len(cnt) > 0 {
 		total = rowInt64(cnt[0]["total"])
@@ -699,6 +716,35 @@ func (h *AdminHandler) softDeletedRuleUpstream(id int64) (upID int64, found bool
 }
 
 // ── 标签随规则表单整组保存 ───────────────────────────────────────────
+
+// tagNamesByID 标签 id→名 映射（全量一次查询；标签表量级很小，逐表映射即可）。
+func (h *AdminHandler) tagNamesByID() (map[int64]string, error) {
+	rows, err := h.queryScript("dispatch_tag_query_all", nil)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[int64]string, len(rows))
+	for _, r := range rows {
+		m[rowInt64(r["id"])] = rowString(r["name"])
+	}
+	return m, nil
+}
+
+// ruleTagNames 单条规则的活跃标签名集合（按名升序；供列表行附 tags 字段）。
+func (h *AdminHandler) ruleTagNames(ruleID int64, tagNames map[int64]string) ([]string, error) {
+	rels, err := h.queryScript("dispatch_rule_tag_query_list", []any{ruleID, ruleID, 0, 0, maxLimit, 0}, "id ASC")
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		if n, ok := tagNames[rowInt64(rel["tag_id"])]; ok {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
 
 // saveRuleTags 标签整组保存：按名 upsert 标签实体（归一小写、活跃唯一），再整组替换
 // 该规则的关系行（软删旧行 + 插入新行）。属标签链路变更，不触发 Rebuild。
@@ -1499,6 +1545,17 @@ func (h *AdminHandler) validateNode(b *nodeBody, excludeID int64) error {
 	u, err := url.Parse(b.URL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return errors.New("节点校验失败：url 必须为合法的 http(s)://host[:port] 地址（如 http://10.0.0.1:9001）。请修正地址后重试")
+	}
+	// url 语义 = 转发基准地址（http://host[:port]）：路径/查询/锚点会破坏转发拼接，拒绝保存
+	// （探活路径是 hc_path 字段的职责）。
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("节点校验失败：url 只能为基准地址 http(s)://host[:port]，不能携带路径、查询参数或锚点（如 http://10.0.0.1:9001）。探活路径请填在 hc_path（探活路径）字段，转发目标地址不会使用 url 中的路径。请修正后重试")
+	}
+	// 用户手滑带尾斜杠（u.Path == "/"）：静默容忍并归一去掉尾斜杠（去掉后须非空且仍以 scheme:// 开头）。
+	if u.Path == "/" {
+		if trimmed := strings.TrimRight(b.URL, "/"); trimmed != "" && strings.HasPrefix(trimmed, u.Scheme+"://") {
+			b.URL = trimmed
+		}
 	}
 	taken, err := h.nodeURLTaken(b.URL, excludeID)
 	if err != nil {

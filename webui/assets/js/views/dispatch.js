@@ -1,10 +1,11 @@
 /* ==========================================================================
- * RockSys 管理控制台 - views/dispatch.js 路由分发页（ROUTE_DISPATCH STEP7）
+ * RockSys 管理控制台 - views/dispatch.js 路由分发视图（ROUTE_DISPATCH STEP7）
  * 状态区（规则源/三计数/⟳ 重载）+ 三视图切换（路由规则/负载均衡器/上游节点）+
  * 命中测试器（规则视图右侧常驻卡）+ 三组表单弹层 + 节点健康三态（绿红灰）+
  * DISPATCH_ENABLED 未开启引导卡（豁免 toast）；DB 未就绪 503 按普通错误弹 error toast。
- * 交互口径唯一依据：docs/plan/ROUTE_DISPATCH_DESIGN_PLAN.md「WebUI 设计」章节；
- * 提示全走 Rock.ui.toast（§4.10），错误不自动消失，文案三要素。
+ * 挂载方式：可嵌入视图，经 mount(container) 挂入宿主容器（当前宿主 = 组件详情页
+ * 「路由管理」页签，views/detail.js 调用）；提示全走 Rock.ui.toast（§4.10），
+ * 错误不自动消失，文案三要素。
  * 挂载到全局命名空间 window.Rock.views.dispatch。
  * ========================================================================== */
 (function () {
@@ -22,8 +23,10 @@
   const openModal = Rock.ui.openModal;
   const skeletonHTML = Rock.ui.skeletonHTML;
 
-  const PAGE = '#page-dispatch';
   const BASE = '/admin/dispatch';
+
+  // 宿主容器（mount 注入；未挂载时 render/skeleton 空操作）
+  let host = null;
 
   // ── 页内状态 ─────────────────────────────────────────────────────────
   const st = {
@@ -100,7 +103,15 @@
 
   // ── 数据加载 ─────────────────────────────────────────────────────────
 
-  // 页面加载入口（main.js pageLoaders 调用；opts.silent=程序化静默刷新，失败不弹 toast）
+  // 挂载入口（宿主 = 组件详情页「路由管理」页签容器，可为元素或选择器）：
+  // 首次挂载全量加载，已加载过则仅重渲染（懒加载语义，重复挂载不重复拉数据）
+  function mount(container) {
+    host = typeof container === 'string' ? $(container) : container;
+    if (!host) return Promise.resolve();
+    return st.loadedOnce ? Promise.resolve(render()) : load({});
+  }
+
+  // 页面加载入口（mount 内部调用；opts.silent=程序化静默刷新，失败不弹 toast）
   async function load(opts) {
     opts = opts || {};
     if (!st.loadedOnce && !opts.silent) skeleton();
@@ -249,6 +260,12 @@
         { key: 'path_type', label: '路径类型', render: function (r) { return esc(pathTypeName(r.path_type)); } },
         { key: 'path_value', label: '路径值', render: function (r) { return '<span class="mono">' + esc(r.path_value) + '</span>'; } },
         { key: 'upstream_id', label: '均衡器', render: function (r) { return esc(upstreamName(r.upstream_id)); } },
+        { key: 'tags', label: '标签', render: function (r) {
+          const tags = Array.isArray(r.tags) ? r.tags : [];
+          return tags.length
+            ? tags.map(function (t) { return '<span class="tag tag-blue">' + esc(t) + '</span>'; }).join(' ')
+            : '<span class="muted">—</span>';
+        } },
         { key: 'enabled', label: '状态', render: function (r) {
           return r.enabled ? '<span class="badge badge-ok">启用</span>' : '<span class="badge badge-warn">停用</span>';
         } },
@@ -484,12 +501,10 @@
   // ── 页面渲染 ─────────────────────────────────────────────────────────
 
   function skeleton() {
-    const host = $(PAGE);
     if (host) host.innerHTML = skeletonHTML(5);
   }
 
   function render() {
-    const host = $(PAGE);
     if (!host) return;
     if (st.enabled === false) { host.innerHTML = guideHTML(); return; }
     const defs = viewDefs();
@@ -526,7 +541,6 @@
   }
 
   function bindView(view) {
-    const host = $(PAGE);
     if (!host) return;
     const L = lists[view];
     if (L.bar) L.bar.bind(host);
@@ -640,9 +654,10 @@
   }
 
   async function runTest() {
-    const hostEl = $('#dispatch-test-host');
-    const pathEl = $('#dispatch-test-path');
-    const out = $('#dispatch-test-result');
+    // 命中测试器输入经宿主容器作用域查询（可嵌入视图，不依赖全局 ID 查询）
+    const hostEl = host && host.querySelector('#dispatch-test-host');
+    const pathEl = host && host.querySelector('#dispatch-test-path');
+    const out = host && host.querySelector('#dispatch-test-result');
     const host = ((hostEl || {}).value || '').trim();
     const path = ((pathEl || {}).value || '').trim() || '/';
     if (out) out.innerHTML = '<span class="muted">测试中…</span>';
@@ -749,7 +764,7 @@
   function tagChipsHTML(selected) {
     return (selected || []).map(function (t) {
       return '<span class="tag tag-blue" data-tag="' + esc(t) + '">' + esc(t) +
-        ' <b data-tag-x="' + esc(t) + '" style="cursor:pointer" title="移除">✕</b></span>';
+        ' <b data-tag-x="' + esc(t) + '" style="cursor:pointer;margin-left:4px;font-weight:normal" title="移除">✕</b></span>';
     }).join(' ');
   }
 
@@ -773,9 +788,20 @@
       const n = Array.isArray(u.nodes) ? u.nodes.length : 0;
       return [String(u.id), u.name + '（' + fmtInt(n) + ' 节点）'];
     }));
-    const tagOptions = [['', '— 选择已有标签 —']].concat(st.tags.map(function (t) {
-      return [String(t.name), t.name];
-    }));
+    // 标签下拉：过滤掉已选中的（已选标签不可重复选）；选中即添加，无需「添加」按钮
+    function tagOptions() {
+      const sel = {};
+      selTags.forEach(function (t) { sel[t] = true; });
+      return [['', '— 选择已有标签 —']].concat(st.tags
+        .filter(function (t) { return !sel[t.name]; })
+        .map(function (t) { return [String(t.name), t.name]; }));
+    }
+    function renderTagSelect() {
+      const sel = overlay.querySelector('#dr-tag-select');
+      if (sel) sel.innerHTML = tagOptions().map(function (o) {
+        return '<option value="' + esc(o[0]) + '">' + esc(o[1]) + '</option>';
+      }).join('');
+    }
     const overlay = openModal({
       title: isEdit ? '编辑路由规则 #' + row.id : '新增路由规则',
       width: 560,
@@ -797,9 +823,8 @@
         '<div class="form-row"><label class="form-label">标签（可多选，可回车新建）</label>' +
         '<div id="dr-tags-box">' + tagChipsHTML(selTags) + '</div>' +
         '<div class="log-toolbar" style="margin-top:6px">' +
-        Rock.comp.form.select({ id: 'dr-tag-select', sm: true, width: 'md', options: tagOptions }) +
+        Rock.comp.form.select({ id: 'dr-tag-select', sm: true, width: 'md', options: tagOptions() }) +
         Rock.comp.form.input({ id: 'dr-tag-new', sm: true, width: 'sm', placeholder: '新标签名（回车添加）' }) +
-        '<button class="btn btn-sm" data-act="dr-tag-add">添加</button>' +
         '</div></div>' +
         '<div class="form-row"><label class="form-label">标题</label>' +
         Rock.comp.form.input({ id: 'dr-title', width: 'full', value: isEdit ? (row.title || '') : '', placeholder: '规则标题（可空）' }) + '</div>' +
@@ -840,7 +865,7 @@
     const orderEl = overlay.querySelector('#dr-order');
     if (orderEl) orderEl.addEventListener('change', function () {
       const v = Math.floor(Number(orderEl.value) || 0);
-      if (v > 999) { orderEl.value = '999'; toast('序号已钳制到上界 999（匹配序号范围 1-999）', 'warning', 5000); }
+      if (v > 999) { orderEl.value = '999'; toast('序号已钳制到上界 999（匹配序号范围 1-999）', 'warning'); }
       else if (v < 1 && orderEl.value !== '') { orderEl.value = '1'; }
     });
 
@@ -851,6 +876,7 @@
       if (selTags.indexOf(name) >= 0) { toast('标签「' + name + '」已在列表中', 'info', 2500); return; }
       selTags.push(name);
       overlay.querySelector('#dr-tags-box').innerHTML = tagChipsHTML(selTags);
+      renderTagSelect(); // 下拉重新渲染：过滤掉已选中项
     }
     overlay.addEventListener('click', function (e) {
       const x = e.target.closest('[data-tag-x]');
@@ -859,14 +885,16 @@
         const i = selTags.indexOf(name);
         if (i >= 0) selTags.splice(i, 1);
         overlay.querySelector('#dr-tags-box').innerHTML = tagChipsHTML(selTags);
+        renderTagSelect(); // 移除后选项重回下拉
         return;
       }
-      if (e.target.closest('[data-act="dr-tag-add"]')) {
-        const sel = overlay.querySelector('#dr-tag-select');
-        const newEl = overlay.querySelector('#dr-tag-new');
-        if (newEl && newEl.value.trim()) { addTag(newEl.value); newEl.value = ''; return; }
-        if (sel && sel.value) { addTag(sel.value); sel.value = ''; }
-      }
+    });
+    // 选中下拉项立即添加 chip 并重置下拉（已选项不在下拉中，无重复选入面）
+    const tagSelEl = overlay.querySelector('#dr-tag-select');
+    if (tagSelEl) tagSelEl.addEventListener('change', function () {
+      if (!tagSelEl.value) return;
+      addTag(tagSelEl.value);
+      tagSelEl.value = '';
     });
     const tagNewEl = overlay.querySelector('#dr-tag-new');
     if (tagNewEl) tagNewEl.addEventListener('keydown', function (e) {
@@ -1005,7 +1033,7 @@
     function syncSticky() {
       if (cookieWrap) cookieWrap.style.display = stickyEl.checked ? '' : 'none';
       if (stickyEl.checked) {
-        toast('会话保持对普通 HTTP 请求完全生效；浏览器 WebSocket 首次连接的握手响应拿不到粘性 Cookie（隧道直写、不经响应头），需先有过一次普通 HTTP 请求完成种值，否则 WS 连接不保证粘住原节点。', 'warning', 8000);
+        toast('会话保持对普通 HTTP 请求完全生效；浏览器 WebSocket 首次连接的握手响应拿不到粘性 Cookie（隧道直写、不经响应头），需先有过一次普通 HTTP 请求完成种值，否则 WS 连接不保证粘住原节点。', 'warning');
       }
     }
     stickyEl.addEventListener('change', syncSticky);
@@ -1015,7 +1043,7 @@
     const algoEl = overlay.querySelector('#du-algo');
     algoEl.addEventListener('change', function () {
       if (Number(algoEl.value) === 2) {
-        toast('least_conn 的在途递减依赖 Tail 收尾件：dispatch 启用期命中流量走缓冲路径（该代价与策略选择无关，round_robin 亦然）；已知边界——dispatch 之后的中间件中断链的请求不经过收尾回调，存在在途计数泄漏（低频统计偏差，不影响转发正确性）。可继续保存。', 'warning', 10000);
+        toast('least_conn 的在途递减依赖 Tail 收尾件：dispatch 启用期命中流量走缓冲路径（该代价与策略选择无关，round_robin 亦然）；已知边界——dispatch 之后的中间件中断链的请求不经过收尾回调，存在在途计数泄漏（低频统计偏差，不影响转发正确性）。可继续保存。', 'warning');
       }
     });
 
@@ -1141,7 +1169,8 @@
   // ── actions 注册（main.js 统一委托）──────────────────────────────────
 
   window.Rock.views.dispatch = {
-    load: load,
+    mount: mount,   // 挂载入口（宿主：组件详情页「路由管理」页签容器）
+    load: load,     // 兼容保留（需先 mount；当前唯一入口为 mount）
     render: render,
     actions: {
       'dispatch-view': function (el) { switchView(el.getAttribute('data-view') || 'rules'); },

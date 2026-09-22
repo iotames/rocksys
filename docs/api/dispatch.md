@@ -18,7 +18,7 @@
 
 查询参数：`limit`（1-10000，默认 50）、`offset`（≥0）、`keyword`（domain/path_value/title 模糊）、`path_type`（0=不限 / 1=前缀 / 2=精确 / 3=模式）、`enabled`（0=不限 / 1=仅启用）、`domain`（精确筛选）、`include_deleted`（0=仅活跃 / 1=仅已删除）。
 
-行字段：`id, match_order, domain, path_type, path_value, title, upstream_id, enabled, remark, created_at, updated_at[, deleted_at]`。
+行字段：`id, match_order, domain, path_type, path_value, title, upstream_id, enabled, remark, created_at, updated_at[, deleted_at], tags`；`tags` 为该规则的活跃标签名数组（按名升序；软删规则行同样附其关系，供恢复/编辑回显）。
 
 ### 1.2 `POST /admin/dispatch/rules` — 新增规则
 
@@ -26,11 +26,11 @@
 {"match_order":10,"domain":"a.com","path_type":1,"path_value":"/api","title":"示例","upstream_id":1,"enabled":true,"remark":"","tags":["灰度"]}
 ```
 
-校验失败 400（序号 1-999、path_value 以 / 开头、均衡器须存在等）；保存成功后同序号已有其他规则时返回非阻断 `warnings` 数组（同序号按创建先后匹配）。
+校验失败 400（序号 1-999、path_value 以 / 开头、均衡器须存在等）；保存成功后同序号已有其他规则时返回非阻断 `warnings` 数组（同序号按创建先后匹配）。`tags` 数组保存时归一去重（TrimSpace + 转小写，保持首现顺序）：`["prod","Prod","prod "]` 落库活跃关系仅一条 `prod`。
 
 ### 1.3 `POST /admin/dispatch/rules/update` — 整行更新
 
-请求体同新增，`id` 必填；**整行语义**：启用开关与标签均随本次提交整组替换（列表行不含标签数据，故不设行内启停）。
+请求体同新增，`id` 必填；**整行语义**：启用开关与标签均随本次提交整组替换（列表行已下发 `tags` 供编辑回显；启停仍经编辑弹层整行提交）。
 
 ### 1.4 `POST /admin/dispatch/rules/delete` — 软删规则
 
@@ -97,7 +97,7 @@
 {"name":"订单节点-1","url":"http://10.0.0.11:8080","hc_interval_ms":20000,"hc_timeout_ms":5000,"hc_path":"/healthz","enabled":true,"remark":""}
 ```
 
-`url` 须 `http(s)://` 开头且活跃行唯一；`hc_path` 留空 = 不探活、始终视为健康（宕机不自动摘除）。
+`url` 只能为基准地址 `http(s)://host[:port]`（携带路径/查询参数/锚点 400 拒绝——探活路径请填 `hc_path`；手滑尾斜杠静默归一去掉）且活跃行唯一；`hc_path` 留空 = 不探活、始终视为健康（宕机不自动摘除）。
 
 ### 4.3 `POST /admin/dispatch/nodes/update` — 更新节点
 

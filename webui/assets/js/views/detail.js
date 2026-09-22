@@ -1,6 +1,7 @@
 /* ==========================================================================
  * RockSys 管理控制台 - views/detail.js 组件/服务详情页（通用模板）
- * 一个组件/服务一个页面，统一「状态 / 配置」双页签：
+ * 一个组件/服务一个页面，统一「状态 / 配置」双页签（dispatch 组件额外有
+ * 「路由管理」页签——路由分发视图经 Rock.views.dispatch.mount 并入本页）：
  *   - 状态页签（默认）：大卡片 = 左上 switch 直接启停 + 中文名/英文名 + 环节标签
  *     + 状态 + 描述 + 运行信息 + 数据流位置示意
  *   - 配置页签：该组件/服务独有配置项（复用 Rock.views.configEditor），
@@ -171,7 +172,7 @@
           : '未找到该组件。' }) + '</div>';
       return;
     }
-    const tab = opts.tab === 'config' ? 'config' : 'state';
+    const tab = resolveTab(opts);
     const cnt = configCount(opts.name);
     const isService = opts.type === 'service';
     const st = Rock.comp.componentState.stateMeta(s.state);
@@ -185,6 +186,9 @@
       '</span>' +
       '<span class="tag tag-blue">' + esc(slotLabel) + '</span>' +
       '</span>';
+    // 页签集合：全部组件有「状态/配置」；dispatch 组件额外有「路由管理」（路由分发视图并入本页）
+    const tabs = [{ name: 'state', label: '状态' }, { name: 'config', label: '配置', count: cnt || 0 }];
+    if (opts.name === 'dispatch') tabs.push({ name: 'routes', label: '路由管理' });
     host.innerHTML =
       breadcrumbHTML(opts) +
       Rock.comp.head.headHTML({
@@ -193,20 +197,32 @@
         actions: '<button class="btn btn-sm" data-act="detail-reload">⟳ 刷新</button>',
       }) +
       Rock.comp.tabs.tabsHTML(
-        [{ name: 'state', label: '状态' }, { name: 'config', label: '配置', count: cnt || 0 }],
+        tabs,
         tab,
         { act: 'detail-tab', nameAttr: 'data-tab' }
       ) +
       '<div id="detail-panel-state"' + (tab === 'state' ? '' : ' hidden') + '>' + stateCardHTML(s, opts) + '</div>' +
-      '<div id="detail-panel-config"' + (tab === 'config' ? '' : ' hidden') + '></div>';
+      '<div id="detail-panel-config"' + (tab === 'config' ? '' : ' hidden') + '></div>' +
+      (opts.name === 'dispatch' ? '<div id="detail-panel-routes"' + (tab === 'routes' ? '' : ' hidden') + '></div>' : '');
     // 容器内查询（components/services 两个 page 容器都有同名 panel，避免渲染错位）
     if (tab === 'config') renderConfigPanel(host.querySelector('#detail-panel-config'), opts.name, opts.type);
+    // 路由管理页签：懒加载挂载路由分发视图（首次切入才挂载；URL 直达 ?tab=routes 同样生效）
+    if (tab === 'routes' && Rock.views.dispatch) {
+      Rock.views.dispatch.mount(host.querySelector('#detail-panel-routes'));
+    }
+  }
+
+  // 页签解析：state 缺省；config / dispatch 组件的 routes 经 ?tab= 指定（非法值回落 state）
+  function resolveTab(opts) {
+    if (opts.tab === 'config') return 'config';
+    if (opts.tab === 'routes' && opts.name === 'dispatch') return 'routes';
+    return 'state';
   }
 
   // 切换页签（同步 URL hash，刷新不丢）
   function setTab(opts, tab) {
     const base = '#/' + (opts.type === 'service' ? 'services' : 'components') + '/' + opts.name;
-    location.hash = tab === 'config' ? base + '?tab=config' : base;
+    location.hash = tab === 'state' ? base : base + '?tab=' + tab;
   }
 
   // 启停组件/服务（二次确认 → 请求 → Toast → 刷新）

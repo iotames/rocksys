@@ -75,6 +75,9 @@
         '</div></div>';
       root.appendChild(overlay);
       let done = false;
+      // 防拖拽误关：仅当 mousedown 与 click 都发生在遮罩上才视为点击遮罩（同 openModal）
+      let downOnOverlay = false;
+      overlay.addEventListener('mousedown', e => { downOnOverlay = e.target === overlay; });
       const close = val => {
         if (done) return;
         done = true;
@@ -82,7 +85,7 @@
         resolve(val);
       };
       overlay.addEventListener('click', e => {
-        if (e.target === overlay) return close(false);
+        if (e.target === overlay && downOnOverlay) return close(false);
         const act = e.target.closest('[data-modal-act]');
         if (!act) return;
         e.stopPropagation();
@@ -107,12 +110,16 @@
       (opts.footer ? '<div class="modal-footer">' + opts.footer + '</div>' : '') +
       '</div>';
     root.appendChild(overlay);
+    // 防拖拽误关：鼠标在弹层内按下、拖到遮罩上松开时，浏览器合成的 click 落点为遮罩，
+    // 仅凭 click 判 target 会误关弹层。故记录 mousedown 起点也须在遮罩上，二者同时命中才关闭。
+    let downOnOverlay = false;
+    overlay.addEventListener('mousedown', e => { downOnOverlay = e.target === overlay; });
     overlay.addEventListener('click', e => {
       const act = e.target.closest('[data-modal-act]');
       if (act) {
         e.stopPropagation();
         if (act.getAttribute('data-modal-act') === 'cancel') overlay.remove();
-      } else if (e.target === overlay) {
+      } else if (e.target === overlay && downOnOverlay) {
         overlay.remove();
       }
     });

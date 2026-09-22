@@ -59,3 +59,4 @@
 - **构建产物**：自验用 `go build -tags dev -o bin/rocksys.dev ./cmd/rocksys`（rocksys.dev 命名避免覆盖可能运行中的 bin/rocksys；是否替换由主流程决定）。
 - 浏览器实看 / 截图 / 实操回路四项验证由主流程执行，保持未勾选。
 - 【浏览器验证记录】2026-09-22 主流程实看通过（清单见验证节勾选）；验证数据（节点核验节点A/均衡器核验池A/规则 a.com:/api）保留供 STEP8 实请求终验复用。
+- 【验收反馈修复 2026-09-22】人类验收提出 6 项，全部修复并实看验证：①弹层统一确认（全站仅 Rock.ui.openModal/detailModal/confirmDialog，入 pages.md §4.10）；②弹层内按下拖到遮罩松开误关（openModal/confirmDialog 改为 mousedown+click 双落点判定）；③节点 url 含路径可保存（validateNode 拒绝路径/查询/锚点，尾斜杠静默归一）；④警告类 toast 自动消失（去掉三处显式 duration，回归 ui.js warning 常驻语义）；⑤规则标签链路（后端列表下发 tags、保存去重、编辑态回显 chips、下拉过滤已选、选中即添加、列表加标签列、chip ✕ 样式修正）；⑥侧边栏独立项并入 dispatch 组件详情第三页签「路由管理」（消除菜单堆叠，懒挂载 + ?tab=routes 直达）。浏览器实看全部通过（截图留证会话）。

@@ -354,6 +354,87 @@ func TestAdminRuleCRUD(t *testing.T) {
 	}
 }
 
+// TestAdminNodeURLBaseOnly 节点 url 只能为基准地址：带路径/query/锚点拒绝（400），
+// 手滑尾斜杠静默归一（落库无尾斜杠）。
+func TestAdminNodeURLBaseOnly(t *testing.T) {
+	_, h := newAdminFixture(t)
+	// 带路径 / query / 锚点 → 400。
+	for _, bad := range []string{
+		"http://172.16.160.10:8929/-/health", // 路径（探活路径应填 hc_path）
+		"http://10.0.0.1:9001/?a=1",          // 查询参数
+		"http://10.0.0.1:9001/#frag",         // 锚点
+	} {
+		rec := adminDo(t, h.Nodes, http.MethodPost, "/admin/dispatch/nodes", `{"url":"`+bad+`"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("带路径/query/锚点的 url %q 应 400，got %d: %s", bad, rec.Code, rec.Body.String())
+		}
+	}
+	// 尾斜杠归一：/ 结尾容忍并去掉尾斜杠落库。
+	rec := adminDo(t, h.Nodes, http.MethodPost, "/admin/dispatch/nodes", `{"name":"n-slash","url":"http://10.0.0.9:9001/"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("尾斜杠 url 应容忍，got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = adminDo(t, h.Nodes, http.MethodGet, "/admin/dispatch/nodes?keyword=n-slash", "")
+	rows := listRows(t, rec)
+	if len(rows) != 1 || rows[0]["url"] != "http://10.0.0.9:9001" {
+		t.Errorf("尾斜杠应归一去掉: %v", rows)
+	}
+}
+
+// TestAdminRuleTagsDedupAndList 标签保存去重 + 列表下发 tags：
+// tags 含重复名与大小写/空白变体（["prod","Prod","prod "]）→ 落库活跃关系仅一条 prod；
+// listRules 每行附 tags 字段（按名升序，软删规则行同样附其关系）。
+func TestAdminRuleTagsDedupAndList(t *testing.T) {
+	_, h := newAdminFixture(t)
+	n1 := addNodeViaAdmin(t, h, "n1", "http://10.0.0.1:9001")
+	upID := addUpstreamViaAdmin(t, h, "up-a", n1)
+
+	rec := adminDo(t, h.Rules, http.MethodPost, "/admin/dispatch/rules",
+		`{"match_order":10,"path_type":1,"path_value":"/api","upstream_id":`+i64s(upID)+`,"tags":["prod","Prod","prod "]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("带变体标签新增规则: %d %s", rec.Code, rec.Body.String())
+	}
+	ruleID := int64(adminJSON(t, rec)["id"].(float64))
+	// 活跃关系仅一条 prod（归一去重）。
+	assertRuleTags(t, h, ruleID, []string{"prod"})
+	// 列表行附 tags 字段。
+	rec = adminDo(t, h.Rules, http.MethodGet, "/admin/dispatch/rules", "")
+	rows := listRows(t, rec)
+	if len(rows) != 1 {
+		t.Fatalf("应 1 行规则: %v", rows)
+	}
+	tags, ok := rows[0]["tags"].([]any)
+	if !ok || len(tags) != 1 || tags[0] != "prod" {
+		t.Errorf("列表行应附 tags=[prod]: %v", rows[0]["tags"])
+	}
+	// 软删规则行同样附其关系（include_deleted=1）。
+	if rec = adminDo(t, h.RulesDelete(), http.MethodPost, "/admin/dispatch/rules/delete", `{"id":`+i64s(ruleID)+`}`); rec.Code != http.StatusOK {
+		t.Fatalf("软删规则: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = adminDo(t, h.Rules, http.MethodGet, "/admin/dispatch/rules?include_deleted=1", "")
+	rows = listRows(t, rec)
+	if len(rows) != 1 {
+		t.Fatalf("应 1 行软删规则: %v", rows)
+	}
+	tags, _ = rows[0]["tags"].([]any)
+	if len(tags) != 1 || tags[0] != "prod" {
+		t.Errorf("软删规则行也应附 tags=[prod]: %v", rows[0]["tags"])
+	}
+	// 多标签按名升序。
+	if rec = adminDo(t, h.RulesRestore(), http.MethodPost, "/admin/dispatch/rules/restore", `{"id":`+i64s(ruleID)+`}`); rec.Code != http.StatusOK {
+		t.Fatalf("恢复规则: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec = adminDo(t, h.RulesUpdate(), http.MethodPost, "/admin/dispatch/rules/update",
+		`{"id":`+i64s(ruleID)+`,"match_order":10,"path_type":1,"path_value":"/api","upstream_id":`+i64s(upID)+`,"tags":["zz","aa"]}`); rec.Code != http.StatusOK {
+		t.Fatalf("更新多标签: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = adminDo(t, h.Rules, http.MethodGet, "/admin/dispatch/rules", "")
+	tags, _ = listRows(t, rec)[0]["tags"].([]any)
+	if len(tags) != 2 || tags[0] != "aa" || tags[1] != "zz" {
+		t.Errorf("tags 应按名升序 [aa zz]: %v", tags)
+	}
+}
+
 // TestAdminMatchTestReadOnly 命中测试只读无副作用：轮询游标不推进、在途计数不变；
 // 且命中判定与实请求（Handle）一致。
 func TestAdminMatchTestReadOnly(t *testing.T) {

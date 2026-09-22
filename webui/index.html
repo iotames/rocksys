@@ -222,14 +222,7 @@
           <span>脚本</span>
         </a>
 
-        <!-- 路由分发：独立顶级项（性质同「脚本」页——内容管理页；组件开关仍在 dispatch 组件详情页） -->
-        <a class="menu-item" data-route="dispatch" href="#/dispatch" title="路由分发：路由规则 / 负载均衡器 / 上游节点 / 命中测试">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="6" cy="5" r="2.2"/><circle cx="18" cy="5" r="2.2"/><circle cx="12" cy="19" r="2.2"/>
-            <path d="M6 7.2v3.3a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7.2M12 12.5v4.3"/>
-          </svg>
-          <span>路由分发</span>
-        </a>
+        <!-- 路由分发已并入「组件 → 分发 dispatch」详情页「路由管理」页签（消除菜单重复堆叠） -->
 
         <!-- 配置：全局配置 / 系统日志 / 数据库等运维配置入口，置底 -->
         <div class="menu-group" id="menu-group-settings">
@@ -260,7 +253,6 @@
       <section class="page hidden" id="page-components"></section>
       <section class="page hidden" id="page-services"></section>
       <section class="page hidden" id="page-scripts"></section>
-      <section class="page hidden" id="page-dispatch"></section>
       <section class="page hidden" id="page-waf"></section>
       <section class="page hidden" id="page-logs"></section>
       <section class="page hidden" id="page-syslogs"></section>
@@ -305,10 +297,10 @@
 <script src="./assets/js/components/geomap.js"></script>
 <script src="./assets/js/views/configEditor.js"></script>
 <script src="./assets/js/views/overview.js"></script>
+<script src="./assets/js/views/dispatch.js"></script>
 <script src="./assets/js/views/detail.js"></script>
 <script src="./assets/js/views/config.js"></script>
 <script src="./assets/js/views/scripts.js"></script>
-<script src="./assets/js/views/dispatch.js"></script>
 <script src="./assets/js/views/blacklist.js"></script>
 <script src="./assets/js/views/ualist.js"></script>
 <script src="./assets/js/views/topIPs.js"></script>
