@@ -1,10 +1,13 @@
 /* ==========================================================================
- * RockSys 管理控制台 - views/dispatch.js 路由分发视图（ROUTE_DISPATCH STEP7）
- * 状态区（规则源/三计数/⟳ 重载）+ 三视图切换（路由规则/负载均衡器/上游节点）+
- * 命中测试器（规则视图右侧常驻卡）+ 三组表单弹层 + 节点健康三态（绿红灰）+
- * DISPATCH_ENABLED 未开启引导卡（豁免 toast）；DB 未就绪 503 按普通错误弹 error toast。
- * 挂载方式：可嵌入视图，经 mount(container) 挂入宿主容器（当前宿主 = 组件详情页
- * 「路由管理」页签，views/detail.js 调用）；提示全走 Rock.ui.notify（§4.10），
+ * RockSys 管理控制台 - views/dispatch.js 路由分发视图（可嵌入，无独立页面）
+ * 原独立页已拍平为组件详情页三个顶级页签（views/detail.js 按页签懒挂载）：
+ *   - mountTab(container, view)：渲染单个管理视图（'rules' | 'upstreams' | 'nodes'），
+ *     各视图 = 头部工具行（规则页签含规则源状态 + ⟳ 重载快照）+ 筛选栏 + 表格；
+ *     命中测试器为「路由规则」页签右侧常驻卡；三组表单弹层 + 节点健康三态（绿红灰）。
+ *   - mountScaleCard(container)：路由数据规模卡（挂宿主详情页「状态」页签；
+ *     规则/均衡器/节点三个计数各自可点击直达对应管理页签）。
+ * DISPATCH_ENABLED 未开启时管理页签内显示引导卡（豁免 toast）；
+ * DB 未就绪 503 按普通错误弹 error toast。提示全走 Rock.ui.notify（§4.10），
  * 错误不自动消失，文案三要素。
  * 挂载到全局命名空间 window.Rock.views.dispatch。
  * ========================================================================== */
@@ -25,12 +28,15 @@
 
   const BASE = '/admin/dispatch';
 
-  // 宿主容器（mount 注入；未挂载时 render/skeleton 空操作）
+  // 宿主容器（mountTab 注入管理页签容器；未挂载时 render 空操作）
   let host = null;
+  // 规模卡宿主（mountScaleCard 注入；宿主 = 详情页「状态」页签内的规模卡容器）
+  let scaleEl = null;
 
   // ── 页内状态 ─────────────────────────────────────────────────────────
   const st = {
-    view: 'rules',                 // 'rules' | 'upstreams' | 'nodes'
+    view: 'rules',                 // 'rules' | 'upstreams' | 'nodes'（由详情页页签决定）
+    statusLoaded: false,           // 开关态/计数是否已加载过（首次挂载拉一次，之后复用）
     enabled: null,                 // null=未知 / true / false（DISPATCH_ENABLED，经 /admin/switch/list）
     ready: null,                   // 快照是否构建成功（/admin/dispatch/health.ready）
     counts: { rules: null, upstreams: null, nodes: null },
@@ -38,7 +44,6 @@
     upstreams: [],                 // 均衡器缓存（规则表单下拉 + 列表名称映射）
     nodes: [],                     // 节点缓存（均衡器关系编辑器下拉，含实时健康）
     tags: [],                      // 标签缓存（规则表单多选）
-    loadedOnce: false,
   };
 
   // 三个视图各自的列表状态与组件实例（筛选值在 filterBar、分页在 dataTable，组件 DOM 自动同步）
@@ -103,56 +108,72 @@
 
   // ── 数据加载 ─────────────────────────────────────────────────────────
 
-  // 挂载入口（宿主 = 组件详情页「路由管理」页签容器，可为元素或选择器）：
-  // 首次挂载全量加载，已加载过则仅重渲染（懒加载语义，重复挂载不重复拉数据）
-  function mount(container) {
+  // 页签挂载入口（宿主 = 组件详情页对应管理页签容器，views/detail.js 调用）：
+  // 首次挂载拉取状态/字典/缓存 + 本视图列表；已就绪则按需补拉当前视图列表（懒加载语义）
+  function mountTab(container, view) {
     host = typeof container === 'string' ? $(container) : container;
     if (!host) return Promise.resolve();
-    return st.loadedOnce ? Promise.resolve(render()) : load({});
+    st.view = view || st.view;
+    if (!st.statusLoaded) return loadAll(st.view);
+    if (st.enabled !== false && !lists[st.view].loaded) return loadView(st.view, {}).then(renderTab);
+    renderTab();
+    return Promise.resolve();
   }
 
-  // 页面加载入口（mount 内部调用；opts.silent=程序化静默刷新，失败不弹 toast）
-  async function load(opts) {
-    opts = opts || {};
-    if (!st.loadedOnce && !opts.silent) skeleton();
-    await loadStatus(opts);
-    if (st.enabled === false) { st.loadedOnce = true; render(); return; }
+  // 规模卡挂载入口（宿主 = 详情页「状态」页签内的规模卡容器）：三个计数可点击直达管理页签
+  function mountScaleCard(container) {
+    scaleEl = typeof container === 'string' ? $(container) : container;
+    if (!scaleEl) return Promise.resolve();
+    if (!st.statusLoaded) return loadCounts().then(renderScaleCard);
+    renderScaleCard();
+    return Promise.resolve();
+  }
+
+  // 首次全量加载（状态 + 字典 + 表单缓存 + 当前视图列表）
+  async function loadAll(view) {
+    skeleton();
+    await loadEnabled();
+    if (st.enabled === false) { st.statusLoaded = true; renderTab(); return; }
     await Promise.all([
-      ensureMeta(opts.silent),
-      ensureCaches(opts.silent),
-      loadView(st.view, opts),
+      loadCounts(),
+      ensureMeta(false),
+      ensureCaches(false),
+      loadView(view, {}),
     ]);
-    st.loadedOnce = true;
-    render();
+    st.statusLoaded = true;
+    renderTab();
   }
 
-  // 状态区：组件开关（DISPATCH_ENABLED 经 /admin/switch/list 透出）+ 快照就绪态 + 三计数
-  async function loadStatus(opts) {
+  // 组件开关（DISPATCH_ENABLED 经 /admin/switch/list 透出）
+  async function loadEnabled() {
     try {
       const list = await api.get('/admin/switch/list');
       const row = (Array.isArray(list) ? list : []).find(function (x) { return x && x.name === 'dispatch'; });
       st.enabled = row ? row.state === 'enabled' : null;
     } catch (e) {
-      st.enabled = null; // 开关状态不可知：不阻塞页面，状态区显示未知
+      st.enabled = null; // 开关状态不可知：不阻塞页面，按未知处理
     }
-    // 快照就绪态与节点计数经 health 端点（DB 未就绪时 503 → 按普通错误处理，见 loadView 同款口径）
+  }
+
+  // 计数与快照就绪态（规模卡 + 规则页签工具行共用）：
+  // 节点数/ready 经 health 端点；规则/均衡器计数走 limit=1 轻查询取 X-Total-Count（失败静默，进入对应视图会补齐）
+  async function loadCounts() {
     try {
       const h = await api.get(BASE + '/health');
       st.ready = !!h.ready;
       st.counts.nodes = Number(h.total) || 0;
-      lists.nodes.loaded = false; // health 计数仅作状态区预览，进入节点视图仍拉全量列表
     } catch (e) {
       st.ready = null;
     }
-    // 规则/均衡器计数：limit=1 轻查询取 X-Total-Count（失败静默，进入对应视图会补齐）
     try {
       const r = await api.get(BASE + '/rules?limit=1');
       st.counts.rules = Number(r && r.total) || 0;
-    } catch (e) { /* 保持 null，状态区显示 — */ }
+    } catch (e) { /* 保持 null，规模卡显示 — */ }
     try {
       const u = await api.get(BASE + '/upstreams?limit=1');
       st.counts.upstreams = Number(u && u.total) || 0;
     } catch (e) { /* 保持 null */ }
+    renderScaleCard();
   }
 
   async function ensureMeta(silent) {
@@ -320,7 +341,7 @@
         notify.error('路由规则加载失败：' + L.error + '。请确认数据库已配置且服务正常，稍后重试');
       }
     }
-    render();
+    renderTab();
   }
 
   async function queryRules() {
@@ -409,7 +430,7 @@
         notify.error('负载均衡器加载失败：' + L.error + '。请确认数据库已配置且服务正常，稍后重试');
       }
     }
-    render();
+    renderTab();
   }
 
   async function queryUpstreams() {
@@ -494,7 +515,7 @@
         notify.error('上游节点加载失败：' + L.error + '。请确认数据库已配置且服务正常，稍后重试');
       }
     }
-    render();
+    renderTab();
   }
 
   async function queryNodes() {
@@ -510,12 +531,11 @@
     if (host) host.innerHTML = skeletonHTML(5);
   }
 
-  function render() {
+  // 渲染当前管理视图（宿主 = 详情页对应页签容器；页签切换/写操作刷新均走此入口）
+  function renderTab() {
     if (!host) return;
     if (st.enabled === false) { host.innerHTML = guideHTML(); return; }
-    const defs = viewDefs();
-    const def = defs[st.view];
-    const L = def.list();
+    const L = lists[st.view];
     let body;
     if (!L.loaded) {
       body = '<div class="card">' + Rock.comp.empty.message({ text: '加载中…' }) + '</div>';
@@ -525,23 +545,7 @@
     } else {
       body = renderView(st.view, L);
     }
-    host.innerHTML =
-      Rock.comp.head.headHTML({
-        title: '路由分发',
-        desc: '三层路由与负载均衡：上游节点（登记与体检）→ 负载均衡器（策略与会话保持）→ 路由规则（匹配与引用）；规则按序号升序逐条匹配（域名维度可选参与），命中即停，全未命中走默认后端。组件启停开关在「组件 → 分发 dispatch」详情页。',
-        actions: '<button class="btn btn-sm" data-act="dispatch-reload-all" data-tip="重新从数据库构建运行时快照（多实例/外部改库后的手动同步出口）；本页各写操作保存即自动热更，无需手动重载">⟳ 重载快照</button>',
-      }) +
-      statusHTML() +
-      Rock.comp.tabs.tabsHTML(
-        [
-          { name: 'rules', label: '路由规则' },
-          { name: 'upstreams', label: '负载均衡器' },
-          { name: 'nodes', label: '上游节点' },
-        ],
-        st.view,
-        { act: 'dispatch-view', nameAttr: 'data-view' }
-      ) +
-      body;
+    host.innerHTML = body;
     // 重渲染后重绑分页/筛选委托（wrap 元素每次重建）
     bindView(st.view);
   }
@@ -554,28 +558,38 @@
     if (L.table && wrap) L.table.bind(wrap);
   }
 
-  // DISPATCH_ENABLED 未开启：整页引导卡（豁免 toast——降级引导态，页内已给出开关位置与开启路径）
-  function guideHTML() {
-    return Rock.comp.head.headHTML({ title: '路由分发', desc: '' }) +
-      '<div class="card"><div class="empty">' +
-      '<p><b>路由分发组件未开启</b></p>' +
-      '<p>本页管理的是路由数据（规则/均衡器/节点），组件未开启时数据仍可维护，但不参与请求转发。</p>' +
-      '<p>开启路径：侧边栏「组件 → 分发 dispatch」详情页，打开组件开关（DISPATCH_ENABLED）即可，热更生效、无需重启。</p>' +
-      '<button class="btn btn-primary" data-act="nav-detail" data-route="components/dispatch">前往组件页开启 →</button>' +
+  // 路由数据规模卡（宿主 = 详情页「状态」页签）：三个计数各自可点击直达对应管理页签
+  function renderScaleCard() {
+    if (!scaleEl) return;
+    const c = st.counts;
+    const item = function (tab, label, v, unit) {
+      return '<a href="javascript:void(0)" data-act="dispatch-goto-tab" data-tab="' + tab + '"' +
+        ' data-tip="点击前往「' + label + '」页签" style="text-decoration:none">' +
+        label + ' <b>' + (v == null ? '—' : fmtInt(v)) + '</b> ' + unit + '</a>';
+    };
+    scaleEl.innerHTML = '<div class="detail-card"><div class="comp-meta">' +
+      '<span class="muted">路由数据规模（点击直达对应页签）：</span>' +
+      item('rules', '路由规则', c.rules, '条') +
+      item('upstreams', '负载均衡器', c.upstreams, '个') +
+      item('nodes', '上游节点', c.nodes, '个') +
       '</div></div>';
   }
 
-  function statusHTML() {
-    const readyTxt = st.ready == null ? '' :
-      (st.ready
-        ? '<span class="tag tag-green">规则源：数据库 ● 已构建</span>'
-        : '<span class="tag tag-red">规则源：数据库未就绪（快照未构建，全部走默认后端）</span>');
-    const c = st.counts;
-    const cnt = function (v) { return v == null ? '—' : fmtInt(v); };
-    return '<div class="card"><div class="log-toolbar">' +
-      readyTxt +
-      '<span class="muted">规则 <b>' + cnt(c.rules) + '</b> 条 · 均衡器 <b>' + cnt(c.upstreams) + '</b> 个 · 节点 <b>' + cnt(c.nodes) + '</b> 个</span>' +
-      '<span class="muted">规则按序号升序逐条匹配（域名维度可选参与），命中即停；全未命中走默认后端。</span>' +
+  // 规则源状态标签（规则域操作，归位「路由规则」页签工具行）
+  function readyTagHTML() {
+    if (st.ready == null) return '';
+    return st.ready
+      ? '<span class="tag tag-green">规则源：数据库 ● 已构建</span>'
+      : '<span class="tag tag-red">规则源：数据库未就绪（快照未构建，全部走默认后端）</span>';
+  }
+
+  // DISPATCH_ENABLED 未开启：管理页签内引导卡（豁免 toast——降级引导态，页内已给出开关位置与开启路径）
+  function guideHTML() {
+    return '<div class="card"><div class="empty">' +
+      '<p><b>路由分发组件未开启</b></p>' +
+      '<p>本页签管理的是路由数据（规则/均衡器/节点），组件未开启时数据仍可维护，但不参与请求转发。</p>' +
+      '<p>开启路径：本详情页「状态」页签，打开组件开关（DISPATCH_ENABLED）即可，热更生效、无需重启。</p>' +
+      '<button class="btn btn-primary" data-act="dispatch-goto-state">前往状态页签开启 →</button>' +
       '</div></div>';
   }
 
@@ -592,13 +606,15 @@
       '</div>';
   }
 
-  // 规则视图：筛选 + 表格（左） + 命中测试器常驻卡（右）
+  // 规则视图：头部工具行（规则源状态 + ⟳ 重载快照，规则域操作归位本页签）+ 筛选 + 表格（左）+ 命中测试器常驻卡（右）
   function renderRulesView(L) {
     // 左列表 + 右命中测试器常驻卡（flex 两栏，窄屏由浏览器自然换行）
     return '<div style="display:flex;gap:16px;align-items:flex-start">' +
       '<div class="card" style="flex:1;min-width:0">' +
       '<div class="card-title">路由规则 <span class="card-sub">序号 1-999 升序、命中即停；域名默认兜底规则建议 999</span>' +
-      '<span class="comp-actions"><button class="btn btn-sm btn-primary" data-act="dispatch-rule-new">＋ 新增规则</button></span></div>' +
+      '<span class="comp-actions">' + readyTagHTML() +
+      '<button class="btn btn-sm" data-act="dispatch-reload-all" data-tip="重新从数据库构建运行时快照（多实例/外部改库后的手动同步出口）；本页各写操作保存即自动热更，无需手动重载">⟳ 重载快照</button>' +
+      '<button class="btn btn-sm btn-primary" data-act="dispatch-rule-new">＋ 新增规则</button></span></div>' +
       L.bar.html() +
       tableHTML('rules', L) +
       '</div>' +
@@ -638,16 +654,9 @@
       '</div>';
   }
 
-  // ── 视图切换 / 重载 / 命中测试 ────────────────────────────────────────
+  // ── 重载 / 命中测试 ──────────────────────────────────────────────────
 
-  async function switchView(view) {
-    if (st.view === view) return;
-    st.view = view;
-    if (!lists[view].loaded) await loadView(view, {});
-    else render();
-  }
-
-  // 手动重载：Rebuild 四表全量快照（多实例/外部改库出口）；成功后整页刷新
+  // 手动重载：Rebuild 四表全量快照（多实例/外部改库出口）；成功后静默刷新当前视图计数与规模卡
   async function reloadAll() {
     try {
       await api.post(BASE + '/reload')({});
@@ -655,8 +664,8 @@
     } catch (e) {
       notify.error('快照重载失败：' + (e.message || '未知错误'));
     }
-    st.loadedOnce = false;
-    await load({ silent: false });
+    await Promise.all([loadCounts(), loadView(st.view, { silent: true })]);
+    renderTab();
   }
 
   async function runTest() {
@@ -744,11 +753,11 @@
     });
   }
 
-  // 写成功后的刷新：列表静默重拉（失败不弹 toast，行内提示更新）+ 状态区计数与缓存同步
+  // 写成功后的刷新：列表静默重拉（失败不弹 toast，行内提示更新）+ 规模卡计数同步
   async function afterWriteRefresh(kind) {
     if (kind === 'up' || !st.upstreams.length) await refreshCaches(true);
     await loadView(st.view, { silent: true });
-    render();
+    renderTab();
   }
 
   // ── 输入校验小工具 ───────────────────────────────────────────────────
@@ -1175,11 +1184,18 @@
   // ── actions 注册（main.js 统一委托）──────────────────────────────────
 
   window.Rock.views.dispatch = {
-    mount: mount,   // 挂载入口（宿主：组件详情页「路由管理」页签容器）
-    load: load,     // 兼容保留（需先 mount；当前唯一入口为 mount）
-    render: render,
+    mountTab: mountTab,             // 管理页签挂载入口（宿主：组件详情页 rules/upstreams/nodes 页签容器）
+    mountScaleCard: mountScaleCard, // 规模卡挂载入口（宿主：组件详情页「状态」页签规模卡容器）
     actions: {
-      'dispatch-view': function (el) { switchView(el.getAttribute('data-view') || 'rules'); },
+      'dispatch-goto-tab': function (el) {
+        // 规模卡数字点击：经详情页页签机制直达对应管理页签（同步 URL，刷新不丢）
+        const tab = el.getAttribute('data-tab') || 'rules';
+        if (Rock.views.detail) Rock.views.detail.setTab({ type: 'component', name: 'dispatch' }, tab);
+      },
+      'dispatch-goto-state': function () {
+        // 引导卡按钮：跳本详情页「状态」页签开启组件开关
+        if (Rock.views.detail) Rock.views.detail.setTab({ type: 'component', name: 'dispatch' }, 'state');
+      },
       'dispatch-reload-all': function () { reloadAll(); },
       'dispatch-test-run': function () { runTest(); },
       'dispatch-rule-new': function () { openRuleForm(null); },
